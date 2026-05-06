@@ -64,6 +64,31 @@ cp .env.example .env
 
 ## Environment Settings
 
+Add only the services you plan to use to `.env`. The most common settings are:
+
+```bash
+# OpenAI coaching
+LLM_PROVIDER=openai
+OPENAI_API_KEY=your_openai_api_key
+OPENAI_MODEL=gpt-5-mini
+
+# Local Ollama coaching
+LLM_PROVIDER=ollama
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_MODEL=qwen3:14b
+
+# Garmin sync
+GARMIN_EMAIL=your_garmin_email@example.com
+GARMIN_PASSWORD=your_garmin_password
+GARMIN_SYNC_DAYS=90
+GARMIN_HEALTH_SYNC_DAYS=21
+
+# Body Progress page visibility
+use_sam=false
+```
+
+Create an OpenAI API key from your OpenAI platform account, then paste it into `OPENAI_API_KEY`. Use the same Garmin username/email and password you use to sign in to Garmin Connect for `GARMIN_EMAIL` and `GARMIN_PASSWORD`.
+
 The Body Progress page is hidden unless SAM mode is enabled:
 
 ```bash
@@ -78,8 +103,7 @@ USE_SAM=true
 
 Leave `use_sam=false` to keep the Body Progress page out of the Streamlit navigation.
 
-If you want OpenAI coaching, set `OPENAI_API_KEY` and `LLM_PROVIDER=openai`.
-If you want local coaching with Ollama, set `LLM_PROVIDER=ollama` and make sure Ollama is running.
+If you want OpenAI coaching, set `OPENAI_API_KEY` and `LLM_PROVIDER=openai`. If you want local coaching with Ollama, set `LLM_PROVIDER=ollama` and make sure Ollama is running.
 
 If you want Telegram delivery, configure your bot token and chat id:
 
