@@ -1,0 +1,40 @@
+# Local environment and credentials
+.env
+.env.*
+!.env.example
+.garmin_tokens/
+
+# Local databases and generated data
+*.db
+*.sqlite
+*.sqlite3
+db/*.db
+garmin_data/
+data/body_scans/
+data/body_scan_outputs/
+
+# Logs and runtime output
+logs/
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Editor and OS files
+.idea/
+.vscode/
+.DS_Store
+
+# Streamlit local config
+.streamlit/secrets.toml
+../sam/*

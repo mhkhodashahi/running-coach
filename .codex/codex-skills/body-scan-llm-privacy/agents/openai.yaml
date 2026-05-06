@@ -1,0 +1,4 @@
+interface:
+  display_name: "Scan Insight Privacy"
+  short_description: "Keep body scan LLM prompts private"
+  default_prompt: "Use $scan-insight-privacy to review or change body scan insight prompts safely."

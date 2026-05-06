@@ -1,0 +1,4 @@
+interface:
+  display_name: "Project Guide"
+  short_description: "Work safely in the Marathon Coach repo"
+  default_prompt: "Use $project-guide to make a focused Marathon Coach repo change."

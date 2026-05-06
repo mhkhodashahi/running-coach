@@ -1,0 +1,63 @@
+[project]
+name = "marathon-coach"
+version = "0.1.0"
+description = "Garmin Connect data fetch and VO2 max dashboard utilities"
+requires-python = ">=3.11,<4.0"
+dependencies = [
+    "fastapi>=0.115.12,<0.116.0",
+    "garminconnect>=0.3.2,<0.4.0",
+    "jinja2>=3.1.6,<4.0.0",
+    "mediapipe>=0.10.21,<0.10.22",
+    "numpy>=1.26.4,<2.0.0",
+    "openai>=1.68.0,<2.0.0",
+    "pandas>=2.2.3,<3.0.0",
+    "pydantic>=2.10.0,<3.0.0",
+    "plotly>=6.0.0,<7.0.0",
+    "python-dotenv>=1.0.1,<2.0.0",
+    "requests>=2.32.0,<3.0.0",
+    "sqlalchemy>=2.0.36,<3.0.0",
+    "streamlit>=1.43.0,<2.0.0",
+    "uvicorn>=0.34.2,<0.35.0",
+    "ruff (>=0.15.12,<0.16.0)",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.0,<9.0.0",
+    "ruff>=0.8.0,<1.0.0",
+]
+
+[project.scripts]
+fetch-garmin = "sport.garmin_data_fetcher:main"
+serve-vo2max = "sport.vo2max_data_display:main"
+sync-garmin = "utils.garmin_sync_cli:main"
+telegram-chat = "utils.telegram_chat_cli:main"
+
+[tool.poetry]
+packages = [
+    { include = "app" },
+    { include = "analytics" },
+    { include = "body_progress" },
+    { include = "db" },
+    { include = "llm" },
+    { include = "services" },
+    { include = "sport" },
+    { include = "ui" },
+    { include = "utils" },
+]
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["E501"]
