@@ -25,7 +25,8 @@ Local running coach application that uses Garmin-style training data, recovery m
 ## Project Structure
 
 ```text
-app/          Streamlit entry point and pages
+.codex/      Codex agent guide and project skills
+app/          Streamlit navigation entry point, dashboard page, and pages
 analytics/    Training and recovery analytics
 body_progress/ Reusable body scan timeline, storage, processor, and avatar logic
 data/         Mock Garmin CSV data
@@ -35,6 +36,8 @@ services/     Import, goal, coaching, and Telegram services
 ui/           Plotly charts and reusable Streamlit components
 utils/        Bootstrap, CLI workflows, and formatting helpers
 ```
+
+`app/main.py` owns Streamlit navigation with `st.navigation`, while `app/dashboard.py` contains the dashboard page content. Repository-specific agent guidance lives in `.codex/agent.md`.
 
 ## Setup
 
@@ -57,16 +60,35 @@ poetry install
 cp .env.example .env
 ```
 
-4. If you want OpenAI coaching, set `OPENAI_API_KEY` and `LLM_PROVIDER=openai`.
-5. If you want local coaching with Ollama, set `LLM_PROVIDER=ollama` and make sure Ollama is running.
-6. If you want Telegram delivery, configure your bot token and chat id:
+4. Set the feature flags and providers you want in `.env`.
+
+## Environment Settings
+
+The Body Progress page is hidden unless SAM mode is enabled:
+
+```bash
+use_sam=true
+```
+
+You can also use uppercase if preferred:
+
+```bash
+USE_SAM=true
+```
+
+Leave `use_sam=false` to keep the Body Progress page out of the Streamlit navigation.
+
+If you want OpenAI coaching, set `OPENAI_API_KEY` and `LLM_PROVIDER=openai`.
+If you want local coaching with Ollama, set `LLM_PROVIDER=ollama` and make sure Ollama is running.
+
+If you want Telegram delivery, configure your bot token and chat id:
 
 ```bash
 TELEGRAM_BOT_TOKEN=123456:your_bot_token
 TELEGRAM_CHAT_ID=123456789
 ```
 
-7. If you want exact GPS route polylines on the `Activity Detail` page, configure Google Maps:
+If you want exact GPS route polylines on the `Activity Detail` page, configure Google Maps:
 
 ```bash
 GOOGLE_MAPS_API_KEY=your_google_maps_javascript_api_key
@@ -74,6 +96,8 @@ GOOGLE_MAPS_MAP_ID=your_optional_vector_map_id
 ```
 
 Without this key, the page still embeds Google Maps centered on the activity start when GPS points exist, but it cannot draw the exact route polyline. `GOOGLE_MAPS_MAP_ID` is optional, but recommended for the 3D-style tilted hybrid route map.
+
+The `Body Progress` page is hidden by default. Set `use_sam=true` or `USE_SAM=true` in `.env` and restart Streamlit to show it in the navigation.
 
 ## Install SAM 3D Body
 
@@ -125,9 +149,10 @@ sam/sam-3d-body/checkpoints/sam-3d-body-dinov3/model_config.yaml
 sam/sam-3d-body/checkpoints/sam-3d-body-dinov3/assets/mhr_model.pt
 ```
 
-5. Configure `.env`:
+5. Configure `.env` and enable the Body Progress page:
 
 ```bash
+use_sam=true
 BODY_SCAN_PROCESSOR=sam3d
 SAM3D_REPO_DIR=sam/sam-3d-body
 SAM3D_CHECKPOINT_PATH=sam/sam-3d-body/checkpoints/sam-3d-body-dinov3/model.ckpt
@@ -176,7 +201,7 @@ The main dashboard uses a Strava-inspired visual direction without depending on 
 - `Recent Running Log` chart where each run is shown as a circle sized and colored by distance
 - Existing recovery, VO2max, training load, and goal pace charts restyled to match the same design system
 
-The dashboard is implemented in `app/main.py`, reusable Streamlit layout components live in `ui/components.py`, and Plotly chart builders live in `ui/charts.py`.
+Streamlit navigation is implemented in `app/main.py`, the dashboard page lives in `app/dashboard.py`, reusable layout components live in `ui/components.py`, and Plotly chart builders live in `ui/charts.py`.
 
 ## Streamlit Pages
 
@@ -187,7 +212,7 @@ The dashboard is implemented in `app/main.py`, reusable Streamlit layout compone
 - `Analysis`: Runalyze-inspired quality sessions, training condition, acute/chronic load, strain and monotony, pace curve, streak heatmap, longest streaks, HR-vs-pace efficiency, histograms, boxplots, and latest activity table
 - `Quality Sessions`: focused Runalyze-inspired quality-workout page with workload chart, type breakdown, and detected session table
 - `Activity Detail`: Strava-inspired single-activity view with summary hero, effort stats, route placeholder, context chart, notes, and similar activities
-- `Body Progress`: private body progress photo timeline, MediaPipe pose metrics, SAM 3D Body mesh metrics, mesh-based avatar, and LLM scan insights
+- `Body Progress`: private body progress photo timeline, MediaPipe pose metrics, SAM 3D Body mesh metrics, mesh-based avatar, and LLM scan insights. This page is shown only when `use_sam=true` is set in `.env`.
 
 ## Body Progress and Avatar Module
 
@@ -206,6 +231,7 @@ The `body_progress/` package is intentionally reusable outside this Streamlit ap
 The current app page stores private progress photos, can run SAM 3D Body or MediaPipe Pose, renders a training-aware avatar, and switches to a SAM mesh-based avatar when mesh metrics are available. Configure the processor with:
 
 ```bash
+use_sam=true
 BODY_SCAN_PROCESSOR=sam3d
 SAM3D_REPO_DIR=sam/sam-3d-body
 SAM3D_CHECKPOINT_PATH=sam/sam-3d-body/checkpoints/sam-3d-body-dinov3/model.ckpt

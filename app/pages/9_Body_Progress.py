@@ -704,8 +704,12 @@ st.set_page_config(page_title="Body Progress", page_icon="B", layout="wide")
 apply_dashboard_theme()
 _body_progress_css()
 
-bundle = load_training_bundle()
 settings = get_settings()
+if not settings.use_sam:
+    st.warning("Body Progress is disabled. Set use_sam=true in .env and restart Streamlit to enable it.")
+    st.stop()
+
+bundle = load_training_bundle()
 settings_col, avatar_col = st.columns([1.2, 0.8])
 with session_scope() as session:
     scans_df = _body_scans_dataframe(session, bundle.user.id)

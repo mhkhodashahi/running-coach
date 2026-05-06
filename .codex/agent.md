@@ -6,7 +6,8 @@ Use these repository-specific instructions for Codex work in this project.
 
 - Marathon Coach is a local Streamlit running-coach app backed by SQLite.
 - It analyzes Garmin-style activities, health and recovery metrics, goals, coaching digests, body progress scans, and running performance.
-- Main Streamlit entry point: `app/main.py`
+- Main Streamlit navigation entry point: `app/main.py`
+- Dashboard page: `app/dashboard.py`
 - Streamlit pages: `app/pages/`
 - Body Progress page: `app/pages/9_Body_Progress.py`
 - Reusable body scan code: `body_progress/`
@@ -28,7 +29,7 @@ Prefer these skill names when invoking repo guidance:
 
 - Inspect the current files before editing. Do not rely on memory of the codebase.
 - Keep changes scoped to the request and follow nearby patterns.
-- Preserve existing Streamlit page naming and navigation conventions.
+- Preserve existing Streamlit page naming and navigation conventions. `app/main.py` uses `st.navigation`.
 - Prefer reusable services/modules over page-only logic when behavior is shared.
 - Do not remove Garmin, goal, Telegram, activity-detail, body-progress, or LLM workflows unless explicitly requested.
 - Avoid destructive database or git commands.
@@ -39,6 +40,8 @@ Prefer these skill names when invoking repo guidance:
 
 ## Body Progress And SAM
 
+- The Body Progress page is gated by `.env`: set `use_sam=true` or `USE_SAM=true` to show it in navigation.
+- Keep `app/pages/9_Body_Progress.py` behind `settings.use_sam`; direct access should stop when SAM mode is disabled.
 - `BODY_SCAN_PROCESSOR=sam3d` runs the SAM 3D Body path.
 - `BODY_SCAN_PROCESSOR=mediapipe` is the faster local pose-metrics fallback.
 - SAM config is loaded from `.env`:

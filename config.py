@@ -19,6 +19,13 @@ def _resolve_path(raw_path: str, fallback: Path) -> Path:
     return path if path.is_absolute() else (BASE_DIR / path).resolve()
 
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 @dataclass(frozen=True)
 class Settings:
     """Typed application settings loaded from environment variables."""
@@ -30,6 +37,7 @@ class Settings:
     mock_activities_path: Path
     mock_health_path: Path
     body_scan_dir: Path
+    use_sam: bool
     body_scan_processor: str
     sam3d_repo_dir: Path
     sam3d_checkpoint_path: Path
@@ -85,6 +93,7 @@ def get_settings() -> Settings:
         mock_activities_path=data_dir / "mock_activities.csv",
         mock_health_path=data_dir / "mock_health_metrics.csv",
         body_scan_dir=_resolve_path(os.getenv("BODY_SCAN_DIR", "data/body_scans"), data_dir / "body_scans"),
+        use_sam=_env_bool("USE_SAM", _env_bool("use_sam")),
         body_scan_processor=os.getenv("BODY_SCAN_PROCESSOR", "mediapipe").strip().lower(),
         sam3d_repo_dir=_resolve_path(os.getenv("SAM3D_REPO_DIR", "../sam/sam-3d-body"), BASE_DIR / "sam" / "sam-3d-body"),
         sam3d_checkpoint_path=_resolve_path(
