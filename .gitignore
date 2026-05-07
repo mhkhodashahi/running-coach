@@ -38,3 +38,4 @@ env/
 # Streamlit local config
 .streamlit/secrets.toml
 ../sam/*
+/poetry.lock
