@@ -44,3 +44,19 @@ class BodyScanInsightSchema(BaseModel):
     evidence: list[str] = Field(default_factory=list)
     limitations: list[str] = Field(default_factory=list)
     confidence: float = Field(default=0, ge=0, le=100)
+
+
+class ActiveIntelligenceInsightSchema(BaseModel):
+    title: str = Field(default="")
+    status: Literal["positive", "stable", "caution", "urgent"] = "stable"
+    message: str = Field(default="")
+    action: str = Field(default="")
+    evidence: list[str] = Field(default_factory=list)
+    confidence: float = Field(default=0, ge=0, le=100)
+
+
+class ActiveIntelligenceResponseSchema(BaseModel):
+    summary: str = Field(default="")
+    insights: list[ActiveIntelligenceInsightSchema] = Field(default_factory=list)
+    next_check_in: str = Field(default="")
+    limitations: list[str] = Field(default_factory=list)

@@ -104,3 +104,34 @@ def test_default_goal_uses_goal_settings_not_legacy_user_marathon_time() -> None
     assert goal.target_time_minutes == 240.0
     assert goal.goal_type == "marathon_pb"
     assert goal.is_active is True
+
+
+def test_nutrition_entries_can_be_created_listed_and_deleted() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    session_factory = sessionmaker(bind=engine, future=True)
+
+    with session_factory() as session:
+        repository.get_or_create_default_user(session, 1)
+        entry = repository.create_nutrition_entry(
+            session,
+            1,
+            {
+                "entry_date": date(2026, 2, 1),
+                "meal_type": "breakfast",
+                "food_name": "Oats and yogurt",
+                "calories": 520,
+                "protein_g": 32,
+                "carbs_g": 72,
+                "fat_g": 11,
+                "notes": "Long-run morning.",
+            },
+        )
+        logged = repository.nutrition_entries_dataframe(session, 1)
+        repository.delete_nutrition_entry(session, entry.id, 1)
+        after_delete = repository.nutrition_entries_dataframe(session, 1)
+
+    assert len(logged) == 1
+    assert logged.iloc[0]["food_name"] == "Oats and yogurt"
+    assert logged.iloc[0]["calories"] == 520
+    assert after_delete.empty

@@ -41,6 +41,7 @@ class User(Base):
     email_deliveries: Mapped[list[EmailDelivery]] = relationship(back_populates="user")
     body_scans: Mapped[list[BodyScan]] = relationship(back_populates="user")
     body_scan_insights: Mapped[list[BodyScanInsight]] = relationship(back_populates="user")
+    nutrition_entries: Mapped[list[NutritionEntry]] = relationship(back_populates="user")
 
 
 class Activity(Base):
@@ -135,6 +136,26 @@ class HealthMetric(Base):
     vo2max: Mapped[float | None] = mapped_column(Float)
 
     user: Mapped[User] = relationship(back_populates="health_metrics")
+
+
+class NutritionEntry(Base):
+    """Daily calorie and macro log."""
+
+    __tablename__ = "nutrition_entries"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True, nullable=False)
+    entry_date: Mapped[date] = mapped_column(Date, index=True, nullable=False)
+    meal_type: Mapped[str] = mapped_column(String(32), nullable=False, default="meal")
+    food_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    calories: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    protein_g: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    carbs_g: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    fat_g: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    notes: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
+
+    user: Mapped[User] = relationship(back_populates="nutrition_entries")
 
 
 class BodyScan(Base):

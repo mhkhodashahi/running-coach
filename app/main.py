@@ -22,6 +22,7 @@ pages = [
     st.Page("pages/6_Analysis.py", title="Analysis", icon=":material/analytics:"),
     st.Page("pages/7_Quality_Sessions.py", title="Quality Sessions", icon=":material/fitness_center:"),
     st.Page("pages/8_Activity_Detail.py", title="Activity Detail", icon=":material/route:"),
+    st.Page("pages/10_Connect_Plus.py", title="Connect+ Premium", icon=":material/diamond:"),
 ]
 
 if settings.use_sam:

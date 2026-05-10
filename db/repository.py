@@ -23,6 +23,7 @@ from db.models import (
     Goal,
     HealthMetric,
     LLMMemory,
+    NutritionEntry,
     User,
 )
 
@@ -340,6 +341,54 @@ def health_metrics_dataframe(session: Session, user_id: int) -> pd.DataFrame:
     if not df.empty:
         df["date"] = pd.to_datetime(df["date"])
     return df
+
+
+def nutrition_entries_dataframe(session: Session, user_id: int) -> pd.DataFrame:
+    """Return nutrition log rows as a dataframe."""
+
+    query = text(
+        """
+        SELECT id, user_id, entry_date, meal_type, food_name, calories,
+               protein_g, carbs_g, fat_g, notes, created_at
+        FROM nutrition_entries
+        WHERE user_id = :user_id
+        ORDER BY entry_date ASC, created_at ASC
+        """
+    )
+    df = pd.read_sql_query(query, session.bind, params={"user_id": user_id})
+    if not df.empty:
+        for column in ("entry_date", "created_at"):
+            df[column] = pd.to_datetime(df[column])
+    return df
+
+
+def create_nutrition_entry(session: Session, user_id: int, payload: dict[str, Any]) -> NutritionEntry:
+    """Create one nutrition log entry."""
+
+    entry = NutritionEntry(
+        user_id=user_id,
+        entry_date=payload["entry_date"],
+        meal_type=payload.get("meal_type") or "meal",
+        food_name=payload["food_name"],
+        calories=float(payload.get("calories") or 0.0),
+        protein_g=float(payload.get("protein_g") or 0.0),
+        carbs_g=float(payload.get("carbs_g") or 0.0),
+        fat_g=float(payload.get("fat_g") or 0.0),
+        notes=(payload.get("notes") or "").strip() or None,
+    )
+    session.add(entry)
+    session.flush()
+    return entry
+
+
+def delete_nutrition_entry(session: Session, entry_id: int, user_id: int) -> None:
+    """Delete one nutrition entry owned by a user."""
+
+    entry = session.get(NutritionEntry, entry_id)
+    if entry is None or entry.user_id != user_id:
+        raise ValueError(f"Unknown nutrition entry id: {entry_id}")
+    session.delete(entry)
+    session.flush()
 
 
 def create_body_scan(session: Session, payload: BodyScanCreate) -> BodyScan:

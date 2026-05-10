@@ -11,7 +11,7 @@ def get_llm_client(provider: str, openai_api_key: str, openai_model: str, ollama
     """Create an LLM client from the configured provider."""
 
     provider = (provider or "").lower()
-    if provider == "chatgpt" and openai_api_key:
+    if provider in {"openai", "chatgpt"} and openai_api_key:
         return OpenAIClient(api_key=openai_api_key, model=openai_model)
     if provider == "ollama":
         return OllamaClient(base_url=ollama_base_url, model=ollama_model)
