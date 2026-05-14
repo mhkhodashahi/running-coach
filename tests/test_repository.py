@@ -106,6 +106,19 @@ def test_default_goal_uses_goal_settings_not_legacy_user_marathon_time() -> None
     assert goal.is_active is True
 
 
+def test_update_user_profile_saves_max_hr() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    session_factory = sessionmaker(bind=engine, future=True)
+
+    with session_factory() as session:
+        user = repository.get_or_create_default_user(session, 1)
+        repository.update_user_profile(session, user.id, {"max_hr": 194})
+        updated = repository.get_or_create_default_user(session, 1)
+
+    assert updated.max_hr == 194
+
+
 def test_nutrition_entries_can_be_created_listed_and_deleted() -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
