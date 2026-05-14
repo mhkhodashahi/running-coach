@@ -12,6 +12,7 @@ from plotly.subplots import make_subplots
 from config import get_settings
 from db import repository
 from db.session import session_scope
+from services.hr_zones import HR_ZONE_COLORS, heart_rate_zone_summary, supports_hr_zone_view
 from ui.components import apply_dashboard_theme
 from ui.google_maps import render_activity_route_map
 from utils.bootstrap import load_training_bundle
@@ -392,6 +393,25 @@ def _laps_chart(laps: pd.DataFrame) -> go.Figure:
     return _themed_figure(figure, "Lap Pace")
 
 
+def _heart_rate_zone_chart(zone_summary: pd.DataFrame) -> go.Figure:
+    if zone_summary.empty:
+        return _themed_figure(go.Figure(), "Heart Rate Zones")
+    colors = [HR_ZONE_COLORS.get(str(zone), "#94a3b8") for zone in zone_summary["zone"]]
+    figure = go.Figure(
+        go.Bar(
+            x=zone_summary["minutes"],
+            y=zone_summary["zone"].astype(str),
+            orientation="h",
+            marker_color=colors,
+            customdata=zone_summary[["range", "percent"]],
+            hovertemplate="%{y}<br>%{customdata[0]}<br>%{x:.1f} min<br>%{customdata[1]:.0f}%<extra></extra>",
+        )
+    )
+    figure.update_xaxes(title="Time in zone (minutes)")
+    figure.update_yaxes(title="", autorange="reversed")
+    return _themed_figure(figure, "Heart Rate Zones")
+
+
 def _similar_activities(runs: pd.DataFrame, activity: pd.Series) -> pd.DataFrame:
     comparable = runs[runs["id"] != activity["id"]].dropna(subset=["distance"]).copy()
     if comparable.empty:
@@ -514,12 +534,51 @@ with main_col:
             api_key=settings.google_maps_api_key,
             map_id=settings.google_maps_map_id,
             muted_color=DETAIL_MUTED,
+            activity_title=_activity_title(activity),
         )
 with side_col:
     st.plotly_chart(_effort_breakdown_chart(activity, effort), width="stretch")
 
 if not track_points.empty:
     st.plotly_chart(_track_metrics_chart(track_points, float(activity.get("distance") or 0.0)), width="stretch")
+
+if supports_hr_zone_view(activity.get("type")):
+    st.subheader("Heart Rate Zones")
+    with st.expander("Heart rate settings", expanded=False):
+        current_max_hr = int(getattr(bundle.user, "max_hr", None) or 188)
+        with st.form("activity_max_hr_form"):
+            saved_max_hr = st.number_input(
+                "Max HR",
+                min_value=120,
+                max_value=230,
+                value=current_max_hr,
+                step=1,
+                help="Used to calculate activity heart-rate zones and relative effort.",
+            )
+            save_max_hr = st.form_submit_button("Save max HR")
+        if save_max_hr:
+            with session_scope() as session:
+                repository.update_user_profile(session, bundle.user.id, {"max_hr": int(saved_max_hr)})
+            st.success("Max HR saved.")
+            st.rerun()
+
+    zone_summary = heart_rate_zone_summary(track_points, getattr(bundle.user, "max_hr", None))
+    if zone_summary.empty:
+        st.info(
+            "Heart-rate zone time is available for running and football activities after syncing Garmin activity detail streams with heart-rate samples."
+        )
+    else:
+        zone_chart_col, zone_table_col = st.columns([1.2, 1])
+        zone_chart_col.plotly_chart(_heart_rate_zone_chart(zone_summary), width="stretch")
+        zone_table = zone_summary.copy()
+        zone_table["time"] = zone_table["minutes"].apply(format_duration_minutes)
+        zone_table["percent"] = zone_table["percent"].map(lambda value: f"{value:.0f}%")
+        zone_table_col.subheader("Time In HR Zones")
+        zone_table_col.caption(f"Zones estimated from max HR: {int(getattr(bundle.user, 'max_hr', None) or 188)} bpm.")
+        zone_table_col.dataframe(
+            zone_table[["zone", "range", "time", "percent"]],
+            width="stretch",
+        )
 
 if not laps.empty:
     lap_chart_col, lap_table_col = st.columns([1.15, 1])
