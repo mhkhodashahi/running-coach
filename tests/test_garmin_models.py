@@ -6,7 +6,7 @@ from pydantic import ValidationError
 
 from services.garmin_client import extract_activity_track_points
 from services.garmin_models import validate_laps, validate_track_points
-from ui.google_maps import downsample_route, route_heading_degrees
+from ui.google_maps import downsample_route, encode_polyline, route_heading_degrees
 
 
 def test_validate_track_points_accepts_normalized_gps_rows() -> None:
@@ -139,3 +139,15 @@ def test_downsample_route_preserves_last_point() -> None:
 
     assert len(sampled) <= 8
     assert sampled.iloc[-1]["latitude"] == route.iloc[-1]["latitude"]
+
+
+def test_encode_polyline_matches_google_example() -> None:
+    encoded = encode_polyline(
+        [
+            {"lat": 38.5, "lng": -120.2},
+            {"lat": 40.7, "lng": -120.95},
+            {"lat": 43.252, "lng": -126.453},
+        ]
+    )
+
+    assert encoded == "_p~iF~ps|U_ulLnnqC_mqNvxq`@"

@@ -1,648 +1,214 @@
-"""Runalyze-inspired training analysis page."""
+"""Performance Dashboard page."""
 
 from __future__ import annotations
 
+import json
+from datetime import timedelta
+from pathlib import Path
+from typing import Any
+
 import pandas as pd
-import plotly.express as px
-import plotly.graph_objects as go
 import streamlit as st
+from streamlit.components.v1 import html
 
-from ui.charts import hr_vs_pace_scatter, intensity_distribution_chart
-from ui.components import apply_dashboard_theme
+from config import BASE_DIR
 from utils.bootstrap import load_training_bundle
-from utils.formatting import format_metric_number, format_pace
 
-ANALYSIS_BLUE = "#2563eb"
-ANALYSIS_GREEN = "#16a34a"
-ANALYSIS_ORANGE = "#fc4c02"
-ANALYSIS_INK = "#111827"
-ANALYSIS_AMBER = "#f59e0b"
-QUALITY_KEYWORDS = (
-    "tempo",
-    "threshold",
-    "interval",
-    "repetition",
-    "rep",
-    "fartlek",
-    "race",
-    "simulation",
-    "progression",
-    "speed",
-)
+st.set_page_config(page_title="Performance Dashboard", page_icon="P", layout="wide")
 
 
-def _running_activities(activities: pd.DataFrame) -> pd.DataFrame:
-    if activities.empty:
-        return activities.copy()
-    runs = activities[
-        activities["type"].fillna("").str.contains("run|trail|treadmill", case=False, na=False)
-    ].copy()
-    if runs.empty:
-        return runs
-    runs["date"] = pd.to_datetime(runs["date"])
-    return runs.sort_values("date")
+def _clean_number(value: Any) -> float | None:
+    """Return JSON-safe numeric values."""
+
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
-def _themed_figure(figure: go.Figure, title: str) -> go.Figure:
-    figure.update_layout(
-        title=title,
-        template="plotly_white",
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(255,255,255,0.52)",
-        font=dict(family="Manrope, sans-serif", color=ANALYSIS_INK),
-        title_font=dict(size=20),
-        margin=dict(l=34, r=28, t=58, b=38),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-    )
-    figure.update_xaxes(gridcolor="rgba(100,116,139,0.16)", zeroline=False)
-    figure.update_yaxes(gridcolor="rgba(100,116,139,0.16)", zeroline=False)
-    return figure
+def _sport_label(activity_type: str | None) -> str:
+    raw = str(activity_type or "").lower()
+    if any(term in raw for term in ("run", "trail", "treadmill")):
+        return "Running"
+    if any(term in raw for term in ("cycl", "bike", "biking")):
+        return "Cycling"
+    if "swim" in raw:
+        return "Swimming"
+    if any(term in raw for term in ("strength", "weight", "gym")):
+        return "Strength"
+    if any(term in raw for term in ("walk", "hike")):
+        return "Walking"
+    return "Running"
 
 
-def _training_condition_frame(load: pd.DataFrame) -> pd.DataFrame:
-    if load.empty:
-        return pd.DataFrame(columns=["date", "daily_load", "acute_load", "chronic_load", "load_balance"])
-    daily = load.copy()
-    daily["date"] = pd.to_datetime(daily["date"])
-    daily = (
-        daily.set_index("date")["training_load"]
-        .resample("D")
-        .sum()
-        .reset_index(name="daily_load")
-    )
-    daily["acute_load"] = daily["daily_load"].ewm(span=7, adjust=False).mean()
-    daily["chronic_load"] = daily["daily_load"].ewm(span=42, adjust=False).mean()
-    daily["load_balance"] = daily["acute_load"] - daily["chronic_load"]
-    daily["load_ratio"] = daily["acute_load"] / daily["chronic_load"].replace(0, pd.NA)
-    return daily
+def _subtype_label(activity_type: str | None) -> str:
+    raw = str(activity_type or "").lower()
+    if "trail" in raw:
+        return "Trail"
+    if "treadmill" in raw or "indoor_running" in raw:
+        return "Treadmill"
+    if "indoor" in raw and any(term in raw for term in ("bike", "cycl")):
+        return "Indoor Bike"
+    if any(term in raw for term in ("bike", "cycl")):
+        return "Outdoor Bike"
+    if "open" in raw and "water" in raw:
+        return "Open Water"
+    if "swim" in raw:
+        return "Pool"
+    return "Road"
 
 
-def _training_condition_chart(condition: pd.DataFrame) -> go.Figure:
-    if condition.empty:
-        return _themed_figure(go.Figure(), "Training Condition")
-    figure = go.Figure()
-    figure.add_trace(
-        go.Bar(
-            x=condition["date"],
-            y=condition["daily_load"],
-            name="Daily load",
-            marker_color="rgba(252, 76, 2, 0.34)",
-            hovertemplate="%{x|%Y-%m-%d}<br>Daily load=%{y:.0f}<extra></extra>",
-        )
-    )
-    figure.add_trace(
-        go.Scatter(
-            x=condition["date"],
-            y=condition["acute_load"],
-            mode="lines",
-            name="Acute load (7d)",
-            line=dict(color=ANALYSIS_ORANGE, width=3),
-            hovertemplate="%{x|%Y-%m-%d}<br>Acute load=%{y:.0f}<extra></extra>",
-        )
-    )
-    figure.add_trace(
-        go.Scatter(
-            x=condition["date"],
-            y=condition["chronic_load"],
-            mode="lines",
-            name="Chronic load (42d)",
-            line=dict(color=ANALYSIS_BLUE, width=3),
-            hovertemplate="%{x|%Y-%m-%d}<br>Chronic load=%{y:.0f}<extra></extra>",
-        )
-    )
-    return _themed_figure(figure, "Training Condition: Acute vs Chronic Load")
+def _workout_type(row: pd.Series) -> str:
+    text = f"{row.get('type', '')} {row.get('notes', '')}".lower()
+    distance = _clean_number(row.get("distance")) or 0
+    pace = _clean_number(row.get("pace"))
+    aerobic = _clean_number(row.get("aerobic_effect")) or 0
+    anaerobic = _clean_number(row.get("anaerobic_effect")) or 0
+    if "race" in text:
+        return "Race"
+    if any(term in text for term in ("interval", "repeat", "speed")) or anaerobic >= 1.4:
+        return "Interval"
+    if any(term in text for term in ("tempo", "threshold")) or aerobic >= 3.8:
+        return "Tempo"
+    if distance >= 18:
+        return "Long"
+    if pace and pace > 6.1:
+        return "Recovery"
+    return "Easy"
 
 
-def _strain_frame(load: pd.DataFrame) -> pd.DataFrame:
-    if load.empty:
-        return pd.DataFrame(columns=["week", "weekly_load", "monotony", "strain"])
-    daily = load.copy()
-    daily["date"] = pd.to_datetime(daily["date"])
-    daily = daily.set_index("date")["training_load"].resample("D").sum().reset_index(name="daily_load")
-    daily["week"] = daily["date"].dt.to_period("W-MON").apply(lambda period: period.start_time)
-    grouped = daily.groupby("week")["daily_load"]
-    strain = grouped.agg(weekly_load="sum", mean_load="mean", load_std="std").reset_index()
-    strain["monotony"] = strain["mean_load"] / strain["load_std"].replace(0, pd.NA)
-    strain["monotony"] = strain["monotony"].fillna(0).clip(upper=6)
-    strain["strain"] = strain["weekly_load"] * strain["monotony"]
-    return strain
+def _tags_for(row: pd.Series) -> list[str]:
+    text = f"{row.get('type', '')} {row.get('notes', '')}".lower()
+    tags: list[str] = []
+    if any(term in text for term in ("race", "simulation")):
+        tags.append("Race Block")
+    if any(term in text for term in ("travel", "hotel")):
+        tags.append("Travel")
+    if any(term in text for term in ("ill", "sick", "cold")):
+        tags.append("Illness")
+    if any(term in text for term in ("taper", "easy week")):
+        tags.append("Taper")
+    tags.append("Build" if (_clean_number(row.get("distance")) or 0) >= 12 else "Base")
+    return list(dict.fromkeys(tags))
 
 
-def _strain_chart(strain: pd.DataFrame) -> go.Figure:
-    if strain.empty:
-        return _themed_figure(go.Figure(), "Training Strain")
-    figure = go.Figure()
-    figure.add_trace(
-        go.Bar(
-            x=strain["week"],
-            y=strain["strain"],
-            name="Training strain",
-            marker_color=ANALYSIS_AMBER,
-            hovertemplate="Week=%{x|%b %d}<br>Strain=%{y:.0f}<extra></extra>",
-        )
-    )
-    figure.add_trace(
-        go.Scatter(
-            x=strain["week"],
-            y=strain["monotony"],
-            name="Monotony",
-            yaxis="y2",
-            mode="lines+markers",
-            line=dict(color=ANALYSIS_INK, width=3),
-            hovertemplate="Week=%{x|%b %d}<br>Monotony=%{y:.2f}<extra></extra>",
-        )
-    )
-    _themed_figure(figure, "Weekly Strain and Monotony")
-    figure.update_layout(
-        yaxis=dict(title="Strain"),
-        yaxis2=dict(title="Monotony", overlaying="y", side="right", showgrid=False),
-    )
-    return figure
+def _build_derived(activities: pd.DataFrame, health: pd.DataFrame) -> list[dict[str, Any]]:
+    if activities.empty and health.empty:
+        return []
 
+    dates = []
+    if not activities.empty:
+        dates.extend(pd.to_datetime(activities["date"]).dt.normalize().tolist())
+    if not health.empty:
+        dates.extend(pd.to_datetime(health["date"]).dt.normalize().tolist())
+    start = min(dates)
+    end = max(dates)
+    all_days = pd.date_range(start, end, freq="D")
+    runs = activities.copy()
+    if not runs.empty:
+        runs["date"] = pd.to_datetime(runs["date"]).dt.normalize()
+        runs = runs[runs["type"].fillna("").str.contains("run|trail|treadmill", case=False, na=False)]
+    h = health.copy()
+    if not h.empty:
+        h["date"] = pd.to_datetime(h["date"]).dt.normalize()
+        h = h.set_index("date")
 
-def _distance_histogram(runs: pd.DataFrame) -> go.Figure:
-    if runs.empty:
-        return _themed_figure(go.Figure(), "Distance Distribution")
-    figure = px.histogram(
-        runs,
-        x="distance",
-        nbins=14,
-        color_discrete_sequence=[ANALYSIS_ORANGE],
-        labels={"distance": "Distance (km)", "count": "Runs"},
-    )
-    figure.update_traces(marker_line_width=0, opacity=0.86)
-    return _themed_figure(figure, "Distance Distribution")
-
-
-def _monthly_pace_boxplot(runs: pd.DataFrame) -> go.Figure:
-    pace_runs = runs.dropna(subset=["pace"]).copy()
-    if pace_runs.empty:
-        return _themed_figure(go.Figure(), "Monthly Pace Spread")
-    pace_runs["month"] = pace_runs["date"].dt.strftime("%Y-%m")
-    figure = px.box(
-        pace_runs,
-        x="month",
-        y="pace",
-        points="all",
-        color_discrete_sequence=[ANALYSIS_BLUE],
-        labels={"month": "Month", "pace": "Pace (min/km)"},
-    )
-    figure.update_yaxes(autorange="reversed")
-    return _themed_figure(figure, "Monthly Pace Spread")
-
-
-def _pace_curve_frame(runs: pd.DataFrame) -> pd.DataFrame:
-    pace_runs = runs.dropna(subset=["distance", "pace"]).copy()
-    buckets = [5.0, 10.0, 15.0, 21.1, 30.0, 42.2]
     rows = []
-    for distance in buckets:
-        eligible = pace_runs[pace_runs["distance"] >= distance]
-        if eligible.empty:
-            continue
-        best = eligible.nsmallest(1, "pace").iloc[0]
+    for day in all_days:
+        recent = runs[(runs["date"] >= day - timedelta(days=27)) & (runs["date"] <= day)] if not runs.empty else pd.DataFrame()
+        recent_distance = float(recent["distance"].sum()) if not recent.empty else 0.0
+        recent_duration = float(recent["duration"].sum()) if not recent.empty else 0.0
+        recent_elevation = float(recent["elevation"].fillna(0).sum()) if not recent.empty else 0.0
+        day_health = h.loc[day] if day in h.index else None
+        sleep = _clean_number(day_health.get("sleep_score")) if day_health is not None else 72
+        battery = _clean_number(day_health.get("body_battery")) if day_health is not None else 60
+        stress = _clean_number(day_health.get("stress")) if day_health is not None else 35
+        readiness = max(0, min(100, (sleep or 72) * 0.42 + (battery or 60) * 0.38 + (100 - (stress or 35)) * 0.20))
+        endurance = max(25, min(100, 42 + recent_distance * 0.55 + recent_duration * 0.02))
+        hill = max(20, min(100, 38 + recent_elevation / 55))
+        race5k = max(17.0, 29.5 - endurance * 0.075)
         rows.append(
             {
-                "distance": distance,
-                "best_pace": float(best["pace"]),
-                "source_date": best["date"],
-                "source_distance": float(best["distance"]),
-                "projected_time": float(best["pace"]) * distance,
+                "date": day.date().isoformat(),
+                "enduranceScore": round(endurance, 1),
+                "hillScore": round(hill, 1),
+                "racePredictor5k": round(race5k, 2),
+                "readinessScore": round(readiness, 1),
             }
         )
-    return pd.DataFrame(rows)
+    return rows
 
 
-def _pace_curve_chart(curve: pd.DataFrame) -> go.Figure:
-    if curve.empty:
-        return _themed_figure(go.Figure(), "Pace Curve")
-    figure = go.Figure(
-        go.Scatter(
-            x=curve["distance"],
-            y=curve["best_pace"],
-            mode="lines+markers",
-            line=dict(color=ANALYSIS_ORANGE, width=4),
-            marker=dict(size=11, color=ANALYSIS_ORANGE, line=dict(color="white", width=2)),
-            customdata=curve[["source_date", "source_distance", "projected_time"]],
-            hovertemplate=(
-                "Distance=%{x:.1f} km<br>Best pace=%{y:.2f} min/km<br>"
-                "Source=%{customdata[0]|%Y-%m-%d}, %{customdata[1]:.1f} km<br>"
-                "Projected time=%{customdata[2]:.1f} min<extra></extra>"
-            ),
-        )
-    )
-    figure.update_yaxes(autorange="reversed", title="Best observed pace (min/km)")
-    figure.update_xaxes(title="Distance bucket (km)")
-    return _themed_figure(figure, "Performance Curve: Best Pace by Distance")
+def _dashboard_payload() -> dict[str, Any]:
+    bundle = load_training_bundle()
+    activities = bundle.activities.copy()
+    health = bundle.health_metrics.copy()
 
-
-def _quality_sessions_frame(runs: pd.DataFrame) -> pd.DataFrame:
-    if runs.empty:
-        return pd.DataFrame(
-            columns=[
-                "date",
-                "type",
-                "distance",
-                "duration",
-                "pace",
-                "avg_hr",
-                "aerobic_effect",
-                "anaerobic_effect",
-                "quality_type",
-                "quality_score",
-                "reason",
-            ]
-        )
-
-    sessions = runs.copy()
-    median_pace = sessions["pace"].dropna().median()
-    long_run_threshold = max(16.0, sessions["distance"].quantile(0.80))
-    tempo_pace_threshold = median_pace * 0.94 if pd.notna(median_pace) else None
-    notes = sessions["notes"].fillna("").str.lower()
-    session_type = sessions["type"].fillna("").str.lower()
-    text = notes + " " + session_type
-
-    keyword_mask = text.str.contains("|".join(QUALITY_KEYWORDS), case=False, na=False)
-    high_effect_mask = sessions["aerobic_effect"].fillna(0) >= 3.5
-    anaerobic_mask = sessions["anaerobic_effect"].fillna(0) >= 1.0
-    tempo_mask = pd.Series(False, index=sessions.index)
-    if tempo_pace_threshold is not None:
-        tempo_mask = (sessions["pace"].notna()) & (sessions["pace"] <= tempo_pace_threshold) & (sessions["distance"] >= 5)
-    long_run_mask = sessions["distance"].fillna(0) >= long_run_threshold
-
-    sessions["quality_score"] = (
-        keyword_mask.astype(int) * 24
-        + high_effect_mask.astype(int) * 24
-        + anaerobic_mask.astype(int) * 22
-        + tempo_mask.astype(int) * 18
-        + long_run_mask.astype(int) * 12
-        + sessions["distance"].fillna(0).clip(upper=25) * 0.8
-    )
-    sessions["is_quality"] = keyword_mask | high_effect_mask | anaerobic_mask | tempo_mask | long_run_mask
-
-    quality = sessions[sessions["is_quality"]].copy()
-    if quality.empty:
-        return quality
-
-    quality["quality_type"] = "Aerobic quality"
-    quality.loc[long_run_mask.loc[quality.index], "quality_type"] = "Long run"
-    quality.loc[tempo_mask.loc[quality.index], "quality_type"] = "Tempo"
-    quality.loc[anaerobic_mask.loc[quality.index], "quality_type"] = "Intervals / speed"
-    quality.loc[keyword_mask.loc[quality.index], "quality_type"] = "Tagged workout"
-
-    reasons = []
-    for index, row in quality.iterrows():
-        row_reasons = []
-        if keyword_mask.loc[index]:
-            row_reasons.append("workout keyword")
-        if high_effect_mask.loc[index]:
-            row_reasons.append(f"aerobic effect {row.aerobic_effect:.1f}")
-        if anaerobic_mask.loc[index]:
-            row_reasons.append(f"anaerobic effect {row.anaerobic_effect:.1f}")
-        if tempo_mask.loc[index]:
-            row_reasons.append("faster than recent median pace")
-        if long_run_mask.loc[index]:
-            row_reasons.append("long-run distance")
-        reasons.append(", ".join(row_reasons))
-    quality["reason"] = reasons
-    return quality.sort_values("date")
-
-
-def _quality_volume_frame(runs: pd.DataFrame, quality: pd.DataFrame) -> pd.DataFrame:
-    if runs.empty:
-        return pd.DataFrame(columns=["week", "total_distance", "quality_distance", "quality_sessions"])
-    weekly_total = (
-        runs.set_index("date")["distance"]
-        .resample("W-MON")
-        .sum()
-        .reset_index()
-        .rename(columns={"date": "week", "distance": "total_distance"})
-    )
-    if quality.empty:
-        weekly_total["quality_distance"] = 0.0
-        weekly_total["quality_sessions"] = 0
-        return weekly_total
-    weekly_quality = (
-        quality.set_index("date")
-        .resample("W-MON")
-        .agg(quality_distance=("distance", "sum"), quality_sessions=("id", "count"))
-        .reset_index()
-        .rename(columns={"date": "week"})
-    )
-    return weekly_total.merge(weekly_quality, on="week", how="left").fillna(
-        {"quality_distance": 0.0, "quality_sessions": 0}
-    )
-
-
-def _quality_sessions_chart(volume: pd.DataFrame) -> go.Figure:
-    if volume.empty:
-        return _themed_figure(go.Figure(), "Quality Sessions")
-    figure = go.Figure()
-    figure.add_trace(
-        go.Bar(
-            x=volume["week"],
-            y=volume["total_distance"],
-            name="All running distance",
-            marker_color="rgba(148, 163, 184, 0.42)",
-            hovertemplate="Week=%{x|%b %d}<br>Total=%{y:.1f} km<extra></extra>",
-        )
-    )
-    figure.add_trace(
-        go.Bar(
-            x=volume["week"],
-            y=volume["quality_distance"],
-            name="Quality-session distance",
-            marker_color=ANALYSIS_BLUE,
-            customdata=volume[["quality_sessions"]],
-            hovertemplate=(
-                "Week=%{x|%b %d}<br>Quality distance=%{y:.1f} km<br>"
-                "Quality sessions=%{customdata[0]:.0f}<extra></extra>"
-            ),
-        )
-    )
-    _themed_figure(figure, "Quality Sessions: Weekly Workload")
-    figure.update_layout(barmode="overlay", yaxis_title="Distance (km)")
-    return figure
-
-
-def _quality_type_chart(quality: pd.DataFrame) -> go.Figure:
-    if quality.empty:
-        return _themed_figure(go.Figure(), "Quality Session Types")
-    grouped = (
-        quality.groupby("quality_type", as_index=False)
-        .agg(distance=("distance", "sum"), sessions=("id", "count"))
-        .sort_values("distance", ascending=True)
-    )
-    figure = go.Figure(
-        go.Bar(
-            x=grouped["distance"],
-            y=grouped["quality_type"],
-            orientation="h",
-            marker_color=[ANALYSIS_ORANGE, ANALYSIS_BLUE, ANALYSIS_GREEN, ANALYSIS_AMBER][: len(grouped)],
-            customdata=grouped[["sessions"]],
-            hovertemplate="%{y}<br>Distance=%{x:.1f} km<br>Sessions=%{customdata[0]}<extra></extra>",
-        )
-    )
-    figure.update_xaxes(title="Distance (km)")
-    return _themed_figure(figure, "Quality Session Types")
-
-
-def _streak_frame(runs: pd.DataFrame) -> pd.DataFrame:
-    if runs.empty:
-        return pd.DataFrame(columns=["start", "end", "days", "distance"])
-    daily = (
-        runs.assign(day=runs["date"].dt.normalize())
-        .groupby("day", as_index=False)
-        .agg(distance=("distance", "sum"), activities=("id", "count"))
-        .sort_values("day")
-    )
-    streaks = []
-    current_start = None
-    current_end = None
-    current_distance = 0.0
-    previous_day = None
-
-    for row in daily.itertuples():
-        day = pd.Timestamp(row.day)
-        if previous_day is None or day == previous_day + pd.Timedelta(days=1):
-            current_start = current_start or day
-            current_end = day
-            current_distance += float(row.distance or 0.0)
-        else:
-            streaks.append(
+    activity_rows: list[dict[str, Any]] = []
+    if not activities.empty:
+        activities["date"] = pd.to_datetime(activities["date"])
+        for _, row in activities.iterrows():
+            sport = _sport_label(row.get("type"))
+            subtype = _subtype_label(row.get("type"))
+            environment = "Indoor" if subtype in {"Treadmill", "Indoor Bike", "Pool"} else "Outdoor"
+            activity_rows.append(
                 {
-                    "start": current_start,
-                    "end": current_end,
-                    "days": int((current_end - current_start).days + 1),
-                    "distance": round(current_distance, 1),
+                    "date": row["date"].date().isoformat(),
+                    "sport": sport,
+                    "subtype": subtype,
+                    "durationMin": round(_clean_number(row.get("duration")) or 0, 1),
+                    "distanceKm": round(_clean_number(row.get("distance")) or 0, 2),
+                    "elevationM": round(_clean_number(row.get("elevation")) or 0, 0),
+                    "avgHR": _clean_number(row.get("avg_hr")),
+                    "avgPace": _clean_number(row.get("pace")),
+                    "avgPower": None,
+                    "load": round(
+                        (_clean_number(row.get("distance")) or 0) * 3
+                        + (_clean_number(row.get("duration")) or 0) * 0.3
+                        + (_clean_number(row.get("aerobic_effect")) or 0) * 12
+                        + (_clean_number(row.get("anaerobic_effect")) or 0) * 16,
+                        0,
+                    ),
+                    "workoutType": _workout_type(row),
+                    "environment": environment,
+                    "device": "Watch",
+                    "tags": _tags_for(row),
                 }
             )
-            current_start = day
-            current_end = day
-            current_distance = float(row.distance or 0.0)
-        previous_day = day
 
-    if current_start is not None and current_end is not None:
-        streaks.append(
-            {
-                "start": current_start,
-                "end": current_end,
-                "days": int((current_end - current_start).days + 1),
-                "distance": round(current_distance, 1),
-            }
-        )
-    return pd.DataFrame(streaks).sort_values(["days", "distance"], ascending=False)
-
-
-def _calendar_heatmap_frame(runs: pd.DataFrame) -> pd.DataFrame:
-    if runs.empty:
-        return pd.DataFrame(columns=["date", "week", "weekday", "weekday_name", "distance", "activities"])
-    daily = (
-        runs.assign(date=runs["date"].dt.normalize())
-        .groupby("date", as_index=False)
-        .agg(distance=("distance", "sum"), activities=("id", "count"), duration=("duration", "sum"))
-        .sort_values("date")
-    )
-    start = daily["date"].min()
-    end = daily["date"].max()
-    all_days = pd.DataFrame({"date": pd.date_range(start, end, freq="D")})
-    heatmap = all_days.merge(daily, on="date", how="left").fillna(
-        {"distance": 0.0, "activities": 0, "duration": 0.0}
-    )
-    heatmap["week"] = ((heatmap["date"] - heatmap["date"].min()).dt.days // 7).astype(int)
-    heatmap["weekday"] = heatmap["date"].dt.weekday
-    heatmap["weekday_name"] = heatmap["date"].dt.day_name().str[:3]
-    return heatmap
-
-
-def _streak_heatmap_chart(heatmap: pd.DataFrame) -> go.Figure:
-    if heatmap.empty:
-        return _themed_figure(go.Figure(), "Running Streak Heatmap")
-    pivot = heatmap.pivot(index="weekday_name", columns="week", values="distance")
-    weekday_order = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-    pivot = pivot.reindex(weekday_order)
-    hover = heatmap.pivot(index="weekday_name", columns="week", values="date").reindex(weekday_order)
-    activities = heatmap.pivot(index="weekday_name", columns="week", values="activities").reindex(weekday_order)
-
-    customdata = []
-    for weekday in pivot.index:
-        row = []
-        for week in pivot.columns:
-            date_value = hover.loc[weekday, week]
-            activity_count = activities.loc[weekday, week]
-            date_text = "" if pd.isna(date_value) else pd.Timestamp(date_value).strftime("%Y-%m-%d")
-            activity_count = 0 if pd.isna(activity_count) else int(activity_count)
-            row.append(
-                [
-                    date_text,
-                    activity_count,
-                ]
+    health_rows: list[dict[str, Any]] = []
+    if not health.empty:
+        health["date"] = pd.to_datetime(health["date"])
+        for _, row in health.iterrows():
+            hrv = _clean_number(row.get("hrv"))
+            health_rows.append(
+                {
+                    "date": row["date"].date().isoformat(),
+                    "sleepScore": _clean_number(row.get("sleep_score")),
+                    "bodyBattery": _clean_number(row.get("body_battery")),
+                    "restingHR": _clean_number(row.get("resting_hr")),
+                    "stress": _clean_number(row.get("stress")),
+                    "hrvStatus": "Balanced" if hrv and hrv >= 55 else "Low" if hrv and hrv < 40 else "Unbalanced",
+                }
             )
-        customdata.append(row)
 
-    figure = go.Figure(
-        go.Heatmap(
-            z=pivot.to_numpy(),
-            x=pivot.columns,
-            y=pivot.index,
-            customdata=customdata,
-            colorscale=[
-                [0.00, "#f1f5f9"],
-                [0.15, "#fed7aa"],
-                [0.45, "#fdba74"],
-                [0.75, ANALYSIS_ORANGE],
-                [1.00, "#7c2d12"],
-            ],
-            colorbar=dict(title="km"),
-            xgap=3,
-            ygap=3,
-            hovertemplate=(
-                "%{customdata[0]}<br>"
-                "Distance=%{z:.1f} km<br>"
-                "Activities=%{customdata[1]}<extra></extra>"
-            ),
-        )
-    )
-    _themed_figure(figure, "Running Streak Calendar Heatmap")
-    figure.update_layout(height=330, xaxis_title="Training week", yaxis_title="")
-    figure.update_yaxes(autorange="reversed")
-    return figure
+    return {
+        "source": "real",
+        "activities": activity_rows,
+        "health": health_rows,
+        "derived": _build_derived(activities, health),
+    }
 
 
-def _analysis_card(label: str, value: str, detail: str) -> None:
-    st.markdown(
-        f"""
-        <div class="coach-card">
-            <span class="coach-pill">{label}</span>
-            <div class="coach-focus">{value}</div>
-            <div class="coach-muted">{detail}</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-apply_dashboard_theme()
-st.title("Analysis")
-st.caption(
-    "Runalyze-inspired training analysis: load balance, performance curves, distributions, and efficiency signals."
+dashboard_path = Path(BASE_DIR) / "app" / "performance_dashboard.html"
+dashboard_html = dashboard_path.read_text(encoding="utf-8")
+payload_json = json.dumps(_dashboard_payload(), allow_nan=False)
+dashboard_html = dashboard_html.replace(
+    "</head>",
+    f"<script>window.PERFORMANCE_DASHBOARD_DATA = {payload_json};</script></head>",
 )
-
-bundle = load_training_bundle()
-runs = _running_activities(bundle.activities)
-snapshot = bundle.snapshot
-condition = _training_condition_frame(snapshot["training_load"])
-strain = _strain_frame(snapshot["training_load"])
-pace_curve = _pace_curve_frame(runs)
-quality_sessions = _quality_sessions_frame(runs)
-quality_volume = _quality_volume_frame(runs, quality_sessions)
-streaks = _streak_frame(runs)
-heatmap = _calendar_heatmap_frame(runs)
-
-if runs.empty:
-    st.info("No running activities available yet. Import activities from the dashboard sidebar to unlock analysis.")
-    st.stop()
-
-latest_condition = condition.iloc[-1] if not condition.empty else None
-latest_ratio = latest_condition.get("load_ratio") if latest_condition is not None else None
-latest_ratio_text = format_metric_number(latest_ratio, decimals=2) if pd.notna(latest_ratio) else "n/a"
-best_curve = pace_curve.nsmallest(1, "best_pace").iloc[0] if not pace_curve.empty else None
-best_pace_text = format_pace(float(best_curve["best_pace"])) if best_curve is not None else "n/a"
-longest_streak = streaks.iloc[0] if not streaks.empty else None
-longest_streak_text = f"{int(longest_streak['days'])} days" if longest_streak is not None else "n/a"
-quality_distance = float(quality_sessions["distance"].sum()) if not quality_sessions.empty else 0.0
-
-c1, c2, c3, c4 = st.columns(4)
-with c1:
-    _analysis_card(
-        "Effective VO2max",
-        format_metric_number(snapshot["vo2max"].get("latest"), decimals=1),
-        f"Trend: {snapshot['vo2max'].get('trend', 'n/a')}",
-    )
-with c2:
-    _analysis_card(
-        "Load ratio",
-        latest_ratio_text,
-        "Acute 7-day load compared with chronic 42-day load.",
-    )
-with c3:
-    _analysis_card(
-        "Best curve pace",
-        best_pace_text,
-        "Fastest observed pace among available distance buckets.",
-    )
-with c4:
-    _analysis_card(
-        "Longest streak",
-        longest_streak_text,
-        "Consecutive days with at least one running activity.",
-    )
-
-st.subheader("Quality Sessions")
-st.caption(
-    "Runalyze-style tempo-session review. Without lap splits, sessions are classified from pace, distance, effects, type, and notes."
-)
-q1, q2, q3, q4 = st.columns(4)
-q1.metric("Quality sessions", len(quality_sessions))
-q2.metric("Quality distance", f"{quality_distance:.1f} km")
-q3.metric("Quality share", f"{quality_distance / max(float(runs['distance'].sum()), 1):.0%}")
-latest_quality = quality_sessions["date"].max().strftime("%Y-%m-%d") if not quality_sessions.empty else "n/a"
-q4.metric("Latest quality", latest_quality)
-
-quality_col, type_col = st.columns([1.35, 1])
-quality_col.plotly_chart(_quality_sessions_chart(quality_volume), width="stretch")
-type_col.plotly_chart(_quality_type_chart(quality_sessions), width="stretch")
-if quality_sessions.empty:
-    st.info("No quality sessions detected yet. Add workout notes like tempo, threshold, interval, fartlek, or race to improve classification.")
-else:
-    table = quality_sessions.tail(20).sort_values("date", ascending=False).copy()
-    table["date"] = table["date"].dt.date
-    st.dataframe(
-        table[
-            [
-                "date",
-                "quality_type",
-                "distance",
-                "duration",
-                "pace",
-                "avg_hr",
-                "aerobic_effect",
-                "anaerobic_effect",
-                "quality_score",
-                "reason",
-            ]
-        ],
-        width="stretch",
-    )
-
-st.subheader("Training Load")
-load_col, strain_col = st.columns(2)
-load_col.plotly_chart(_training_condition_chart(condition), width="stretch")
-strain_col.plotly_chart(_strain_chart(strain), width="stretch")
-
-st.subheader("Performance Curves")
-curve_col, efficiency_col = st.columns(2)
-curve_col.plotly_chart(_pace_curve_chart(pace_curve), width="stretch")
-efficiency_col.plotly_chart(hr_vs_pace_scatter(snapshot["efficiency"]["series"]), width="stretch")
-
-st.subheader("Visual Statistics")
-dist_col, pace_col = st.columns(2)
-dist_col.plotly_chart(_distance_histogram(runs), width="stretch")
-pace_col.plotly_chart(_monthly_pace_boxplot(runs), width="stretch")
-
-st.subheader("Running Streaks")
-st.caption("Consecutive training days can be motivating, but keep recovery quality higher than the streak.")
-st.plotly_chart(_streak_heatmap_chart(heatmap), width="stretch")
-if not streaks.empty:
-    streak_table = streaks.head(8).copy()
-    streak_table["start"] = streak_table["start"].dt.date
-    streak_table["end"] = streak_table["end"].dt.date
-    st.dataframe(streak_table[["start", "end", "days", "distance"]], width="stretch")
-
-st.subheader("Intensity and Latest Activities")
-intensity_col, table_col = st.columns([0.8, 1.2])
-intensity_col.plotly_chart(intensity_distribution_chart(snapshot["intensity"]["distribution"]), width="stretch")
-table_col.dataframe(
-    runs.tail(12)[["date", "type", "distance", "duration", "pace", "avg_hr", "aerobic_effect", "anaerobic_effect"]]
-    .sort_values("date", ascending=False),
-    width="stretch",
-)
+html(dashboard_html, height=1200, scrolling=True)

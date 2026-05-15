@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import math
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urlencode
 
 import pandas as pd
 import streamlit as st
@@ -34,6 +34,56 @@ def google_maps_directions_url(route: pd.DataFrame) -> str:
         f"&destination={end['latitude']:.6f},{end['longitude']:.6f}"
         "&travelmode=walking"
     )
+
+
+def encode_polyline(points: list[dict[str, float]]) -> str:
+    """Encode lat/lng points using Google's polyline algorithm."""
+
+    encoded = []
+    previous_lat = 0
+    previous_lng = 0
+
+    for point in points:
+        lat = int(round(float(point["lat"]) * 100000))
+        lng = int(round(float(point["lng"]) * 100000))
+        for value in (lat - previous_lat, lng - previous_lng):
+            shifted = value << 1
+            if value < 0:
+                shifted = ~shifted
+            while shifted >= 0x20:
+                encoded.append(chr((0x20 | (shifted & 0x1F)) + 63))
+                shifted >>= 5
+            encoded.append(chr(shifted + 63))
+        previous_lat = lat
+        previous_lng = lng
+
+    return "".join(encoded)
+
+
+def google_static_route_map_url(route: pd.DataFrame, api_key: str, *, maptype: str = "satellite") -> str:
+    """Build a Google Static Maps URL with the exact route path."""
+
+    export_route = downsample_route(route, max_points=180)
+    points = [{"lat": float(row.latitude), "lng": float(row.longitude)} for row in export_route.itertuples()]
+    encoded_path = encode_polyline(points)
+    start = points[0]
+    end = points[-1]
+    query = urlencode(
+        {
+            "size": "640x640",
+            "scale": "2",
+            "maptype": maptype,
+            "path": f"color:0xfc4c02ff|weight:5|enc:{encoded_path}",
+            "markers": [
+                f"color:green|label:S|{start['lat']:.6f},{start['lng']:.6f}",
+                f"color:red|label:F|{end['lat']:.6f},{end['lng']:.6f}",
+            ],
+            "key": api_key,
+        },
+        doseq=True,
+        safe=":,|",
+    )
+    return f"https://maps.googleapis.com/maps/api/staticmap?{query}"
 
 
 def route_heading_degrees(points: list[dict[str, float]]) -> float:
@@ -79,6 +129,7 @@ def render_activity_route_map(
     ]
     center = points[len(points) // 2]
     directions_url = google_maps_directions_url(route)
+    static_map_url = google_static_route_map_url(route, api_key) if api_key else ""
     route_heading = route_heading_degrees(points)
 
     if not api_key:
@@ -174,7 +225,17 @@ def render_activity_route_map(
               padding:8px 12px;
               cursor:pointer;
               pointer-events:auto;
-            ">Export video</button>
+            ">Route video</button>
+            <a href="{static_map_url}" target="_blank" rel="noopener noreferrer" style="
+              border:1px solid rgba(255,255,255,0.28);
+              border-radius:999px;
+              background:rgba(255,255,255,0.12);
+              color:white;
+              font-weight:800;
+              padding:8px 12px;
+              text-decoration:none;
+              pointer-events:auto;
+            ">Export map</a>
             <div style="width:160px;height:6px;border-radius:999px;background:rgba(255,255,255,0.22);overflow:hidden;">
               <div id="{progress_id}" style="height:100%;width:0%;background:#fc4c02;border-radius:999px;"></div>
             </div>
@@ -526,7 +587,7 @@ def render_activity_route_map(
                 link.click();
                 URL.revokeObjectURL(url);
                 exportButton.disabled = false;
-                exportButton.textContent = "Export video";
+                exportButton.textContent = "Route video";
                 showExportStatus("Export complete. The clip uses route data only, not Google map tiles.");
               }};
               recorder.start();
