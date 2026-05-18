@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from typing import Any
 
 import pandas as pd
@@ -158,6 +159,51 @@ def _latest_day_activities_payload(activities_df: pd.DataFrame) -> dict[str, Any
     }
 
 
+def build_calendar_context(activities_df: pd.DataFrame | None = None, health_df: pd.DataFrame | None = None) -> dict[str, Any]:
+    """Return explicit local date context for coaching prompts."""
+
+    now = datetime.now().astimezone()
+    today = now.date()
+
+    latest_activity_day = None
+    if activities_df is not None and not activities_df.empty:
+        activities = activities_df.copy()
+        activities["date"] = pd.to_datetime(activities["date"])
+        latest_activity_day = activities["date"].dt.normalize().max().date()
+
+    latest_health_day = None
+    if health_df is not None and not health_df.empty:
+        health = health_df.copy()
+        health["date"] = pd.to_datetime(health["date"])
+        latest_health_day = health["date"].dt.normalize().max().date()
+
+    def relation(day: Any | None) -> dict[str, Any]:
+        if day is None:
+            return {"date": None, "is_today": False, "days_ago": None}
+        days_ago = (today - day).days
+        return {
+            "date": day.isoformat(),
+            "weekday": day.strftime("%A"),
+            "human": f"{day.strftime('%A')} {day.day} {day.strftime('%B %Y')}",
+            "is_today": days_ago == 0,
+            "days_ago": days_ago,
+        }
+
+    return {
+        "current_local_date": today.isoformat(),
+        "current_local_weekday": today.strftime("%A"),
+        "current_local_human": f"{today.strftime('%A')} {today.day} {today.strftime('%B %Y')}",
+        "current_local_time": now.strftime("%H:%M"),
+        "timezone": now.tzname(),
+        "latest_activity_day": relation(latest_activity_day),
+        "latest_health_day": relation(latest_health_day),
+        "coaching_instruction": (
+            "Use current_local_human as today's date. If latest_activity_day.is_today is true, treat the latest activity as today's completed session, "
+            "not yesterday's workout. If latest_activity_day.days_ago is 1, refer to it as yesterday. Otherwise use the exact date."
+        ),
+    }
+
+
 def _history_payload(prior_decisions: list[dict[str, Any]]) -> list[dict[str, Any]]:
     trimmed: list[dict[str, Any]] = []
     for item in prior_decisions[:3]:
@@ -221,6 +267,7 @@ def build_decision_prompt(
     compact_snapshot = _compact_snapshot(snapshot)
     user_payload = _user_payload(user)
     latest_day_activities = _latest_day_activities_payload(activities_df)
+    calendar_context = build_calendar_context(activities_df)
     history_payload = _history_payload(prior_decisions)
     examples = _decision_examples(decision_type)
     system_prompt = (
@@ -231,6 +278,9 @@ def build_decision_prompt(
         "# Task\n"
         f"Produce one structured {decision_type} coaching decision using only the supplied goal, athlete profile, training history, metrics, and note.\n\n"
         "# Coaching Responsibilities\n"
+        "Use the supplied calendar_context to understand today's exact date and weekday before writing the decision.\n"
+        "If the latest activity happened today, describe it as today's run/session. Do not call it yesterday.\n"
+        "If the latest activity happened yesterday, describe it as yesterday. Otherwise use the exact activity date.\n"
         "Before writing the decision, inspect every activity completed on the latest activity day and the latest recovery metrics. The decision must be based on what happened, not generic training advice.\n"
         "Use specific available data points from latest_day_activities and analytics, especially all same-day activity types, total day distance/duration, run pace/HR, sleep score/duration, body battery, HRV, resting HR, recovery time, weekly mileage, intensity distribution, and active-goal gap.\n"
         "If a key metric is unavailable, do not invent it; use another available metric or state that it is unavailable.\n"
@@ -279,6 +329,7 @@ def build_decision_prompt(
         "# Decision Context\n"
         f"<decision_type>{decision_type}</decision_type>\n"
         f"<athlete_profile>{json.dumps(user_payload, default=str, ensure_ascii=True)}</athlete_profile>\n"
+        f"<calendar_context>{json.dumps(calendar_context, default=str, ensure_ascii=True)}</calendar_context>\n"
         f"<active_goal>{json.dumps(_goal_payload(goal), default=str, ensure_ascii=True)}</active_goal>\n"
         f"<latest_day_activities>{json.dumps(latest_day_activities, default=str, ensure_ascii=True)}</latest_day_activities>\n"
         f"<rule_recommendations>{json.dumps(rules, default=str, ensure_ascii=True)}</rule_recommendations>\n"
@@ -310,6 +361,7 @@ def build_telegram_prompt(
         "key_limiters": decision_payload.get("key_limiters"),
         "readiness_assessment": decision_payload.get("readiness_assessment"),
         "training_effectiveness": decision_payload.get("training_effectiveness"),
+        "calendar_context": decision_payload.get("calendar_context"),
         "snapshot_summary": _telegram_snapshot_payload(decision_payload),
     }
     system_prompt = (
@@ -319,6 +371,8 @@ def build_telegram_prompt(
         "Turn the coaching decision into a concrete Telegram message grounded in the athlete's actual latest data.\n"
         "The athlete is unhappy with generic messages. Be specific about what they did and what their body signals show.\n\n"
         "# Evidence Requirements\n"
+        "- Use calendar_context to understand today's exact date and whether the latest activity was today, yesterday, or earlier.\n"
+        "- If the latest activity was today, call it today's run/session instead of yesterday's.\n"
         "- Mention the latest activity details when available: type, distance, duration, pace, average HR, and training effect.\n"
         "- Mention sleep/recovery when available: sleep duration, sleep score, recovery time, body battery, HRV, resting HR, stress.\n"
         "- Mention training context when available: 7-day mileage, 28-day mileage, intensity balance, fatigue/readiness, long-run status.\n"

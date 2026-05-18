@@ -19,7 +19,7 @@ from services.coaching_engine import (
     _weekly_guidance,
     build_rule_recommendations,
 )
-from services.coaching_prompts import build_decision_prompt, build_telegram_prompt
+from services.coaching_prompts import build_calendar_context, build_decision_prompt, build_telegram_prompt
 from services.goal_service import GoalService
 from services.telegram_service import TelegramService
 
@@ -276,6 +276,7 @@ class CoachingWorkflowService:
         prior_decisions = _prior_decision_context(session, user.id)
         snapshot = build_training_snapshot(user, activities_df, health_df, goal=goal)
         rules = build_rule_recommendations(snapshot)
+        calendar_context = build_calendar_context(activities_df, health_df)
 
         decision = _fallback_decision(
             decision_type=decision_type,
@@ -313,6 +314,7 @@ class CoachingWorkflowService:
         decision["goal_type"] = goal.goal_type
         decision["goal_label"] = GoalService.label_for(goal.goal_type)
         decision["goal_projection"] = snapshot.get("active_goal_projection")
+        decision["calendar_context"] = calendar_context
         decision["snapshot_summary"] = snapshot
 
         message_payload = _fallback_message_payload(goal, decision)
