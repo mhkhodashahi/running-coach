@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 import pandas as pd
 
-from services.coaching_prompts import build_decision_prompt, build_telegram_prompt
+from services.coaching_prompts import build_calendar_context, build_decision_prompt, build_telegram_prompt
 
 
 class DummyGoal:
@@ -122,3 +124,26 @@ def test_decision_prompt_sends_all_activities_from_latest_day() -> None:
     assert "running_distance_km\": 10.0" in user_prompt
     assert "activity_count\": 2" in user_prompt
     assert "2026-04-28" not in user_prompt
+    assert "<calendar_context>" in user_prompt
+    assert "current_local_human" in user_prompt
+
+
+def test_calendar_context_marks_latest_activity_today() -> None:
+    today = datetime.now().astimezone().date()
+    context = build_calendar_context(
+        pd.DataFrame(
+            [
+                {
+                    "date": today.isoformat(),
+                    "type": "running",
+                    "distance": 8.0,
+                    "duration": 44.0,
+                }
+            ]
+        )
+    )
+
+    assert context["current_local_date"] == today.isoformat()
+    assert context["latest_activity_day"]["is_today"] is True
+    assert context["latest_activity_day"]["days_ago"] == 0
+    assert today.strftime("%A") in context["current_local_human"]
