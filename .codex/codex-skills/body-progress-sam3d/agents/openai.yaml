@@ -1,4 +1,0 @@
-interface:
-  display_name: "Body Progress"
-  short_description: "Maintain body scans and SAM 3D flows"
-  default_prompt: "Use $body-progress to update the Body Progress SAM 3D workflow."
