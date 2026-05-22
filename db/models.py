@@ -39,6 +39,7 @@ class User(Base):
     goals: Mapped[list[Goal]] = relationship(back_populates="user")
     coaching_decisions: Mapped[list[CoachingDecision]] = relationship(back_populates="user")
     activity_coaching_insights: Mapped[list[ActivityCoachingInsight]] = relationship(back_populates="user")
+    prediction_snapshots: Mapped[list[PredictionSnapshot]] = relationship(back_populates="user")
     email_deliveries: Mapped[list[EmailDelivery]] = relationship(back_populates="user")
     body_scans: Mapped[list[BodyScan]] = relationship(back_populates="user")
     body_scan_insights: Mapped[list[BodyScanInsight]] = relationship(back_populates="user")
@@ -54,6 +55,7 @@ class Activity(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True, nullable=False)
     external_id: Mapped[str | None] = mapped_column(String(64))
+    activity_name: Mapped[str | None] = mapped_column(String(160))
     date: Mapped[date] = mapped_column(Date, index=True, nullable=False)
     type: Mapped[str] = mapped_column(String(32), nullable=False)
     distance: Mapped[float] = mapped_column(Float, nullable=False)
@@ -72,6 +74,7 @@ class Activity(Base):
     track_points: Mapped[list[ActivityTrackPoint]] = relationship(back_populates="activity", cascade="all, delete-orphan")
     laps: Mapped[list[ActivityLap]] = relationship(back_populates="activity", cascade="all, delete-orphan")
     coaching_insights: Mapped[list[ActivityCoachingInsight]] = relationship(back_populates="activity", cascade="all, delete-orphan")
+    prediction_snapshots: Mapped[list[PredictionSnapshot]] = relationship(back_populates="activity", cascade="all, delete-orphan")
 
 
 class ActivityTrackPoint(Base):
@@ -242,6 +245,30 @@ class ActivityCoachingInsight(Base):
     activity: Mapped[Activity] = relationship(back_populates="coaching_insights")
 
 
+class PredictionSnapshot(Base):
+    """Stored prediction after an activity/import event."""
+
+    __tablename__ = "prediction_snapshots"
+    __table_args__ = (UniqueConstraint("activity_id", "goal_id", name="uq_prediction_snapshots_activity_goal"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True, nullable=False)
+    activity_id: Mapped[int | None] = mapped_column(ForeignKey("activities.id"), index=True)
+    goal_id: Mapped[int | None] = mapped_column(ForeignKey("goals.id"), index=True)
+    prediction_date: Mapped[date] = mapped_column(Date, index=True, nullable=False)
+    race_distance_km: Mapped[float] = mapped_column(Float, nullable=False)
+    predicted_time_minutes: Mapped[float] = mapped_column(Float, nullable=False)
+    predicted_pace: Mapped[float] = mapped_column(Float, nullable=False)
+    gap_minutes: Mapped[float] = mapped_column(Float, nullable=False)
+    confidence: Mapped[float] = mapped_column(Float, nullable=False)
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
+
+    user: Mapped[User] = relationship(back_populates="prediction_snapshots")
+    activity: Mapped[Activity | None] = relationship(back_populates="prediction_snapshots")
+    goal: Mapped[Goal | None] = relationship(back_populates="prediction_snapshots")
+
+
 class Goal(Base):
     """Athlete goal such as 5k PB or marathon PB."""
 
@@ -263,6 +290,7 @@ class Goal(Base):
 
     user: Mapped[User] = relationship(back_populates="goals")
     coaching_decisions: Mapped[list[CoachingDecision]] = relationship(back_populates="goal")
+    prediction_snapshots: Mapped[list[PredictionSnapshot]] = relationship(back_populates="goal")
 
 
 class CoachingDecision(Base):

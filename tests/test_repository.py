@@ -22,6 +22,7 @@ def test_bulk_upsert_activities_updates_existing_external_activity() -> None:
                 {
                     "user_id": 1,
                     "external_id": "garmin-1",
+                    "activity_name": "Morning Tempo",
                     "date": date(2026, 1, 1),
                     "type": "running",
                     "distance": 10.0,
@@ -37,6 +38,7 @@ def test_bulk_upsert_activities_updates_existing_external_activity() -> None:
                 {
                     "user_id": 1,
                     "external_id": "garmin-1",
+                    "activity_name": "Updated Morning Tempo",
                     "date": date(2026, 1, 1),
                     "type": "running",
                     "distance": 11.0,
@@ -52,6 +54,7 @@ def test_bulk_upsert_activities_updates_existing_external_activity() -> None:
     assert second_count == 0
     assert len(activities) == 1
     assert activities.iloc[0]["distance"] == 11.0
+    assert activities.iloc[0]["activity_name"] == "Updated Morning Tempo"
 
 
 def test_replace_activity_track_points_is_idempotent() -> None:

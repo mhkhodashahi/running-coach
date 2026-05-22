@@ -25,6 +25,7 @@ from db.models import (
     HealthMetric,
     LLMMemory,
     NutritionEntry,
+    PredictionSnapshot,
     User,
 )
 
@@ -353,6 +354,79 @@ def upsert_activity_coaching_insight(
     return insight
 
 
+def upsert_prediction_snapshot(
+    session: Session,
+    *,
+    user_id: int,
+    activity_id: int | None,
+    goal_id: int | None,
+    prediction_date: date,
+    race_distance_km: float,
+    predicted_time_minutes: float,
+    predicted_pace: float,
+    gap_minutes: float,
+    confidence: float,
+    payload_json: str,
+) -> PredictionSnapshot:
+    """Create or update one prediction snapshot for an activity/goal pair."""
+
+    query = select(PredictionSnapshot).where(
+        PredictionSnapshot.user_id == user_id,
+        PredictionSnapshot.goal_id == goal_id,
+    )
+    if activity_id is None:
+        query = query.where(PredictionSnapshot.activity_id.is_(None), PredictionSnapshot.prediction_date == prediction_date)
+    else:
+        query = query.where(PredictionSnapshot.activity_id == activity_id)
+    snapshot = session.scalars(query).first()
+    if snapshot is None:
+        snapshot = PredictionSnapshot(
+            user_id=user_id,
+            activity_id=activity_id,
+            goal_id=goal_id,
+            prediction_date=prediction_date,
+            race_distance_km=race_distance_km,
+            predicted_time_minutes=predicted_time_minutes,
+            predicted_pace=predicted_pace,
+            gap_minutes=gap_minutes,
+            confidence=confidence,
+            payload_json=payload_json,
+        )
+        session.add(snapshot)
+    else:
+        snapshot.prediction_date = prediction_date
+        snapshot.race_distance_km = race_distance_km
+        snapshot.predicted_time_minutes = predicted_time_minutes
+        snapshot.predicted_pace = predicted_pace
+        snapshot.gap_minutes = gap_minutes
+        snapshot.confidence = confidence
+        snapshot.payload_json = payload_json
+    session.flush()
+    return snapshot
+
+
+def prediction_snapshots_dataframe(session: Session, user_id: int) -> pd.DataFrame:
+    """Return stored prediction snapshots."""
+
+    query = text(
+        """
+        SELECT ps.id, ps.user_id, ps.activity_id, ps.goal_id, ps.prediction_date,
+               ps.race_distance_km, ps.predicted_time_minutes, ps.predicted_pace,
+               ps.gap_minutes, ps.confidence, ps.payload_json, ps.created_at,
+               a.activity_name, a.type AS activity_type, a.distance AS activity_distance
+        FROM prediction_snapshots ps
+        LEFT JOIN activities a ON a.id = ps.activity_id
+        WHERE ps.user_id = :user_id
+        ORDER BY ps.prediction_date ASC, ps.created_at ASC
+        """
+    )
+    df = pd.read_sql_query(query, session.bind, params={"user_id": user_id})
+    if not df.empty:
+        for column in ("prediction_date", "created_at"):
+            df[column] = pd.to_datetime(df[column])
+    return df
+
+
 def bulk_upsert_health_metrics(session: Session, rows: list[dict[str, Any]]) -> int:
     """Insert or update health metric rows."""
 
@@ -381,7 +455,7 @@ def activities_dataframe(session: Session, user_id: int) -> pd.DataFrame:
 
     query = text(
         """
-        SELECT id, user_id, external_id, date, type, distance, duration, pace,
+        SELECT id, user_id, external_id, activity_name, date, type, distance, duration, pace,
                avg_hr, max_hr, cadence, elevation, training_effect,
                aerobic_effect, anaerobic_effect, notes
         FROM activities

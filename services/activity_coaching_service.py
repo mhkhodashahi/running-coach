@@ -365,7 +365,7 @@ def _context_engineering_payload(
 
 
 def _likely_workout_purpose(activity: dict[str, Any]) -> str:
-    notes = str(activity.get("notes") or "").lower()
+    notes = f"{activity.get('activity_name', '')} {activity.get('notes', '')}".lower()
     activity_type = str(activity.get("type") or "").lower()
     avg_hr = activity.get("avg_hr")
     distance = float(activity.get("distance_km") or 0.0)
@@ -391,6 +391,7 @@ def _likely_workout_purpose(activity: dict[str, Any]) -> str:
 def _activity_payload(activity: Any) -> dict[str, Any]:
     return {
         "id": activity.id,
+        "activity_name": getattr(activity, "activity_name", None),
         "date": _json_default(activity.date),
         "type": activity.type,
         "distance_km": activity.distance,

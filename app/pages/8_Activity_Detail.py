@@ -22,7 +22,14 @@ from services.hr_zones import HR_ZONE_COLORS, heart_rate_zone_summary, supports_
 from ui.components import apply_dashboard_theme
 from ui.google_maps import render_activity_route_map
 from utils.bootstrap import load_training_bundle
-from utils.formatting import format_duration_minutes, format_metric_number, format_pace, format_pace_short
+from utils.formatting import (
+    format_duration_minutes,
+    format_gap_minutes,
+    format_goal_time,
+    format_metric_number,
+    format_pace,
+    format_pace_short,
+)
 
 DETAIL_ORANGE = "#fc4c02"
 DETAIL_INK = "#111827"
@@ -61,9 +68,19 @@ def _themed_figure(figure: go.Figure, title: str) -> go.Figure:
 
 
 def _activity_title(activity: pd.Series) -> str:
+    activity_name = str(activity.get("activity_name") or "").strip()
+    if activity_name and activity_name.lower() != "nan":
+        return activity_name
     activity_type = str(activity.get("type") or "Activity").replace("_", " ").title()
     date_text = pd.Timestamp(activity["date"]).strftime("%A, %d %B %Y")
     return f"{activity_type} on {date_text}"
+
+
+def _activity_display_name(activity_name: object, activity_type: object) -> str:
+    name = str(activity_name or "").strip()
+    if name and name.lower() != "nan":
+        return name
+    return str(activity_type or "Activity")
 
 
 def _relative_effort(activity: pd.Series, user_max_hr: int | None) -> float:
@@ -565,6 +582,21 @@ def _render_activity_coach_panel(activity: pd.Series, user_id: int, track_points
     st.warning(insight.get("brutally_honest_conclusion") or "No conclusion returned.")
 
 
+def _render_activity_prediction(activity_id: int, predictions: pd.DataFrame) -> None:
+    if predictions.empty or "activity_id" not in predictions:
+        return
+    rows = predictions[predictions["activity_id"] == activity_id].copy()
+    if rows.empty:
+        return
+    row = rows.sort_values("created_at").iloc[-1]
+    st.subheader("Prediction After This Run")
+    cols = st.columns(4)
+    cols[0].metric("Predicted Finish", format_goal_time(float(row["predicted_time_minutes"])))
+    cols[1].metric("Predicted Pace", format_pace(float(row["predicted_pace"])))
+    cols[2].metric("Gap", format_gap_minutes(float(row["gap_minutes"])))
+    cols[3].metric("Confidence", format_metric_number(float(row["confidence"]), decimals=0, suffix="%"))
+
+
 apply_dashboard_theme()
 st.title("Activity Detail")
 st.caption("Strava-inspired activity view using your locally stored Garmin-style activity data.")
@@ -579,7 +611,7 @@ if activities.empty:
 activities["date"] = pd.to_datetime(activities["date"])
 runs = _running_activities(activities)
 options = {
-    f"{row.id} | {row.date:%Y-%m-%d} | {row.type} | {row.distance:.2f} km": int(row.id)
+    f"{row.id} | {row.date:%Y-%m-%d} | {_activity_display_name(getattr(row, 'activity_name', None), row.type)} | {row.distance:.2f} km": int(row.id)
     for row in activities.sort_values("date", ascending=False).itertuples()
 }
 selected_activity_id = st.session_state.get("selected_activity_id")
@@ -616,6 +648,7 @@ stats[3].metric("Elevation", format_metric_number(activity.get("elevation"), dec
 
 if supports_activity_coach_opinion(activity.get("type")):
     _render_activity_coach_panel(activity, int(bundle.user.id), track_points, laps)
+    _render_activity_prediction(int(selected_id), bundle.prediction_snapshots)
 
 main_col, side_col = st.columns([1.35, 1])
 with main_col:
@@ -727,7 +760,11 @@ else:
     similar_table = similar.copy()
     similar_table["date"] = similar_table["date"].dt.date
     similar_table["pace"] = similar_table["pace"].apply(format_pace_short)
+    if "activity_name" not in similar_table:
+        similar_table["activity_name"] = None
     st.dataframe(
-        similar_table[["date", "type", "distance", "duration", "pace", "avg_hr", "aerobic_effect", "anaerobic_effect"]],
+        similar_table[
+            ["date", "activity_name", "type", "distance", "duration", "pace", "avg_hr", "aerobic_effect", "anaerobic_effect"]
+        ],
         width="stretch",
     )

@@ -63,7 +63,7 @@ def _subtype_label(activity_type: str | None) -> str:
 
 
 def _workout_type(row: pd.Series) -> str:
-    text = f"{row.get('type', '')} {row.get('notes', '')}".lower()
+    text = f"{row.get('activity_name', '')} {row.get('type', '')} {row.get('notes', '')}".lower()
     distance = _clean_number(row.get("distance")) or 0
     pace = _clean_number(row.get("pace"))
     aerobic = _clean_number(row.get("aerobic_effect")) or 0
@@ -74,7 +74,7 @@ def _workout_type(row: pd.Series) -> str:
         return "Interval"
     if any(term in text for term in ("tempo", "threshold")) or aerobic >= 3.8:
         return "Tempo"
-    if distance >= 18:
+    if distance >= 15:
         return "Long"
     if pace and pace > 6.1:
         return "Recovery"
@@ -82,7 +82,7 @@ def _workout_type(row: pd.Series) -> str:
 
 
 def _tags_for(row: pd.Series) -> list[str]:
-    text = f"{row.get('type', '')} {row.get('notes', '')}".lower()
+    text = f"{row.get('activity_name', '')} {row.get('type', '')} {row.get('notes', '')}".lower()
     tags: list[str] = []
     if any(term in text for term in ("race", "simulation")):
         tags.append("Race Block")

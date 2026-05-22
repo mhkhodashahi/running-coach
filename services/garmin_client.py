@@ -145,6 +145,18 @@ def _pick_first_value(data: dict[str, Any], keys: tuple[str, ...]) -> Any:
     return None
 
 
+def _clean_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except TypeError:
+        pass
+    text = str(value).strip()
+    return text or None
+
+
 def _meters_to_km(value: float | None, *, force_meters: bool = False) -> float | None:
     if value is None:
         return None
@@ -624,6 +636,9 @@ class CSVGarminClient(GarminClient):
                 {
                     "user_id": user_id,
                     "external_id": str(external_id),
+                    "activity_name": _clean_text(
+                        row.get("activity_name", row.get("activityName", row.get("name", row.get("title"))))
+                    ),
                     "date": parsed_date.date(),
                     "type": _parse_activity_type(row.get("type", row.get("activityType", row.get("activity_type")))),
                     "distance": round(row_distance, 2),
@@ -964,6 +979,7 @@ class GarminAPIClient(GarminClient):
                 {
                     "user_id": user_id,
                     "external_id": str(row.get("activityId") or ""),
+                    "activity_name": _clean_text(row.get("activityName") or row.get("activityNameOriginal")),
                     "date": activity_date,
                     "type": _parse_activity_type(row.get("activityType")),
                     "distance": round(row_distance, 2),

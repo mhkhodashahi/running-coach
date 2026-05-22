@@ -203,6 +203,35 @@ def vo2max_trend_chart(health_df: pd.DataFrame) -> go.Figure:
     return figure
 
 
+def prediction_snapshot_chart(predictions_df: pd.DataFrame) -> go.Figure:
+    if predictions_df.empty:
+        return _empty_figure("Prediction Trend", "No prediction snapshots stored yet.")
+    df = predictions_df.copy()
+    df["prediction_date"] = pd.to_datetime(df["prediction_date"])
+    figure = go.Figure()
+    figure.add_trace(
+        go.Scatter(
+            x=df["prediction_date"],
+            y=df["predicted_time_minutes"],
+            mode="lines+markers",
+            name="Predicted finish",
+            line=dict(color=STRAVA_ORANGE, width=3),
+            marker=dict(size=9, color=STRAVA_ORANGE),
+            customdata=df[["predicted_pace", "gap_minutes", "confidence", "activity_name"]],
+            hovertemplate=(
+                "%{x|%Y-%m-%d}<br>"
+                "Predicted=%{y:.1f} min<br>"
+                "Pace=%{customdata[0]:.2f} min/km<br>"
+                "Gap=%{customdata[1]:+.1f} min<br>"
+                "Confidence=%{customdata[2]:.0f}%<br>"
+                "%{customdata[3]}<extra></extra>"
+            ),
+        )
+    )
+    figure.update_yaxes(title="Predicted finish (min)")
+    return _apply_chart_theme(figure, "Prediction Trend")
+
+
 def vo2max_activity_chart(health_df: pd.DataFrame, activities_df: pd.DataFrame) -> go.Figure:
     health = health_df.dropna(subset=["date"]).copy()
     activities = activities_df.dropna(subset=["date"]).copy()

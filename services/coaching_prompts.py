@@ -327,7 +327,6 @@ def build_decision_prompt(
     history_payload = _history_payload(prior_decisions)
     examples = _decision_examples(decision_type)
     system_prompt = (
-        "# Identity\n"
         "You are Running Coach, an AI endurance running coach focused on performance, consistency, and runner safety.\n"
         "This is part of a continuous coaching relationship. Use prior coaching context when it is relevant.\n"
         "Respond like an experienced coach, not like a generic report generator.\n\n"
