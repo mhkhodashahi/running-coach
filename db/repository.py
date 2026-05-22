@@ -14,6 +14,7 @@ from body_progress.domain import BodyScanCreate, BodyScanProcessingResult, BodyS
 from config import get_settings
 from db.models import (
     Activity,
+    ActivityCoachingInsight,
     ActivityLap,
     ActivityTrackPoint,
     BodyScan,
@@ -24,6 +25,7 @@ from db.models import (
     HealthMetric,
     LLMMemory,
     NutritionEntry,
+    PredictionSnapshot,
     User,
 )
 
@@ -33,16 +35,18 @@ def get_or_create_default_user(session: Session, default_user_id: int) -> User:
 
     user = session.get(User, default_user_id)
     if user:
+        _backfill_legacy_default_profile(user)
+        session.flush()
         return user
 
     user = User(
         id=default_user_id,
         name="Mohammad",
-        age=34,
+        age=39,
         gender="male",
-        weight=73.0,
+        weight=89.0,
         height=178.0,
-        max_hr=188,
+        max_hr=184,
         training_days_per_week=5,
         injury_notes=None,
         marathon_date=date(2026, 9, 27),
@@ -50,6 +54,17 @@ def get_or_create_default_user(session: Session, default_user_id: int) -> User:
     session.add(user)
     session.flush()
     return user
+
+
+def _backfill_legacy_default_profile(user: User) -> None:
+    """Update old demo defaults without overwriting user-edited profiles."""
+
+    if user.name == "Mohammad" and user.age == 34:
+        user.age = 39
+    if user.name == "Mohammad" and user.weight == 73.0:
+        user.weight = 89.0
+    if user.name == "Mohammad" and user.max_hr == 188:
+        user.max_hr = 184
 
 
 def get_or_create_default_goal(session: Session, user: User) -> Goal:
@@ -283,6 +298,135 @@ def activity_laps_dataframe(session: Session, activity_id: int) -> pd.DataFrame:
     return df
 
 
+def get_activity(session: Session, activity_id: int, user_id: int | None = None) -> Activity | None:
+    """Return one activity, optionally scoped to a user."""
+
+    query = select(Activity).where(Activity.id == activity_id)
+    if user_id is not None:
+        query = query.where(Activity.user_id == user_id)
+    return session.scalars(query).first()
+
+
+def get_activity_coaching_insight(session: Session, activity_id: int, user_id: int) -> ActivityCoachingInsight | None:
+    """Return the stored coach opinion for one activity."""
+
+    return session.scalars(
+        select(ActivityCoachingInsight).where(
+            ActivityCoachingInsight.activity_id == activity_id,
+            ActivityCoachingInsight.user_id == user_id,
+        )
+    ).first()
+
+
+def upsert_activity_coaching_insight(
+    session: Session,
+    *,
+    user_id: int,
+    activity_id: int,
+    summary: str,
+    payload_json: str,
+    prompt_context_json: str,
+    model_provider: str | None,
+    model_name: str | None,
+) -> ActivityCoachingInsight:
+    """Create or replace the stored coach opinion for one activity."""
+
+    insight = get_activity_coaching_insight(session, activity_id=activity_id, user_id=user_id)
+    if insight is None:
+        insight = ActivityCoachingInsight(
+            user_id=user_id,
+            activity_id=activity_id,
+            summary=summary,
+            payload_json=payload_json,
+            prompt_context_json=prompt_context_json,
+            model_provider=model_provider,
+            model_name=model_name,
+        )
+        session.add(insight)
+    else:
+        insight.summary = summary
+        insight.payload_json = payload_json
+        insight.prompt_context_json = prompt_context_json
+        insight.model_provider = model_provider
+        insight.model_name = model_name
+        insight.updated_at = datetime.utcnow()
+    session.flush()
+    return insight
+
+
+def upsert_prediction_snapshot(
+    session: Session,
+    *,
+    user_id: int,
+    activity_id: int | None,
+    goal_id: int | None,
+    prediction_date: date,
+    race_distance_km: float,
+    predicted_time_minutes: float,
+    predicted_pace: float,
+    gap_minutes: float,
+    confidence: float,
+    payload_json: str,
+) -> PredictionSnapshot:
+    """Create or update one prediction snapshot for an activity/goal pair."""
+
+    query = select(PredictionSnapshot).where(
+        PredictionSnapshot.user_id == user_id,
+        PredictionSnapshot.goal_id == goal_id,
+    )
+    if activity_id is None:
+        query = query.where(PredictionSnapshot.activity_id.is_(None), PredictionSnapshot.prediction_date == prediction_date)
+    else:
+        query = query.where(PredictionSnapshot.activity_id == activity_id)
+    snapshot = session.scalars(query).first()
+    if snapshot is None:
+        snapshot = PredictionSnapshot(
+            user_id=user_id,
+            activity_id=activity_id,
+            goal_id=goal_id,
+            prediction_date=prediction_date,
+            race_distance_km=race_distance_km,
+            predicted_time_minutes=predicted_time_minutes,
+            predicted_pace=predicted_pace,
+            gap_minutes=gap_minutes,
+            confidence=confidence,
+            payload_json=payload_json,
+        )
+        session.add(snapshot)
+    else:
+        snapshot.prediction_date = prediction_date
+        snapshot.race_distance_km = race_distance_km
+        snapshot.predicted_time_minutes = predicted_time_minutes
+        snapshot.predicted_pace = predicted_pace
+        snapshot.gap_minutes = gap_minutes
+        snapshot.confidence = confidence
+        snapshot.payload_json = payload_json
+    session.flush()
+    return snapshot
+
+
+def prediction_snapshots_dataframe(session: Session, user_id: int) -> pd.DataFrame:
+    """Return stored prediction snapshots."""
+
+    query = text(
+        """
+        SELECT ps.id, ps.user_id, ps.activity_id, ps.goal_id, ps.prediction_date,
+               ps.race_distance_km, ps.predicted_time_minutes, ps.predicted_pace,
+               ps.gap_minutes, ps.confidence, ps.payload_json, ps.created_at,
+               a.activity_name, a.type AS activity_type, a.distance AS activity_distance
+        FROM prediction_snapshots ps
+        LEFT JOIN activities a ON a.id = ps.activity_id
+        WHERE ps.user_id = :user_id
+        ORDER BY ps.prediction_date ASC, ps.created_at ASC
+        """
+    )
+    df = pd.read_sql_query(query, session.bind, params={"user_id": user_id})
+    if not df.empty:
+        for column in ("prediction_date", "created_at"):
+            df[column] = pd.to_datetime(df[column])
+    return df
+
+
 def bulk_upsert_health_metrics(session: Session, rows: list[dict[str, Any]]) -> int:
     """Insert or update health metric rows."""
 
@@ -311,7 +455,7 @@ def activities_dataframe(session: Session, user_id: int) -> pd.DataFrame:
 
     query = text(
         """
-        SELECT id, user_id, external_id, date, type, distance, duration, pace,
+        SELECT id, user_id, external_id, activity_name, date, type, distance, duration, pace,
                avg_hr, max_hr, cadence, elevation, training_effect,
                aerobic_effect, anaerobic_effect, notes
         FROM activities

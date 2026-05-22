@@ -13,6 +13,7 @@ from db import repository
 from db.session import session_scope
 from db.setup import init_db
 from services.import_service import GarminImportService
+from services.prediction_snapshot_service import PredictionSnapshotService
 
 
 @dataclass
@@ -26,6 +27,7 @@ class TrainingBundle:
     goals: pd.DataFrame
     coaching_history: pd.DataFrame
     email_history: pd.DataFrame
+    prediction_snapshots: pd.DataFrame
     snapshot: dict[str, Any]
 
 
@@ -41,6 +43,8 @@ def bootstrap_app() -> Any:
             importer.seed_demo_data(session, user.id)
         elif repository.health_metrics_count(session, user.id) == 0:
             importer.seed_demo_data(session, user.id)
+        if repository.prediction_snapshots_dataframe(session, user.id).empty:
+            PredictionSnapshotService().store_for_latest_runs(session, user=user)
         return user
 
 
@@ -57,6 +61,7 @@ def load_training_bundle() -> TrainingBundle:
         goals = repository.goals_dataframe(session, user.id)
         coaching_history = repository.coaching_decisions_dataframe(session, user.id)
         email_history = repository.email_deliveries_dataframe(session, user.id)
+        prediction_snapshots = repository.prediction_snapshots_dataframe(session, user.id)
         active_goal = repository.get_active_goal(session, user.id)
     snapshot = build_training_snapshot(user, activities, health, active_goal)
     return TrainingBundle(
@@ -67,5 +72,6 @@ def load_training_bundle() -> TrainingBundle:
         goals=goals,
         coaching_history=coaching_history,
         email_history=email_history,
+        prediction_snapshots=prediction_snapshots,
         snapshot=snapshot,
     )

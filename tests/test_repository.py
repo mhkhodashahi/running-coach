@@ -22,6 +22,7 @@ def test_bulk_upsert_activities_updates_existing_external_activity() -> None:
                 {
                     "user_id": 1,
                     "external_id": "garmin-1",
+                    "activity_name": "Morning Tempo",
                     "date": date(2026, 1, 1),
                     "type": "running",
                     "distance": 10.0,
@@ -37,6 +38,7 @@ def test_bulk_upsert_activities_updates_existing_external_activity() -> None:
                 {
                     "user_id": 1,
                     "external_id": "garmin-1",
+                    "activity_name": "Updated Morning Tempo",
                     "date": date(2026, 1, 1),
                     "type": "running",
                     "distance": 11.0,
@@ -52,6 +54,7 @@ def test_bulk_upsert_activities_updates_existing_external_activity() -> None:
     assert second_count == 0
     assert len(activities) == 1
     assert activities.iloc[0]["distance"] == 11.0
+    assert activities.iloc[0]["activity_name"] == "Updated Morning Tempo"
 
 
 def test_replace_activity_track_points_is_idempotent() -> None:
@@ -104,6 +107,20 @@ def test_default_goal_uses_goal_settings_not_legacy_user_marathon_time() -> None
     assert goal.target_time_minutes == 240.0
     assert goal.goal_type == "marathon_pb"
     assert goal.is_active is True
+
+
+def test_default_user_matches_activity_coach_profile() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    session_factory = sessionmaker(bind=engine, future=True)
+
+    with session_factory() as session:
+        user = repository.get_or_create_default_user(session, 1)
+
+    assert user.age == 39
+    assert user.gender == "male"
+    assert user.weight == 89.0
+    assert user.max_hr == 184
 
 
 def test_update_user_profile_saves_max_hr() -> None:

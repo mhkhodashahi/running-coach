@@ -9,6 +9,7 @@ from analytics.performance import build_training_snapshot
 from config import get_settings
 from db import repository
 from llm.factory import get_llm_client
+from services.coaching_prompts import ELITE_ENDURANCE_COACH_CONTEXT
 from services.goal_service import GoalService
 
 
@@ -230,12 +231,18 @@ class CoachingEngine:
         projection = snapshot.get("active_goal_projection") or snapshot["prediction"]
 
         system_prompt = (
-            "You are a Running coach. Return strict JSON with keys: "
+            f"{ELITE_ENDURANCE_COACH_CONTEXT}\n\n"
+            "Return strict JSON with keys: "
             "daily_advice, daily_why, weekly_advice, weekly_why, fatigue_warning, "
             "readiness_assessment, confidence, training_effectiveness, explanation. "
             "The training_effectiveness value must be an object with keys: status, summary, working, limiters. "
             "Explain why the recommendation is better than simply pushing harder or doing more. "
-            "Judge whether the current training looks effective for the active goal based only on the provided analytics."
+            "Judge whether the current training looks effective for the active goal based only on the provided analytics. "
+            "Use the custom heart-rate zones from the coaching context. Be honest about pacing discipline, aerobic durability, "
+            "fatigue resistance, recovery quality, and whether the athlete is turning easy days into moderate days. "
+            "Map the requested coaching structure into the available JSON fields: daily_advice and weekly_advice are recommendations, "
+            "daily_why and weekly_why are physiological interpretation, training_effectiveness.working contains strengths, "
+            "training_effectiveness.limiters contains mistakes/inefficiencies, and explanation ends with a brutally honest conclusion."
         )
         user_prompt = json.dumps(
             {

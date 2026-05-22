@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from io import StringIO
+
 import pandas as pd
 import pytest
 from pydantic import ValidationError
 
-from services.garmin_client import extract_activity_track_points
+from services.garmin_client import CSVGarminClient, GarminAPIClient, _extract_recovery_time_hours, extract_activity_track_points
 from services.garmin_models import validate_laps, validate_track_points
 from ui.google_maps import downsample_route, encode_polyline, route_heading_degrees
 
@@ -31,6 +33,64 @@ def test_validate_track_points_accepts_normalized_gps_rows() -> None:
     assert rows[0]["point_index"] == 0
     assert rows[0]["latitude"] == 52.52
     assert rows[0]["pace"] == 5.2
+
+
+def test_csv_garmin_client_preserves_activity_name() -> None:
+    rows = CSVGarminClient().load_activities(
+        StringIO(
+            "activityId,activityName,startTimeLocal,activityType,distance,duration\n"
+            "123,Morning Tempo,2026-05-22 07:00:00,running,10000,3300\n"
+        ),
+        user_id=1,
+    )
+
+    assert rows[0]["activity_name"] == "Morning Tempo"
+
+
+def test_live_garmin_client_preserves_activity_name() -> None:
+    class FakeGarminAPIClient(GarminAPIClient):
+        def __init__(self) -> None:
+            pass
+
+        def _get_client(self):
+            return object()
+
+        def _call_api(self, request, *, default, context, suppress_errors):
+            if context == "activities":
+                return [
+                    {
+                        "activityId": 123,
+                        "activityName": "Lunch Threshold Run",
+                        "startTimeLocal": "2026-05-22 12:00:00",
+                        "activityType": {"typeKey": "running"},
+                        "distance": 10000,
+                        "duration": 3300,
+                    }
+                ]
+            return default
+
+    activity_rows, health_rows = FakeGarminAPIClient().sync_recent_data(user_id=1, days=1, health_days=0)
+
+    assert health_rows == []
+    assert activity_rows[0]["activity_name"] == "Lunch Threshold Run"
+
+
+def test_recovery_time_ignores_generic_training_readiness_value() -> None:
+    recovery_time = _extract_recovery_time_hours(
+        {"value": 61, "qualifierKey": "MODERATE"},
+        {"trainingStatus": "productive"},
+    )
+
+    assert recovery_time is None
+
+
+def test_recovery_time_uses_named_recovery_time_fields() -> None:
+    recovery_time = _extract_recovery_time_hours(
+        {"value": 61},
+        {"recoveryTime": 12 * 60 * 60},
+    )
+
+    assert recovery_time == 12.0
 
 
 def test_validate_track_points_converts_garmin_seconds_per_100m_pace() -> None:

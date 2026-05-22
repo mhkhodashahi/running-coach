@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from html import escape
 
 import pandas as pd
@@ -12,11 +13,23 @@ from plotly.subplots import make_subplots
 from config import get_settings
 from db import repository
 from db.session import session_scope
+from services.activity_coaching_service import (
+    ActivityCoachingService,
+    can_generate_activity_coach_opinion,
+    supports_activity_coach_opinion,
+)
 from services.hr_zones import HR_ZONE_COLORS, heart_rate_zone_summary, supports_hr_zone_view
 from ui.components import apply_dashboard_theme
 from ui.google_maps import render_activity_route_map
 from utils.bootstrap import load_training_bundle
-from utils.formatting import format_duration_minutes, format_metric_number, format_pace
+from utils.formatting import (
+    format_duration_minutes,
+    format_gap_minutes,
+    format_goal_time,
+    format_metric_number,
+    format_pace,
+    format_pace_short,
+)
 
 DETAIL_ORANGE = "#fc4c02"
 DETAIL_INK = "#111827"
@@ -55,9 +68,19 @@ def _themed_figure(figure: go.Figure, title: str) -> go.Figure:
 
 
 def _activity_title(activity: pd.Series) -> str:
+    activity_name = str(activity.get("activity_name") or "").strip()
+    if activity_name and activity_name.lower() != "nan":
+        return activity_name
     activity_type = str(activity.get("type") or "Activity").replace("_", " ").title()
     date_text = pd.Timestamp(activity["date"]).strftime("%A, %d %B %Y")
     return f"{activity_type} on {date_text}"
+
+
+def _activity_display_name(activity_name: object, activity_type: object) -> str:
+    name = str(activity_name or "").strip()
+    if name and name.lower() != "nan":
+        return name
+    return str(activity_type or "Activity")
 
 
 def _relative_effort(activity: pd.Series, user_max_hr: int | None) -> float:
@@ -87,7 +110,7 @@ def _context_delta(value: float | None, baseline: float | None, *, lower_is_bett
     delta = float(value) - float(baseline)
     if lower_is_better:
         label = "faster" if delta < 0 else "slower"
-        return f"{abs(delta):.2f} min/km {label} than recent median"
+        return f"{format_pace_short(abs(delta))} {label} than recent median"
     label = "above" if delta >= 0 else "below"
     return f"{abs(delta):.1f} {label} recent median"
 
@@ -219,7 +242,8 @@ def _activity_context_chart(runs: pd.DataFrame, activity: pd.Series) -> go.Figur
             mode="markers",
             name="Other runs",
             marker=dict(size=9, color="rgba(100, 116, 139, 0.38)", line=dict(width=0)),
-            hovertemplate="%{x:.1f} km<br>%{y:.2f} min/km<extra></extra>",
+            customdata=comparable["pace"].apply(format_pace_short),
+            hovertemplate="%{x:.1f} km<br>%{customdata} /km<extra></extra>",
         )
     )
     figure.add_trace(
@@ -229,7 +253,8 @@ def _activity_context_chart(runs: pd.DataFrame, activity: pd.Series) -> go.Figur
             mode="markers",
             name="Selected activity",
             marker=dict(size=18, color=DETAIL_ORANGE, line=dict(color="white", width=3)),
-            hovertemplate="Selected<br>%{x:.1f} km<br>%{y:.2f} min/km<extra></extra>",
+            customdata=[format_pace_short(float(activity["pace"]))],
+            hovertemplate="Selected<br>%{x:.1f} km<br>%{customdata} /km<extra></extra>",
         )
     )
     figure.update_yaxes(autorange="reversed", title="Pace (min/km)")
@@ -330,7 +355,8 @@ def _track_metrics_chart(track_points: pd.DataFrame, activity_distance_km: float
                 mode="lines",
                 name="Pace (min/km)",
                 line=dict(color=DETAIL_ORANGE, width=3),
-                hovertemplate=f"{x_title}=%{{x:.2f}}<br>Pace=%{{y:.2f}} min/km<extra></extra>",
+                customdata=pace.apply(format_pace_short),
+                hovertemplate=f"{x_title}=%{{x:.2f}}<br>Pace=%{{customdata}} /km<extra></extra>",
             ),
             row=1,
             col=1,
@@ -380,11 +406,18 @@ def _laps_chart(laps: pd.DataFrame) -> go.Figure:
             name="Lap pace",
             orientation="h",
             marker_color=DETAIL_ORANGE,
-            customdata=chart_data[["distance", "duration", "avg_hr"]],
+            customdata=pd.DataFrame(
+                {
+                    "pace": chart_data["pace"].apply(format_pace_short),
+                    "distance": chart_data["distance"],
+                    "duration": chart_data["duration"],
+                    "avg_hr": chart_data["avg_hr"],
+                }
+            ).to_numpy(),
             hovertemplate=(
-                "Lap=%{y}<br>Pace=%{x:.2f} min/km<br>"
-                "Distance=%{customdata[0]:.2f} km<br>Duration=%{customdata[1]:.2f} min<br>"
-                "Avg HR=%{customdata[2]:.0f} bpm<extra></extra>"
+                "Lap=%{y}<br>Pace=%{customdata[0]} /km<br>"
+                "Distance=%{customdata[1]:.2f} km<br>Duration=%{customdata[2]:.2f} min<br>"
+                "Avg HR=%{customdata[3]:.0f} bpm<extra></extra>"
             ),
         )
     )
@@ -460,6 +493,110 @@ def _load_activity_detail_data(activity_id: int) -> tuple[pd.DataFrame, pd.DataF
         return track_points, laps
 
 
+def _load_activity_coach_insight(activity_id: int, user_id: int) -> dict[str, object] | None:
+    with session_scope() as session:
+        insight = repository.get_activity_coaching_insight(session, activity_id=activity_id, user_id=user_id)
+        if insight is None:
+            return None
+        try:
+            payload = json.loads(insight.payload_json)
+        except json.JSONDecodeError:
+            payload = {"overall_assessment": insight.summary}
+        payload["_created_at"] = insight.created_at
+        payload["_model_provider"] = insight.model_provider
+        payload["_model_name"] = insight.model_name
+        return payload
+
+
+def _render_list(items: object) -> None:
+    values = [str(item).strip() for item in items or [] if str(item).strip()] if isinstance(items, list) else []
+    if not values:
+        st.caption("No specific points returned.")
+        return
+    for item in values:
+        st.markdown(f"- {item}")
+
+
+def _render_activity_coach_panel(activity: pd.Series, user_id: int, track_points: pd.DataFrame, laps: pd.DataFrame) -> None:
+    st.subheader("LLM Coach Opinion")
+    st.caption("Per-run analysis using the selected activity, stream data, laps, recent training context, recovery, and your athlete profile.")
+
+    activity_id = int(activity["id"])
+    insight = _load_activity_coach_insight(activity_id, user_id)
+    readiness = can_generate_activity_coach_opinion(activity=activity, track_points=track_points, laps=laps)
+    if not insight and not readiness.allowed:
+        st.info(readiness.reason)
+        return
+
+    if not insight and st.button("Generate coach opinion", type="primary", use_container_width=False):
+        try:
+            with st.spinner("Coach is analyzing this workout..."):
+                insight = ActivityCoachingService().generate_for_activity(user_id=user_id, activity_id=activity_id)
+            st.success("Coach opinion generated.")
+        except Exception as exc:
+            st.error(f"Could not generate coach opinion: {exc}")
+
+    if not insight:
+        st.info(
+            "No coach opinion stored for this activity yet. Configure Ollama or OpenAI on the AI Coach page, then generate it here."
+        )
+        return
+
+    st.caption("Stored result from the local database. This run is not re-analyzed automatically.")
+    model = " / ".join(
+        str(part)
+        for part in (insight.get("_model_provider"), insight.get("_model_name"))
+        if part
+    )
+    if model:
+        st.caption(f"Generated by {model}.")
+
+    st.markdown(f"**Overall assessment**\n\n{insight.get('overall_assessment') or 'No assessment returned.'}")
+    col_a, col_b = st.columns(2)
+    with col_a:
+        st.markdown("**What was good**")
+        _render_list(insight.get("what_was_good"))
+    with col_b:
+        st.markdown("**Mistakes or inefficiencies**")
+        _render_list(insight.get("mistakes_or_inefficiencies"))
+
+    analysis_tabs = st.tabs(
+        [
+            "Pacing",
+            "Aerobic Efficiency",
+            "Recovery",
+            "Mental",
+            "Recommendations",
+            "Evidence",
+        ]
+    )
+    analysis_tabs[0].write(insight.get("pacing_analysis") or "No pacing analysis returned.")
+    analysis_tabs[1].write(insight.get("aerobic_efficiency_analysis") or "No aerobic efficiency analysis returned.")
+    analysis_tabs[2].write(insight.get("recovery_analysis") or "No recovery analysis returned.")
+    analysis_tabs[3].write(insight.get("mental_performance_insights") or "No mental/performance insight returned.")
+    with analysis_tabs[4]:
+        _render_list(insight.get("training_recommendations"))
+    with analysis_tabs[5]:
+        _render_list(insight.get("evidence"))
+
+    st.warning(insight.get("brutally_honest_conclusion") or "No conclusion returned.")
+
+
+def _render_activity_prediction(activity_id: int, predictions: pd.DataFrame) -> None:
+    if predictions.empty or "activity_id" not in predictions:
+        return
+    rows = predictions[predictions["activity_id"] == activity_id].copy()
+    if rows.empty:
+        return
+    row = rows.sort_values("created_at").iloc[-1]
+    st.subheader("Prediction After This Run")
+    cols = st.columns(4)
+    cols[0].metric("Predicted Finish", format_goal_time(float(row["predicted_time_minutes"])))
+    cols[1].metric("Predicted Pace", format_pace(float(row["predicted_pace"])))
+    cols[2].metric("Gap", format_gap_minutes(float(row["gap_minutes"])))
+    cols[3].metric("Confidence", format_metric_number(float(row["confidence"]), decimals=0, suffix="%"))
+
+
 apply_dashboard_theme()
 st.title("Activity Detail")
 st.caption("Strava-inspired activity view using your locally stored Garmin-style activity data.")
@@ -474,7 +611,7 @@ if activities.empty:
 activities["date"] = pd.to_datetime(activities["date"])
 runs = _running_activities(activities)
 options = {
-    f"{row.id} | {row.date:%Y-%m-%d} | {row.type} | {row.distance:.2f} km": int(row.id)
+    f"{row.id} | {row.date:%Y-%m-%d} | {_activity_display_name(getattr(row, 'activity_name', None), row.type)} | {row.distance:.2f} km": int(row.id)
     for row in activities.sort_values("date", ascending=False).itertuples()
 }
 selected_activity_id = st.session_state.get("selected_activity_id")
@@ -508,6 +645,10 @@ stats[0].metric("Average HR", format_metric_number(activity.get("avg_hr"), decim
 stats[1].metric("Max HR", format_metric_number(activity.get("max_hr"), decimals=0, suffix=" bpm"))
 stats[2].metric("Cadence", format_metric_number(activity.get("cadence"), decimals=0, suffix=" spm"))
 stats[3].metric("Elevation", format_metric_number(activity.get("elevation"), decimals=0, suffix=" m"))
+
+if supports_activity_coach_opinion(activity.get("type")):
+    _render_activity_coach_panel(activity, int(bundle.user.id), track_points, laps)
+    _render_activity_prediction(int(selected_id), bundle.prediction_snapshots)
 
 main_col, side_col = st.columns([1.35, 1])
 with main_col:
@@ -586,6 +727,7 @@ if not laps.empty:
     lap_table = laps.copy()
     if "start_time" in lap_table:
         lap_table["start_time"] = lap_table["start_time"].dt.strftime("%Y-%m-%d %H:%M:%S")
+    lap_table["pace"] = lap_table["pace"].apply(format_pace_short)
     lap_table_col.dataframe(
         lap_table[["lap_index", "lap_type", "distance", "duration", "pace", "avg_hr", "max_hr", "elevation_gain", "avg_cadence"]],
         width="stretch",
@@ -617,7 +759,12 @@ if similar.empty:
 else:
     similar_table = similar.copy()
     similar_table["date"] = similar_table["date"].dt.date
+    similar_table["pace"] = similar_table["pace"].apply(format_pace_short)
+    if "activity_name" not in similar_table:
+        similar_table["activity_name"] = None
     st.dataframe(
-        similar_table[["date", "type", "distance", "duration", "pace", "avg_hr", "aerobic_effect", "anaerobic_effect"]],
+        similar_table[
+            ["date", "activity_name", "type", "distance", "duration", "pace", "avg_hr", "aerobic_effect", "anaerobic_effect"]
+        ],
         width="stretch",
     )

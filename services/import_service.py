@@ -10,6 +10,7 @@ from config import get_settings
 from db import repository
 from services.garmin_client import CSVGarminClient, GarminAPIClient, GarminClient
 from services.garmin_models import validate_laps, validate_track_points
+from services.prediction_snapshot_service import PredictionSnapshotService
 
 
 @dataclass
@@ -20,6 +21,7 @@ class ImportSummary:
     health_rows_imported: int = 0
     track_points_imported: int = 0
     laps_imported: int = 0
+    prediction_snapshots_stored: int = 0
 
 
 class GarminImportService:
@@ -40,6 +42,12 @@ class GarminImportService:
         if activities_source is not None:
             activity_rows = self.client.load_activities(activities_source, user_id)
             summary.activities_imported = repository.bulk_upsert_activities(session, activity_rows)
+            user = repository.get_or_create_default_user(session, user_id)
+            summary.prediction_snapshots_stored = PredictionSnapshotService().store_for_latest_runs(
+                session,
+                user=user,
+                limit=len(activity_rows) or None,
+            )
 
         if health_source is not None:
             health_rows = self.client.load_health_metrics(health_source, user_id)
@@ -111,4 +119,13 @@ class GarminImportService:
             health_rows_imported=repository.bulk_upsert_health_metrics(session, health_rows) if include_health else 0,
             track_points_imported=track_points_imported,
             laps_imported=laps_imported,
+            prediction_snapshots_stored=(
+                PredictionSnapshotService().store_for_latest_runs(
+                    session,
+                    user=repository.get_or_create_default_user(session, user_id),
+                    limit=len(activity_rows) or None,
+                )
+                if include_activities and activity_rows
+                else 0
+            ),
         )

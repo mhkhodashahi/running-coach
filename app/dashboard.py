@@ -13,6 +13,7 @@ from services.import_service import GarminImportService
 from ui.charts import (
     activity_calendar_chart,
     goal_pace_chart,
+    prediction_snapshot_chart,
     running_progress_chart,
     sleep_recovery_chart,
     training_load_chart,
@@ -170,6 +171,9 @@ st.subheader("Running Progress")
 progress_col, log_col = st.columns([1.35, 1])
 progress_col.plotly_chart(running_progress_chart(bundle.activities), width="stretch")
 log_col.plotly_chart(activity_calendar_chart(bundle.activities), width="stretch")
+
+st.subheader("Prediction Trend")
+st.plotly_chart(prediction_snapshot_chart(bundle.prediction_snapshots), width="stretch")
 
 col1, col2 = st.columns(2)
 col1.plotly_chart(weekly_mileage_chart(snapshot["weekly_mileage"]["weekly_series"]), width="stretch")
