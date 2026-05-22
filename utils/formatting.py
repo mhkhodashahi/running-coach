@@ -8,9 +8,21 @@ import math
 def format_pace(minutes_per_km: float | None) -> str:
     if minutes_per_km is None:
         return "n/a"
-    total_seconds = int(round(minutes_per_km * 60))
+    return f"{format_pace_short(minutes_per_km)} /km"
+
+
+def format_pace_short(minutes_per_km: float | None) -> str:
+    if minutes_per_km is None:
+        return "n/a"
+    try:
+        numeric = float(minutes_per_km)
+    except (TypeError, ValueError):
+        return "n/a"
+    if math.isnan(numeric):
+        return "n/a"
+    total_seconds = int(round(numeric * 60))
     minutes, seconds = divmod(total_seconds, 60)
-    return f"{minutes}:{seconds:02d} /km"
+    return f"{minutes}:{seconds:02d}"
 
 
 def format_duration_minutes(duration_minutes: float | None) -> str:

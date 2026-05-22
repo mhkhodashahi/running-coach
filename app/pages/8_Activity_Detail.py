@@ -22,7 +22,7 @@ from services.hr_zones import HR_ZONE_COLORS, heart_rate_zone_summary, supports_
 from ui.components import apply_dashboard_theme
 from ui.google_maps import render_activity_route_map
 from utils.bootstrap import load_training_bundle
-from utils.formatting import format_duration_minutes, format_metric_number, format_pace
+from utils.formatting import format_duration_minutes, format_metric_number, format_pace, format_pace_short
 
 DETAIL_ORANGE = "#fc4c02"
 DETAIL_INK = "#111827"
@@ -93,7 +93,7 @@ def _context_delta(value: float | None, baseline: float | None, *, lower_is_bett
     delta = float(value) - float(baseline)
     if lower_is_better:
         label = "faster" if delta < 0 else "slower"
-        return f"{abs(delta):.2f} min/km {label} than recent median"
+        return f"{format_pace_short(abs(delta))} {label} than recent median"
     label = "above" if delta >= 0 else "below"
     return f"{abs(delta):.1f} {label} recent median"
 
@@ -225,7 +225,8 @@ def _activity_context_chart(runs: pd.DataFrame, activity: pd.Series) -> go.Figur
             mode="markers",
             name="Other runs",
             marker=dict(size=9, color="rgba(100, 116, 139, 0.38)", line=dict(width=0)),
-            hovertemplate="%{x:.1f} km<br>%{y:.2f} min/km<extra></extra>",
+            customdata=comparable["pace"].apply(format_pace_short),
+            hovertemplate="%{x:.1f} km<br>%{customdata} /km<extra></extra>",
         )
     )
     figure.add_trace(
@@ -235,7 +236,8 @@ def _activity_context_chart(runs: pd.DataFrame, activity: pd.Series) -> go.Figur
             mode="markers",
             name="Selected activity",
             marker=dict(size=18, color=DETAIL_ORANGE, line=dict(color="white", width=3)),
-            hovertemplate="Selected<br>%{x:.1f} km<br>%{y:.2f} min/km<extra></extra>",
+            customdata=[format_pace_short(float(activity["pace"]))],
+            hovertemplate="Selected<br>%{x:.1f} km<br>%{customdata} /km<extra></extra>",
         )
     )
     figure.update_yaxes(autorange="reversed", title="Pace (min/km)")
@@ -336,7 +338,8 @@ def _track_metrics_chart(track_points: pd.DataFrame, activity_distance_km: float
                 mode="lines",
                 name="Pace (min/km)",
                 line=dict(color=DETAIL_ORANGE, width=3),
-                hovertemplate=f"{x_title}=%{{x:.2f}}<br>Pace=%{{y:.2f}} min/km<extra></extra>",
+                customdata=pace.apply(format_pace_short),
+                hovertemplate=f"{x_title}=%{{x:.2f}}<br>Pace=%{{customdata}} /km<extra></extra>",
             ),
             row=1,
             col=1,
@@ -386,11 +389,18 @@ def _laps_chart(laps: pd.DataFrame) -> go.Figure:
             name="Lap pace",
             orientation="h",
             marker_color=DETAIL_ORANGE,
-            customdata=chart_data[["distance", "duration", "avg_hr"]],
+            customdata=pd.DataFrame(
+                {
+                    "pace": chart_data["pace"].apply(format_pace_short),
+                    "distance": chart_data["distance"],
+                    "duration": chart_data["duration"],
+                    "avg_hr": chart_data["avg_hr"],
+                }
+            ).to_numpy(),
             hovertemplate=(
-                "Lap=%{y}<br>Pace=%{x:.2f} min/km<br>"
-                "Distance=%{customdata[0]:.2f} km<br>Duration=%{customdata[1]:.2f} min<br>"
-                "Avg HR=%{customdata[2]:.0f} bpm<extra></extra>"
+                "Lap=%{y}<br>Pace=%{customdata[0]} /km<br>"
+                "Distance=%{customdata[1]:.2f} km<br>Duration=%{customdata[2]:.2f} min<br>"
+                "Avg HR=%{customdata[3]:.0f} bpm<extra></extra>"
             ),
         )
     )
@@ -684,6 +694,7 @@ if not laps.empty:
     lap_table = laps.copy()
     if "start_time" in lap_table:
         lap_table["start_time"] = lap_table["start_time"].dt.strftime("%Y-%m-%d %H:%M:%S")
+    lap_table["pace"] = lap_table["pace"].apply(format_pace_short)
     lap_table_col.dataframe(
         lap_table[["lap_index", "lap_type", "distance", "duration", "pace", "avg_hr", "max_hr", "elevation_gain", "avg_cadence"]],
         width="stretch",
@@ -715,6 +726,7 @@ if similar.empty:
 else:
     similar_table = similar.copy()
     similar_table["date"] = similar_table["date"].dt.date
+    similar_table["pace"] = similar_table["pace"].apply(format_pace_short)
     st.dataframe(
         similar_table[["date", "type", "distance", "duration", "pace", "avg_hr", "aerobic_effect", "anaerobic_effect"]],
         width="stretch",

@@ -17,6 +17,7 @@ from llm.factory import get_llm_client
 from llm.schemas import ActivityCoachInsightSchema
 from services.coaching_prompts import ELITE_ENDURANCE_COACH_CONTEXT
 from services.goal_service import GoalService
+from utils.formatting import format_pace_short
 
 CUSTOM_HR_ZONES = [
     ("Zone 1 Recovery", 92, 109),
@@ -260,9 +261,10 @@ def build_activity_coaching_context(
 
     activity_payload = _activity_payload(activity)
     activity_day = activity_payload["date"]
+    recent_median_pace = _recent_runs_median_pace(activities_df, activity.id)
     recent_runs = _recent_runs_context(activities_df, activity.id)
     health_payload = _health_context(health_df, activity_day)
-    stream_payload = _stream_context(track_points, float(activity_payload.get("distance_km") or 0.0))
+    stream_payload = _stream_context(track_points, float(_activity_field(activity, "distance") or 0.0))
     lap_payload = _laps_context(laps)
     return {
         "context_engineering": _context_engineering_payload(
@@ -271,6 +273,10 @@ def build_activity_coaching_context(
             health_payload=health_payload,
             stream_payload=stream_payload,
             lap_payload=lap_payload,
+            selected_pace=float(_activity_field(activity, "pace"))
+            if _has_value(_activity_field(activity, "pace"))
+            else None,
+            median_pace=recent_median_pace,
         ),
         "athlete_profile": {
             "name": getattr(user, "name", None),
@@ -315,12 +321,12 @@ def _context_engineering_payload(
     health_payload: dict[str, Any],
     stream_payload: dict[str, Any],
     lap_payload: dict[str, Any],
+    selected_pace: float | None,
+    median_pace: float | None,
 ) -> dict[str, Any]:
     """Give the model an explicit reasoning frame for the selected workout."""
 
     avg_hr = activity_payload.get("avg_hr")
-    pace = activity_payload.get("pace_min_per_km")
-    median_pace = recent_runs.get("median_pace_min_per_km")
     median_hr = recent_runs.get("median_avg_hr")
     likely_purpose = _likely_workout_purpose(activity_payload)
     return {
@@ -340,14 +346,12 @@ def _context_engineering_payload(
             "missing_mechanics": not bool(stream_payload.get("cadence_spm") or activity_payload.get("cadence_spm")),
         },
         "comparisons": {
-            "pace_vs_recent_median_min_per_km": round(float(pace) - float(median_pace), 2)
-            if pace is not None and median_pace is not None
-            else None,
+            "pace_vs_recent_median": _pace_delta_text(selected_pace, median_pace),
             "avg_hr_vs_recent_median_bpm": round(float(avg_hr) - float(median_hr), 1)
             if avg_hr is not None and median_hr is not None
             else None,
             "stream_hr_drift_bpm": stream_payload.get("hr_drift_bpm"),
-            "stream_pace_fade_min_per_km": stream_payload.get("pace_fade_min_per_km"),
+            "stream_pace_fade": stream_payload.get("pace_fade"),
         },
         "key_questions": [
             "Did this workout match its likely purpose?",
@@ -391,7 +395,7 @@ def _activity_payload(activity: Any) -> dict[str, Any]:
         "type": activity.type,
         "distance_km": activity.distance,
         "duration_min": activity.duration,
-        "pace_min_per_km": activity.pace,
+        "pace": _format_pace_value(activity.pace),
         "avg_hr": activity.avg_hr,
         "max_hr": activity.max_hr,
         "cadence_spm": activity.cadence,
@@ -416,10 +420,26 @@ def _recent_runs_context(activities: pd.DataFrame, activity_id: int) -> dict[str
     return {
         "prior_run_count": int(len(prior)),
         "median_distance_km": _float_or_none(prior["distance"].median()) if not prior.empty else None,
-        "median_pace_min_per_km": _float_or_none(prior["pace"].median()) if not prior.empty else None,
+        "median_pace": _format_pace_value(prior["pace"].median()) if not prior.empty else None,
         "median_avg_hr": _float_or_none(prior["avg_hr"].median()) if not prior.empty else None,
-        "recent_runs": [_record_json(row) for row in prior.tail(6).to_dict(orient="records")],
+        "recent_runs": [_activity_record_json(row) for row in prior.tail(6).to_dict(orient="records")],
     }
+
+
+def _recent_runs_median_pace(activities: pd.DataFrame, activity_id: int) -> float | None:
+    if activities.empty:
+        return None
+    runs = activities[activities["type"].fillna("").str.contains("run|trail|treadmill", case=False, na=False)].copy()
+    if runs.empty:
+        return None
+    runs["date"] = pd.to_datetime(runs["date"])
+    selected = runs[runs["id"] == activity_id]
+    selected_date = selected["date"].iloc[0] if not selected.empty else runs["date"].max()
+    prior = runs[(runs["id"] != activity_id) & (runs["date"] <= selected_date)].tail(12)
+    if prior.empty:
+        return None
+    value = prior["pace"].median()
+    return float(value) if pd.notna(value) else None
 
 
 def _health_context(health: pd.DataFrame, activity_day: Any) -> dict[str, Any]:
@@ -445,14 +465,21 @@ def _stream_context(track_points: pd.DataFrame, activity_distance_km: float) -> 
             samples[column] = pd.to_numeric(samples[column], errors="coerce")
     summary: dict[str, Any] = {"available": True, "sample_count": int(len(samples))}
 
-    for column, output_name in (("pace", "pace_min_per_km"), ("heart_rate", "heart_rate"), ("cadence", "cadence_spm")):
+    for column, output_name in (("pace", "pace"), ("heart_rate", "heart_rate"), ("cadence", "cadence_spm")):
         if column in samples and samples[column].notna().any():
             values = samples[column].dropna()
-            summary[output_name] = {
-                "avg": round(float(values.mean()), 2),
-                "min": round(float(values.min()), 2),
-                "max": round(float(values.max()), 2),
-            }
+            if column == "pace":
+                summary[output_name] = {
+                    "avg": _format_pace_value(values.mean()),
+                    "min": _format_pace_value(values.min()),
+                    "max": _format_pace_value(values.max()),
+                }
+            else:
+                summary[output_name] = {
+                    "avg": round(float(values.mean()), 2),
+                    "min": round(float(values.min()), 2),
+                    "max": round(float(values.max()), 2),
+                }
 
     if "heart_rate" in samples and samples["heart_rate"].notna().any():
         summary["custom_zone_distribution"] = _custom_zone_distribution(samples)
@@ -465,10 +492,12 @@ def _stream_context(track_points: pd.DataFrame, activity_distance_km: float) -> 
         second_hr = summary["second_half"].get("avg_hr")
         first_pace = summary["first_half"].get("avg_pace")
         second_pace = summary["second_half"].get("avg_pace")
+        first_pace_value = _float_or_none(first_half["pace"].mean()) if "pace" in first_half else None
+        second_pace_value = _float_or_none(second_half["pace"].mean()) if "pace" in second_half else None
         if first_hr is not None and second_hr is not None:
             summary["hr_drift_bpm"] = round(second_hr - first_hr, 1)
-        if first_pace is not None and second_pace is not None:
-            summary["pace_fade_min_per_km"] = round(second_pace - first_pace, 2)
+        if first_pace is not None and second_pace is not None and first_pace_value is not None and second_pace_value is not None:
+            summary["pace_fade"] = _pace_delta_text_from_delta(second_pace_value - first_pace_value)
     return summary
 
 
@@ -480,9 +509,9 @@ def _split_stream_halves(samples: pd.DataFrame, activity_distance_km: float) -> 
     return samples.iloc[:midpoint_index], samples.iloc[midpoint_index:]
 
 
-def _half_summary(samples: pd.DataFrame) -> dict[str, float | None]:
+def _half_summary(samples: pd.DataFrame) -> dict[str, Any]:
     return {
-        "avg_pace": _float_or_none(samples["pace"].mean()) if "pace" in samples else None,
+        "avg_pace": _format_pace_value(samples["pace"].mean()) if "pace" in samples else None,
         "avg_hr": _float_or_none(samples["heart_rate"].mean()) if "heart_rate" in samples else None,
         "avg_cadence": _float_or_none(samples["cadence"].mean()) if "cadence" in samples else None,
     }
@@ -523,7 +552,7 @@ def _laps_context(laps: pd.DataFrame) -> dict[str, Any]:
         return {"available": False}
     records = []
     for row in laps.head(30).to_dict(orient="records"):
-        records.append(_record_json(row))
+        records.append(_activity_record_json(row))
     return {"available": True, "lap_count": int(len(laps)), "laps": records}
 
 
@@ -533,10 +562,24 @@ def _compact_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
     for key in keys:
         value = snapshot.get(key)
         if isinstance(value, dict):
-            compact[key] = {inner_key: inner_value for inner_key, inner_value in value.items() if not isinstance(inner_value, pd.DataFrame)}
+            compact[key] = {
+                inner_key: _format_context_value(inner_key, inner_value)
+                for inner_key, inner_value in value.items()
+                if not isinstance(inner_value, pd.DataFrame)
+            }
         elif not isinstance(value, pd.DataFrame):
-            compact[key] = value
+            compact[key] = _format_context_value(key, value)
     return compact
+
+
+def _format_context_value(key: str, value: Any) -> Any:
+    if isinstance(value, dict):
+        return {inner_key: _format_context_value(inner_key, inner_value) for inner_key, inner_value in value.items()}
+    if isinstance(value, list):
+        return [_format_context_value(key, item) for item in value]
+    if "pace" in str(key).lower():
+        return _format_pace_value(value)
+    return value
 
 
 def _normalize_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -566,6 +609,36 @@ def _float_or_none(value: Any) -> float | None:
     if value is None:
         return None
     return round(float(value), 2)
+
+
+def _format_pace_value(value: Any) -> str | None:
+    numeric = _float_or_none(value)
+    if numeric is None:
+        return None
+    return format_pace_short(numeric)
+
+
+def _pace_delta_text(value: float | None, baseline: float | None) -> str | None:
+    if value is None or baseline is None:
+        return None
+    return _pace_delta_text_from_delta(value - baseline)
+
+
+def _pace_delta_text_from_delta(delta: Any) -> str | None:
+    numeric = _float_or_none(delta)
+    if numeric is None:
+        return None
+    if numeric == 0:
+        return "same pace"
+    label = "slower" if numeric > 0 else "faster"
+    return f"{format_pace_short(abs(numeric))} {label}"
+
+
+def _activity_record_json(record: dict[str, Any]) -> dict[str, Any]:
+    formatted = _record_json(record)
+    if "pace" in formatted:
+        formatted["pace"] = _format_pace_value(record.get("pace"))
+    return formatted
 
 
 def _record_json(record: dict[str, Any]) -> dict[str, Any]:

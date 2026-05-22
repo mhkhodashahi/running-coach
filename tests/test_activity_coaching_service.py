@@ -185,6 +185,9 @@ def test_activity_coaching_prompt_uses_profile_and_required_analysis_categories(
     assert "context_engineering.analysis_frame" in system_prompt
     assert '"age": 39' in user_prompt
     assert '"weight_kg": 89.0' in user_prompt
+    assert '"pace": "6:00"' in user_prompt
+    assert '"median_pace": "6:12"' in user_prompt
+    assert "pace_min_per_km" not in user_prompt
     assert '"context_engineering"' in user_prompt
     assert '"likely_workout_purpose"' in user_prompt
     assert '"key_questions"' in user_prompt
