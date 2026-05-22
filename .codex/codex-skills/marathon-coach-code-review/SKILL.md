@@ -7,7 +7,7 @@ description: Review Marathon Coach repository changes for bugs, regressions, pri
 
 ## Start Here
 
-Read `.codex/agent.md` first. Use `$project-guide` for general repo context, `$body-progress` for Body Progress/SAM 3D details, and `$scan-insight-privacy` for scan insight prompt/privacy details.
+Read `.codex/agent.md` first. Use `$project-guide` for general repo context, 
 
 Default to a code-review stance: findings first, ordered by severity, with file and line references. Keep summaries secondary.
 

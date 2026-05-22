@@ -57,6 +57,37 @@ def test_telegram_prompt_requires_specific_training_and_recovery_data() -> None:
     assert "Sleep score 66" in user_prompt
 
 
+def test_decision_prompt_uses_elite_coach_context_and_custom_zones() -> None:
+    system_prompt, _ = build_decision_prompt(
+        decision_type="daily",
+        user=DummyUser(),
+        goal=DummyGoal(),
+        snapshot={},
+        activities_df=pd.DataFrame(),
+        prior_decisions=[],
+        athlete_note="",
+        rules=[],
+    )
+
+    assert "elite endurance running coach" in system_prompt
+    assert "Zone 2 Easy/Aerobic: 110-128 bpm" in system_prompt
+    assert "ego pacing" in system_prompt
+    assert "brutally honest conclusion" in system_prompt
+    assert "Map the requested eight-part coaching analysis" in system_prompt
+
+
+def test_telegram_prompt_uses_elite_coach_style() -> None:
+    system_prompt, _ = build_telegram_prompt(
+        user=DummyUser(),
+        goal=DummyGoal(),
+        decision_payload={"summary": "Controlled aerobic day."},
+    )
+
+    assert "elite endurance running coach" in system_prompt
+    assert "Zone 4 Threshold: 147-165 bpm" in system_prompt
+    assert "brutally honest conclusion" in system_prompt
+
+
 def test_decision_prompt_sends_all_activities_from_latest_day() -> None:
     activities = pd.DataFrame(
         [

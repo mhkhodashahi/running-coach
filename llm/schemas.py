@@ -32,6 +32,20 @@ class TelegramTrainingChatSchema(BaseModel):
     follow_up: str = Field(default="")
 
 
+class ActivityCoachInsightSchema(BaseModel):
+    overall_assessment: str = Field(default="")
+    what_was_good: list[str] = Field(default_factory=list)
+    mistakes_or_inefficiencies: list[str] = Field(default_factory=list)
+    pacing_analysis: str = Field(default="")
+    aerobic_efficiency_analysis: str = Field(default="")
+    recovery_analysis: str = Field(default="")
+    mental_performance_insights: str = Field(default="")
+    training_recommendations: list[str] = Field(default_factory=list)
+    brutally_honest_conclusion: str = Field(default="")
+    evidence: list[str] = Field(default_factory=list)
+    confidence: float = Field(default=0, ge=0, le=100)
+
+
 class BodyScanInsightSchema(BaseModel):
     summary: str = Field(default="")
     visual_changes: list[str] = Field(default_factory=list)

@@ -14,6 +14,7 @@ from body_progress.domain import BodyScanCreate, BodyScanProcessingResult, BodyS
 from config import get_settings
 from db.models import (
     Activity,
+    ActivityCoachingInsight,
     ActivityLap,
     ActivityTrackPoint,
     BodyScan,
@@ -33,16 +34,18 @@ def get_or_create_default_user(session: Session, default_user_id: int) -> User:
 
     user = session.get(User, default_user_id)
     if user:
+        _backfill_legacy_default_profile(user)
+        session.flush()
         return user
 
     user = User(
         id=default_user_id,
         name="Mohammad",
-        age=34,
+        age=39,
         gender="male",
-        weight=73.0,
+        weight=89.0,
         height=178.0,
-        max_hr=188,
+        max_hr=184,
         training_days_per_week=5,
         injury_notes=None,
         marathon_date=date(2026, 9, 27),
@@ -50,6 +53,17 @@ def get_or_create_default_user(session: Session, default_user_id: int) -> User:
     session.add(user)
     session.flush()
     return user
+
+
+def _backfill_legacy_default_profile(user: User) -> None:
+    """Update old demo defaults without overwriting user-edited profiles."""
+
+    if user.name == "Mohammad" and user.age == 34:
+        user.age = 39
+    if user.name == "Mohammad" and user.weight == 73.0:
+        user.weight = 89.0
+    if user.name == "Mohammad" and user.max_hr == 188:
+        user.max_hr = 184
 
 
 def get_or_create_default_goal(session: Session, user: User) -> Goal:
@@ -281,6 +295,62 @@ def activity_laps_dataframe(session: Session, activity_id: int) -> pd.DataFrame:
     if not df.empty:
         df["start_time"] = pd.to_datetime(df["start_time"])
     return df
+
+
+def get_activity(session: Session, activity_id: int, user_id: int | None = None) -> Activity | None:
+    """Return one activity, optionally scoped to a user."""
+
+    query = select(Activity).where(Activity.id == activity_id)
+    if user_id is not None:
+        query = query.where(Activity.user_id == user_id)
+    return session.scalars(query).first()
+
+
+def get_activity_coaching_insight(session: Session, activity_id: int, user_id: int) -> ActivityCoachingInsight | None:
+    """Return the stored coach opinion for one activity."""
+
+    return session.scalars(
+        select(ActivityCoachingInsight).where(
+            ActivityCoachingInsight.activity_id == activity_id,
+            ActivityCoachingInsight.user_id == user_id,
+        )
+    ).first()
+
+
+def upsert_activity_coaching_insight(
+    session: Session,
+    *,
+    user_id: int,
+    activity_id: int,
+    summary: str,
+    payload_json: str,
+    prompt_context_json: str,
+    model_provider: str | None,
+    model_name: str | None,
+) -> ActivityCoachingInsight:
+    """Create or replace the stored coach opinion for one activity."""
+
+    insight = get_activity_coaching_insight(session, activity_id=activity_id, user_id=user_id)
+    if insight is None:
+        insight = ActivityCoachingInsight(
+            user_id=user_id,
+            activity_id=activity_id,
+            summary=summary,
+            payload_json=payload_json,
+            prompt_context_json=prompt_context_json,
+            model_provider=model_provider,
+            model_name=model_name,
+        )
+        session.add(insight)
+    else:
+        insight.summary = summary
+        insight.payload_json = payload_json
+        insight.prompt_context_json = prompt_context_json
+        insight.model_provider = model_provider
+        insight.model_name = model_name
+        insight.updated_at = datetime.utcnow()
+    session.flush()
+    return insight
 
 
 def bulk_upsert_health_metrics(session: Session, rows: list[dict[str, Any]]) -> int:

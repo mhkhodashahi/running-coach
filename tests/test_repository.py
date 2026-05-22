@@ -106,6 +106,20 @@ def test_default_goal_uses_goal_settings_not_legacy_user_marathon_time() -> None
     assert goal.is_active is True
 
 
+def test_default_user_matches_activity_coach_profile() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    session_factory = sessionmaker(bind=engine, future=True)
+
+    with session_factory() as session:
+        user = repository.get_or_create_default_user(session, 1)
+
+    assert user.age == 39
+    assert user.gender == "male"
+    assert user.weight == 89.0
+    assert user.max_hr == 184
+
+
 def test_update_user_profile_saves_max_hr() -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)

@@ -38,6 +38,7 @@ class User(Base):
     llm_memories: Mapped[list[LLMMemory]] = relationship(back_populates="user")
     goals: Mapped[list[Goal]] = relationship(back_populates="user")
     coaching_decisions: Mapped[list[CoachingDecision]] = relationship(back_populates="user")
+    activity_coaching_insights: Mapped[list[ActivityCoachingInsight]] = relationship(back_populates="user")
     email_deliveries: Mapped[list[EmailDelivery]] = relationship(back_populates="user")
     body_scans: Mapped[list[BodyScan]] = relationship(back_populates="user")
     body_scan_insights: Mapped[list[BodyScanInsight]] = relationship(back_populates="user")
@@ -70,6 +71,7 @@ class Activity(Base):
     user: Mapped[User] = relationship(back_populates="activities")
     track_points: Mapped[list[ActivityTrackPoint]] = relationship(back_populates="activity", cascade="all, delete-orphan")
     laps: Mapped[list[ActivityLap]] = relationship(back_populates="activity", cascade="all, delete-orphan")
+    coaching_insights: Mapped[list[ActivityCoachingInsight]] = relationship(back_populates="activity", cascade="all, delete-orphan")
 
 
 class ActivityTrackPoint(Base):
@@ -217,6 +219,27 @@ class LLMMemory(Base):
     confidence_score: Mapped[float | None] = mapped_column(Float)
 
     user: Mapped[User] = relationship(back_populates="llm_memories")
+
+
+class ActivityCoachingInsight(Base):
+    """Stored LLM coach opinion for one activity."""
+
+    __tablename__ = "activity_coaching_insights"
+    __table_args__ = (UniqueConstraint("activity_id", name="uq_activity_coaching_insights_activity"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True, nullable=False)
+    activity_id: Mapped[int] = mapped_column(ForeignKey("activities.id"), index=True, nullable=False)
+    summary: Mapped[str] = mapped_column(Text, nullable=False)
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False)
+    prompt_context_json: Mapped[str] = mapped_column(Text, nullable=False)
+    model_provider: Mapped[str | None] = mapped_column(String(32))
+    model_name: Mapped[str | None] = mapped_column(String(80))
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow, onupdate=_utcnow)
+
+    user: Mapped[User] = relationship(back_populates="activity_coaching_insights")
+    activity: Mapped[Activity] = relationship(back_populates="coaching_insights")
 
 
 class Goal(Base):
