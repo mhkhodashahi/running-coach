@@ -475,7 +475,6 @@ def _extract_recovery_time_hours(*payloads: Any) -> float | None:
         ("recoveryTimeSummary", "recoveryTime"),
         ("recoveryTimeFactor", "value"),
         ("metrics", "recoveryTime"),
-        ("value",),
     ]
     for payload in payloads:
         direct = _pick_first_numeric(payload, candidates)

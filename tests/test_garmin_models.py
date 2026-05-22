@@ -6,7 +6,7 @@ import pandas as pd
 import pytest
 from pydantic import ValidationError
 
-from services.garmin_client import CSVGarminClient, GarminAPIClient, extract_activity_track_points
+from services.garmin_client import CSVGarminClient, GarminAPIClient, _extract_recovery_time_hours, extract_activity_track_points
 from services.garmin_models import validate_laps, validate_track_points
 from ui.google_maps import downsample_route, encode_polyline, route_heading_degrees
 
@@ -73,6 +73,24 @@ def test_live_garmin_client_preserves_activity_name() -> None:
 
     assert health_rows == []
     assert activity_rows[0]["activity_name"] == "Lunch Threshold Run"
+
+
+def test_recovery_time_ignores_generic_training_readiness_value() -> None:
+    recovery_time = _extract_recovery_time_hours(
+        {"value": 61, "qualifierKey": "MODERATE"},
+        {"trainingStatus": "productive"},
+    )
+
+    assert recovery_time is None
+
+
+def test_recovery_time_uses_named_recovery_time_fields() -> None:
+    recovery_time = _extract_recovery_time_hours(
+        {"value": 61},
+        {"recoveryTime": 12 * 60 * 60},
+    )
+
+    assert recovery_time == 12.0
 
 
 def test_validate_track_points_converts_garmin_seconds_per_100m_pace() -> None:
