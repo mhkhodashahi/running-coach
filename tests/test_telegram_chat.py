@@ -97,7 +97,7 @@ def test_telegram_chatbot_authorizes_configured_chat_only() -> None:
 
     assert result.handled is True
     assert result.authorized is False
-    assert telegram.sent == [("This Marathon Coach bot is private. Your chat id is not authorized.", "222")]
+    assert telegram.sent == [("This Running Coach bot is private. Your chat id is not authorized.", "222")]
 
 
 def test_telegram_chatbot_replies_to_authorized_question() -> None:

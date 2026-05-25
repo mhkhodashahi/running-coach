@@ -8,8 +8,8 @@ from services.coaching_prompts import build_calendar_context, build_decision_pro
 
 
 class DummyGoal:
-    name = "Berlin Marathon"
-    goal_type = "marathon_pb"
+    name = "Berlin Running"
+    goal_type = "running_pb"
     target_distance_km = 42.195
     target_time_minutes = 240
     target_date = None
@@ -30,7 +30,7 @@ def test_telegram_prompt_requires_specific_training_and_recovery_data() -> None:
             "yesterday_assessment": "Latest session: running for 10.0 km in 50 min.",
             "tomorrow_recommendation": "Run easy.",
             "weekly_outlook": "Hold mileage steady.",
-            "goal_alignment": "Marathon projection is behind target.",
+            "goal_alignment": "Running projection is behind target.",
             "risk_level": "moderate",
             "confidence": 62,
             "priority": "Protect recovery.",

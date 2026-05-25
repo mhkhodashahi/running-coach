@@ -7,7 +7,7 @@ from analytics.performance import build_training_snapshot, consistency_score, we
 
 class DummyUser:
     max_hr = 188
-    marathon_goal_time = "02:30:00"
+    running_goal_time = "02:30:00"
 
 
 class DummyGoal:
@@ -75,7 +75,7 @@ def test_consistency_score_counts_unique_recent_running_days() -> None:
     assert score["score"] > 0
 
 
-def test_training_snapshot_uses_active_goal_target_instead_of_legacy_marathon_goal() -> None:
+def test_training_snapshot_uses_active_goal_target_instead_of_legacy_running_goal() -> None:
     snapshot = build_training_snapshot(
         DummyUser(),
         EMPTY_ACTIVITIES,

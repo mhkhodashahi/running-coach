@@ -129,7 +129,7 @@ def build_active_intelligence_cards(
                 "Fueling snapshot",
                 "Logged",
                 f"Today has {nutrition_today['calories']:.0f} kcal and {nutrition_today['carbs_g']:.0f} g carbs logged.",
-                "For marathon training, keep carbohydrate availability higher before long or quality sessions.",
+                "For running training, keep carbohydrate availability higher before long or quality sessions.",
             )
         )
     else:
@@ -242,7 +242,7 @@ def generate_active_intelligence(
     )
     context = build_active_intelligence_context(user, activities, health, nutrition_entries, snapshot)
     system_prompt = (
-        "You are Active Intelligence for a marathon coaching app. Generate short, personalized, "
+        "You are Active Intelligence for a running coaching app. Generate short, personalized, "
         "Garmin Connect+ style health and training insights from the provided data. "
         "Behave like an intelligent dashboard, not a chat coach. Use the athlete's recent activity, "
         "sleep, recovery, HRV, body battery, goal projection, and nutrition context. "
@@ -314,7 +314,7 @@ def build_training_guidance(snapshot: dict[str, Any]) -> list[dict[str, str]]:
     return [
         {"title": "Mileage target", "guidance": mileage, "why": "Small progressions build durability without a sharp load spike."},
         {"title": "Quality session", "guidance": quality, "why": "Fitness improves when intensity is specific and recoverable."},
-        {"title": "Long run", "guidance": long_run_guidance, "why": "The long run is the main durability signal for marathon readiness."},
+        {"title": "Long run", "guidance": long_run_guidance, "why": "The long run is the main durability signal for running readiness."},
         {"title": "Intensity balance", "guidance": intensity, "why": "Easy volume creates the base that lets quality sessions work."},
     ]
 

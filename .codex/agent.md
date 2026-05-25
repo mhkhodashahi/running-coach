@@ -1,10 +1,10 @@
-# Marathon Coach Agent Guide
+# Running Coach Agent Guide
 
 Use these repository-specific instructions for Codex work in this project.
 
 ## Project Context
 
-- Marathon Coach is a local Streamlit running-coach app backed by SQLite.
+- Running Coach is a local Streamlit running-coach app backed by SQLite.
 - It analyzes Garmin-style activities, health and recovery metrics, goals, coaching digests, body progress scans, and running performance.
 - Main Streamlit navigation entry point: `app/main.py`
 - Dashboard page: `app/dashboard.py`
@@ -26,8 +26,8 @@ Use these repository-specific instructions for Codex work in this project.
 
 Prefer these skill names when invoking repo guidance:
 
-- `$project-guide`: general Marathon Coach changes, debugging, setup, tests, and explanations.
-- `$review-marathon`: code-review mode for diffs, PR-like changes, regressions, privacy leaks, and missing tests.
+- `$project-guide`: general Running Coach changes, debugging, setup, tests, and explanations.
+- `$review-running`: code-review mode for diffs, PR-like changes, regressions, privacy leaks, and missing tests.
 - `$body-progress`: Body Progress, scan uploads, MediaPipe, SAM 3D Body, mesh metrics, and avatar work.
 - `$scan-insight-privacy`: body scan LLM insight prompts, schema alignment, prompt context filtering, and privacy checks.
 
@@ -58,7 +58,7 @@ Prefer these skill names when invoking repo guidance:
 - If recovery time looks stuck at a score-like value, inspect `_extract_recovery_time_hours()` first and check latest DB rows:
 
 ```bash
-sqlite3 db/marathon_coach.db "select date, recovery_time, sleep_score, body_battery from health_metrics order by date desc limit 20;"
+sqlite3 db/running_coach.db "select date, recovery_time, sleep_score, body_battery from health_metrics order by date desc limit 20;"
 ```
 
 - Do not overwrite user-entered notes or profile values when importing Garmin data.

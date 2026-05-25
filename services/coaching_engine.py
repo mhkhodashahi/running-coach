@@ -83,13 +83,13 @@ def _weekly_guidance(snapshot: dict[str, Any]) -> tuple[str, str]:
     if intensity.get("high_ratio", 0) > get_settings().high_intensity_ratio_threshold:
         return (
             f"Target about {current_7d:.0f}-{current_7d + 4:.0f} km next week with one hard workout, one long run, and the rest clearly easy.",
-            "Your current intensity balance is too aggressive, so shifting more time into easy running should improve durability and marathon-specific aerobic gains.",
+            "Your current intensity balance is too aggressive, so shifting more time into easy running should improve durability and running-specific aerobic gains.",
         )
 
     if long_runs.get("latest_long_run_km", 0) < 18:
         return (
-            f"Target {current_7d + 4:.0f}-{current_7d + 8:.0f} km next week and include one long run that extends marathon-specific endurance.",
-            "A longer weekly long run is one of the clearest missing pieces for marathon readiness, so building it is more valuable than adding extra hard sessions.",
+            f"Target {current_7d + 4:.0f}-{current_7d + 8:.0f} km next week and include one long run that extends running-specific endurance.",
+            "A longer weekly long run is one of the clearest missing pieces for running readiness, so building it is more valuable than adding extra hard sessions.",
         )
 
     return (
@@ -107,13 +107,13 @@ def _training_effectiveness(snapshot: dict[str, Any]) -> dict[str, Any]:
     if consistency.get("score", 0) >= 70:
         positives.append(f"Consistency is solid with {consistency.get('active_days', 0)} active days in the last 28 days.")
     else:
-        limiters.append("Training consistency is not strong enough yet to fully support marathon progress.")
+        limiters.append("Training consistency is not strong enough yet to fully support running progress.")
 
     long_runs = snapshot.get("long_runs", {})
     if long_runs.get("latest_long_run_km", 0) >= 18:
-        positives.append(f"The latest long run reached {long_runs['latest_long_run_km']:.1f} km, which supports marathon endurance.")
+        positives.append(f"The latest long run reached {long_runs['latest_long_run_km']:.1f} km, which supports running endurance.")
     else:
-        limiters.append("Long-run progression is still short for marathon-specific endurance demands.")
+        limiters.append("Long-run progression is still short for running-specific endurance demands.")
 
     vo2 = snapshot.get("vo2max", {})
     if vo2.get("trend") == "improving":
@@ -129,7 +129,7 @@ def _training_effectiveness(snapshot: dict[str, Any]) -> dict[str, Any]:
 
     intensity = snapshot.get("intensity", {})
     if intensity.get("high_ratio", 0) <= settings.high_intensity_ratio_threshold:
-        positives.append("The easy-to-hard balance is within range for sustainable marathon training.")
+        positives.append("The easy-to-hard balance is within range for sustainable running training.")
     else:
         limiters.append("Too much high-intensity volume is crowding out easy aerobic work and recovery.")
 
@@ -143,19 +143,19 @@ def _training_effectiveness(snapshot: dict[str, Any]) -> dict[str, Any]:
     prediction = snapshot.get("prediction", {})
     gap_minutes = float(prediction.get("gap_minutes", 0))
     if gap_minutes <= 0:
-        positives.append("Current marathon prediction is on or ahead of goal pace.")
+        positives.append("Current running prediction is on or ahead of goal pace.")
     elif gap_minutes >= 8:
         limiters.append(f"The current projection is still about {gap_minutes:.1f} minutes off goal pace.")
 
     if len(positives) >= 4 and len(limiters) <= 1:
         status = "effective"
-        summary = "Your training is working overall because the main marathon signals are moving in the right direction."
+        summary = "Your training is working overall because the main running signals are moving in the right direction."
     elif len(limiters) >= 3 or fatigue.get("level") == "high" or readiness.get("label") == "low":
         status = "not effective enough"
         summary = "Your training is producing some work, but the current mix is not effective enough for the goal until the main limiters improve."
     else:
         status = "mixed"
-        summary = "Your training has productive elements, but a few weak points are limiting how efficiently it converts into marathon readiness."
+        summary = "Your training has productive elements, but a few weak points are limiting how efficiently it converts into running readiness."
 
     return {
         "status": status,

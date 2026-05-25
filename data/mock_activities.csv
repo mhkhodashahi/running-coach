@@ -18,4 +18,4 @@ external_id,date,type,distance,duration,avg_hr,max_hr,cadence,elevation,training
 1017,2026-03-08,running,18.0,102,144,162,172,118,142,3.2,0.5,
 1018,2026-03-11,running,8.0,41,152,169,181,36,84,2.3,1.0,
 1019,2026-03-13,walking,6.0,56,101,117,110,18,18,0.5,0.0,
-1020,2026-03-15,running,21.1,118,150,168,176,130,170,3.7,0.9,Half marathon simulation
+1020,2026-03-15,running,21.1,118,150,168,176,130,170,3.7,0.9,Half running simulation

@@ -161,7 +161,7 @@
   <div class="saved" aria-label="Saved views">
     <span class="label">Saved views</span>
     <button class="chip" data-view="running90">Running 90D</button>
-    <button class="chip" data-view="marathon">Marathon Build</button>
+    <button class="chip" data-view="running">Running Build</button>
     <button class="chip" data-view="recovery">Recovery Block</button>
     <button class="chip" data-view="yoy">Year over Year</button>
   </div>
@@ -613,7 +613,7 @@
   });
   function applyView(view) {
     if (view === 'running90') Object.assign(state, { sport: 'Running', range: '90D', aggregation: 'Weekly', compareMode: 'Previous Period', tags: [] });
-    if (view === 'marathon') Object.assign(state, { sport: 'Running', range: '6M', aggregation: 'Weekly', compareMode: 'Previous Period', tags: ['Build'] });
+    if (view === 'running') Object.assign(state, { sport: 'Running', range: '6M', aggregation: 'Weekly', compareMode: 'Previous Period', tags: ['Build'] });
     if (view === 'recovery') Object.assign(state, { sport: 'All Sports', range: '28D', aggregation: 'Daily', compareMode: 'Rolling Average', healthContext: 'Good Recovery', tags: [] });
     if (view === 'yoy') Object.assign(state, { sport: 'All Sports', range: 'YTD', aggregation: 'Monthly', compareMode: 'Same Period Last Year', tags: [] });
     state.start = fmt(dateForRange(state.range)); syncControls(); renderAll();

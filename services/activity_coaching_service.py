@@ -290,8 +290,8 @@ def build_activity_coaching_context(
             "known_goals": [
                 "improve aerobic base",
                 "lose weight",
-                "improve 5K, 10K, and half marathon performance",
-                "build marathon durability while staying injury-free",
+                "improve 5K, 10K, and half running performance",
+                "build running durability while staying injury-free",
             ],
         },
         "custom_heart_rate_zones": [

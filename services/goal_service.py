@@ -8,8 +8,8 @@ from db import repository
 GOAL_LABELS = {
     "5k_pb": "5K PB",
     "10k_pb": "10K PB",
-    "half_pb": "Half Marathon PB",
-    "marathon_pb": "Marathon PB",
+    "half_pb": "Half Running PB",
+    "running_pb": "Running PB",
 }
 
 

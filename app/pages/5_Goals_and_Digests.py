@@ -45,7 +45,7 @@ with st.form("create_goal_form"):
     selected_goal_type = next(goal_type for goal_type, label, _ in goal_options if label == selected_label)
     default_distance = GOAL_RACE_DISTANCES[selected_goal_type]
     goal_name = st.text_input("Goal name", value=f"My {selected_label}")
-    target_time = st.text_input("Target time (HH:MM:SS)", value="03:59:59" if "Marathon" in selected_label else "00:21:30")
+    target_time = st.text_input("Target time (HH:MM:SS)", value="03:59:59" if "Running" in selected_label else "00:21:30")
     target_distance_km = st.number_input(
         "Target distance (km)",
         min_value=1.0,

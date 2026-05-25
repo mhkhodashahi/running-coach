@@ -50,7 +50,7 @@ class PredictionSnapshotService:
                 user,
                 activities_to_date,
                 health_to_date,
-                getattr(goal, "goal_type", "marathon_pb"),
+                getattr(goal, "goal_type", "running_pb"),
                 float(getattr(goal, "target_time_minutes", 240.0)),
                 float(getattr(goal, "target_distance_km", 42.195)),
             )

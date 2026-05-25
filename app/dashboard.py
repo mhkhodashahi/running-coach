@@ -1,4 +1,4 @@
-"""Main Streamlit dashboard for the marathon coach app."""
+"""Main Streamlit dashboard for the running coach app."""
 
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ from ui.components import (
 from utils.bootstrap import load_training_bundle
 from utils.formatting import format_gap_minutes, format_goal_time, format_pace
 
-st.set_page_config(page_title="Marathon Coach", page_icon="M", layout="wide")
+st.set_page_config(page_title="Running Coach", page_icon="R", layout="wide")
 apply_dashboard_theme()
 
 settings = get_settings()

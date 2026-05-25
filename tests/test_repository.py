@@ -94,18 +94,18 @@ def test_replace_activity_track_points_is_idempotent() -> None:
     assert points.iloc[0]["latitude"] == 52.53
 
 
-def test_default_goal_uses_goal_settings_not_legacy_user_marathon_time() -> None:
+def test_default_goal_uses_goal_settings_not_legacy_user_running_time() -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     session_factory = sessionmaker(bind=engine, future=True)
 
     with session_factory() as session:
         user = repository.get_or_create_default_user(session, 1)
-        user.marathon_goal_time = "02:30:00"
+        user.running_goal_time = "02:30:00"
         goal = repository.get_or_create_default_goal(session, user)
 
     assert goal.target_time_minutes == 240.0
-    assert goal.goal_type == "marathon_pb"
+    assert goal.goal_type == "running_pb"
     assert goal.is_active is True
 
 

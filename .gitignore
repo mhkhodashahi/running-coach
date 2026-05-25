@@ -39,3 +39,6 @@ env/
 .streamlit/secrets.toml
 ../sam/*
 /poetry.lock
+/content/
+/.codex/content-series-plan.md
+/launchd/

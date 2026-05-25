@@ -1,4 +1,4 @@
-"""Inbound Telegram chat loop for Marathon Coach."""
+"""Inbound Telegram chat loop for Running Coach."""
 
 from __future__ import annotations
 
@@ -41,7 +41,7 @@ class TelegramTrainingChatBot:
             return TelegramHandleResult(handled=False)
 
         if not self._authorized(chat_id):
-            reply = "This Marathon Coach bot is private. Your chat id is not authorized."
+            reply = "This Running Coach bot is private. Your chat id is not authorized."
             self.telegram_service.send_text(reply, recipient=chat_id)
             return TelegramHandleResult(handled=True, reply=reply, authorized=False)
 
@@ -75,11 +75,11 @@ class TelegramTrainingChatBot:
         command = text.split()[0].lower()
         if command in {"/start", "/help"}:
             return (
-                "Marathon Coach chat is ready.\n\n"
+                "Running Coach chat is ready.\n\n"
                 "Ask questions like:\n"
                 "- How is my recovery today?\n"
                 "- What was my weekly mileage?\n"
-                "- Am I on track for my marathon goal?\n"
+                "- Am I on track for my running goal?\n"
                 "- What should I do tomorrow?"
             )
         if command == "/status":

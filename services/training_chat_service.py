@@ -27,7 +27,7 @@ class TrainingChatReply:
 
 
 class TrainingChatService:
-    """Answer athlete questions using local Marathon Coach database context."""
+    """Answer athlete questions using local Running Coach database context."""
 
     def __init__(self, settings: Settings | None = None, llm_client: Any | None = None) -> None:
         self.settings = settings or get_settings()
@@ -132,7 +132,7 @@ class TrainingChatService:
 
 def _system_prompt() -> str:
     return (
-        "You are Marathon Coach inside a private Telegram chat. Answer the athlete's training question using only the "
+        "You are Running Coach inside a private Telegram chat. Answer the athlete's training question using only the "
         "provided local database context. Be concise, specific, and practical. Mention actual dates and values when "
         "available. Do not invent missing workouts, health data, diagnoses, injuries, or race guarantees. If the data "
         "is insufficient, say what is missing and give a conservative next step. Return JSON with keys: answer, "

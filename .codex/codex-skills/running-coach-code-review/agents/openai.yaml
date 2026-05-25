@@ -1,0 +1,4 @@
+interface:
+  display_name: "Review Running"
+  short_description: "Review Running Coach changes for risk"
+  default_prompt: "Use $review-running to review the current Running Coach changes."

@@ -49,7 +49,7 @@ def get_or_create_default_user(session: Session, default_user_id: int) -> User:
         max_hr=184,
         training_days_per_week=5,
         injury_notes=None,
-        marathon_date=date(2026, 9, 27),
+        running_date=date(2026, 9, 27),
     )
     session.add(user)
     session.flush()
@@ -68,7 +68,7 @@ def _backfill_legacy_default_profile(user: User) -> None:
 
 
 def get_or_create_default_goal(session: Session, user: User) -> Goal:
-    """Create a default marathon goal when the athlete has not configured one yet."""
+    """Create a default running goal when the athlete has not configured one yet."""
 
     goal = session.scalars(
         select(Goal)
@@ -80,11 +80,11 @@ def get_or_create_default_goal(session: Session, user: User) -> Goal:
 
     goal = Goal(
         user_id=user.id,
-        name="Primary Marathon Goal",
-        goal_type="marathon_pb",
+        name="Primary Running Goal",
+        goal_type="running_pb",
         target_distance_km=42.195,
         target_time_minutes=get_settings().sub_four_goal_minutes,
-        target_date=user.marathon_date,
+        target_date=user.running_date,
         priority="A",
         status="active",
         is_active=True,

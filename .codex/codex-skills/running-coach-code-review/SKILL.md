@@ -1,9 +1,9 @@
 ---
-name: review-marathon
-description: Review Marathon Coach repository changes for bugs, regressions, privacy leaks, missing tests, and risky design choices. Use when Codex is asked to review code, inspect a diff, review a PR-like change, check recent edits, or give findings before merging work in this Streamlit/SQLite running coach project.
+name: review-running
+description: Review Running Coach repository changes for bugs, regressions, privacy leaks, missing tests, and risky design choices. Use when Codex is asked to review code, inspect a diff, review a PR-like change, check recent edits, or give findings before merging work in this Streamlit/SQLite running coach project.
 ---
 
-# Review Marathon
+# Review Running
 
 ## Start Here
 

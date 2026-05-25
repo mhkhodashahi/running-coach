@@ -1,4 +1,0 @@
-interface:
-  display_name: "Review Marathon"
-  short_description: "Review Marathon Coach changes for risk"
-  default_prompt: "Use $review-marathon to review the current Marathon Coach changes."

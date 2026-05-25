@@ -1,4 +1,4 @@
-"""Run the Marathon Coach Telegram chat bot."""
+"""Run the Running Coach Telegram chat bot."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from services.telegram_chatbot import TelegramTrainingChatBot
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run the Marathon Coach Telegram training chat bot.")
+    parser = argparse.ArgumentParser(description="Run the Running Coach Telegram training chat bot.")
     parser.add_argument("--poll-timeout", type=int, default=30, help="Telegram long-poll timeout in seconds.")
     args = parser.parse_args()
 

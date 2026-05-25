@@ -1,6 +1,6 @@
 ---
 name: scan-insight-privacy
-description: Keep Marathon Coach body scan LLM insights private, conservative, and schema-aligned. Use when Codex is asked to edit services/body_scan_insight_service.py, body scan insight prompts, LLM context construction, scan insight history, BodyScanInsightSchema, or tests that verify runtime/debug paths are not sent to the LLM.
+description: Keep Running Coach body scan LLM insights private, conservative, and schema-aligned. Use when Codex is asked to edit services/body_scan_insight_service.py, body scan insight prompts, LLM context construction, scan insight history, BodyScanInsightSchema, or tests that verify runtime/debug paths are not sent to the LLM.
 ---
 
 # Scan Insight Privacy

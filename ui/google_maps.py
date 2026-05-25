@@ -483,7 +483,7 @@ def render_activity_route_map(
                 const totalDistance = distanceValues.length ? Math.max(...distanceValues) : 0;
                 ctx.fillStyle = "#fc4c02";
                 ctx.font = "900 34px Arial, sans-serif";
-                ctx.fillText("MARATHON COACH", 76, 120);
+                ctx.fillText("RUNNING COACH", 76, 120);
                 ctx.fillStyle = "#111827";
                 ctx.font = "900 68px Arial, sans-serif";
                 const safeTitle = routeTitle.length > 52 ? routeTitle.slice(0, 52) : routeTitle;

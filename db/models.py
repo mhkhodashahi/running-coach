@@ -1,4 +1,4 @@
-"""SQLAlchemy models for the marathon coach app."""
+"""SQLAlchemy models for the Running coach app."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ def _utcnow() -> datetime:
 
 
 class User(Base):
-    """User profile and marathon goal."""
+    """User profile and Running goal."""
 
     __tablename__ = "users"
 
@@ -30,8 +30,8 @@ class User(Base):
     max_hr: Mapped[int | None] = mapped_column(Integer)
     training_days_per_week: Mapped[int | None] = mapped_column(Integer)
     injury_notes: Mapped[str | None] = mapped_column(Text)
-    marathon_goal_time: Mapped[str] = mapped_column(String(16), nullable=False, default="03:59:59")
-    marathon_date: Mapped[date | None] = mapped_column(Date)
+    running_goal_time: Mapped[str] = mapped_column(String(16), nullable=False, default="03:59:59")
+    running_date: Mapped[date | None] = mapped_column(Date)
 
     activities: Mapped[list[Activity]] = relationship(back_populates="user")
     health_metrics: Mapped[list[HealthMetric]] = relationship(back_populates="user")
@@ -270,7 +270,7 @@ class PredictionSnapshot(Base):
 
 
 class Goal(Base):
-    """Athlete goal such as 5k PB or marathon PB."""
+    """Athlete goal such as 5k PB or running PB."""
 
     __tablename__ = "goals"
 

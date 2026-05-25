@@ -1,4 +1,4 @@
-"""Training, recovery, and marathon readiness analytics."""
+"""Training, recovery, and running readiness analytics."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ GOAL_RACE_DISTANCES = {
     "5k_pb": 5.0,
     "10k_pb": 10.0,
     "half_pb": 21.0975,
-    "marathon_pb": 42.195,
+    "running_pb": 42.195,
 }
 
 
@@ -236,7 +236,7 @@ def fatigue_score(
         score += max(0.0, 78 - sleep_score) * 0.5
         score += max(0.0, 7.5 - sleep_duration) * 5
         if sleep_score and sleep_score < settings.low_sleep_score_threshold:
-            reasons.append("Recent sleep quality is below target for a marathon build.")
+            reasons.append("Recent sleep quality is below target for a gaol build.")
 
         recovery_time = float(latest.get("recovery_time") or 0.0)
         score += min(20.0, recovery_time / settings.recovery_threshold_hours * 20)
@@ -462,7 +462,7 @@ def predict_finish_time_for_distance(
     }
 
 
-def estimated_marathon_finish_time(
+def estimated_running_finish_time(
     user: Any,
     activities_df: pd.DataFrame,
     health_df: pd.DataFrame,
@@ -558,7 +558,7 @@ def build_training_snapshot(
     consistency = consistency_score(activities_df)
     long_runs = long_run_progression(activities_df)
     intensity = intensity_distribution(activities_df, getattr(user, "max_hr", None))
-    prediction = estimated_marathon_finish_time(user, activities_df, health_df)
+    prediction = estimated_running_finish_time(user, activities_df, health_df)
     recovery = latest_recovery_snapshot(health_df)
     load = training_load_series(activities_df)
     correlations = sleep_performance_correlation(activities_df, health_df)
@@ -569,7 +569,7 @@ def build_training_snapshot(
             user,
             activities_df,
             health_df,
-            getattr(goal, "goal_type", "marathon_pb"),
+            getattr(goal, "goal_type", "running_pb"),
             float(getattr(goal, "target_time_minutes", 240.0)),
             float(getattr(goal, "target_distance_km", 42.195)),
         )

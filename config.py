@@ -89,7 +89,7 @@ def get_settings() -> Settings:
         base_dir=BASE_DIR,
         data_dir=data_dir,
         db_dir=db_dir,
-        db_path=_resolve_path(os.getenv("DB_PATH", ""), db_dir / "marathon_coach.db"),
+        db_path=_resolve_path(os.getenv("DB_PATH", ""), db_dir / "running_coach.db"),
         mock_activities_path=data_dir / "mock_activities.csv",
         mock_health_path=data_dir / "mock_health_metrics.csv",
         body_scan_dir=_resolve_path(os.getenv("BODY_SCAN_DIR", "data/body_scans"), data_dir / "body_scans"),

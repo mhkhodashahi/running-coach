@@ -144,7 +144,7 @@ def _fallback_decision(
     readiness = snapshot["readiness"]
     fatigue = snapshot["fatigue"]
     recovery = snapshot["recovery"]
-    goal_label = GoalService.label_for(getattr(goal, "goal_type", "marathon_pb"))
+    goal_label = GoalService.label_for(getattr(goal, "goal_type", "running_pb"))
 
     if risk_level == "high":
         summary = f"Recovery is the main limiter right now, so the next coaching decision should protect consistency more than push intensity for the {goal_label}."
@@ -197,7 +197,7 @@ def _fallback_decision(
 
 def _fallback_message_payload(goal: Any, decision_payload: dict[str, Any]) -> dict[str, str]:
     athlete_name = str(decision_payload.get("athlete_name") or "").strip()
-    goal_label = GoalService.label_for(getattr(goal, "goal_type", "marathon_pb"))
+    goal_label = GoalService.label_for(getattr(goal, "goal_type", "running_pb"))
     risk_level = str(decision_payload.get("risk_level", "moderate")).title()
     title = {
         "High": "Take it easy today",

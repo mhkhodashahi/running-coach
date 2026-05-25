@@ -1,6 +1,6 @@
-# Marathon Coach
+# Running Coach
 
-Local running coach application that uses Garmin-style training data, recovery metrics, analytics, and optional LLM guidance to coach against active goals such as a 5K PB, half marathon PB, or marathon PB.
+Local running coach application that uses Garmin-style training data, recovery metrics, analytics, and optional LLM guidance to coach against active goals such as a 5K PB, half running PB, or running PB.
 
 ## Features
 
@@ -11,7 +11,7 @@ Local running coach application that uses Garmin-style training data, recovery m
 - Runalyze-inspired analysis page for quality sessions, training load, strain, performance curves, streaks, distributions, and efficiency
 - Streamlit goal management and digest history pages
 - SQLite-backed storage for users, activities, health metrics, and LLM memory
-- First-class goal tracking for 5K, 10K, half marathon, and marathon targets
+- First-class goal tracking for 5K, 10K, half running, and running targets
 - CSV Garmin import pipeline with mock-data fallback
 - Live Garmin sync can store activity names, GPS/chart points, and laps/splits for detailed activity views
 - Per-run LLM coach opinions on the activity detail page, generated once and then served from SQLite
@@ -110,7 +110,7 @@ Without this key, the page still embeds Google Maps centered on the activity sta
 streamlit run app/main.py
 ```
 
-On first launch the app creates `db/marathon_coach.db` and loads the bundled mock data if no activities or health metrics exist yet.
+On first launch the app creates `db/running_coach.db` and loads the bundled mock data if no activities or health metrics exist yet.
 
 ## Dashboard Design
 
@@ -206,15 +206,15 @@ On a Mac, use `launchd` instead of cron.
 
 ```bash
 mkdir -p ~/Library/LaunchAgents
-cp launchd/com.marathoncoach.health-sync.plist ~/Library/LaunchAgents/
-launchctl unload ~/Library/LaunchAgents/com.marathoncoach.health-sync.plist 2>/dev/null || true
-launchctl load ~/Library/LaunchAgents/com.marathoncoach.health-sync.plist
+cp launchd/com.runningcoach.health-sync.plist ~/Library/LaunchAgents/
+launchctl unload ~/Library/LaunchAgents/com.runningcoach.health-sync.plist 2>/dev/null || true
+launchctl load ~/Library/LaunchAgents/com.runningcoach.health-sync.plist
 ```
 
 3. Optional checks:
 
 ```bash
-launchctl list | grep com.marathoncoach.health-sync
+launchctl list | grep com.runningcoach.health-sync
 tail -f logs/garmin-health-sync.log
 ```
 
@@ -240,7 +240,7 @@ Run the private Telegram training chat bot:
 python -m utils.telegram_chat_cli
 ```
 
-Then message your configured bot from the Telegram chat id in `TELEGRAM_CHAT_ID`. The bot only answers that configured chat and uses your local SQLite training database plus the configured LLM provider to answer questions such as "How is my recovery today?", "What was my weekly mileage?", or "Am I on track for my marathon goal?".
+Then message your configured bot from the Telegram chat id in `TELEGRAM_CHAT_ID`. The bot only answers that configured chat and uses your local SQLite training database plus the configured LLM provider to answer questions such as "How is my recovery today?", "What was my weekly mileage?", or "Am I on track for my running goal?".
 
 Generate a weekly coaching digest without syncing first:
 
@@ -260,9 +260,9 @@ Install the daily 8:30 PM job:
 
 ```bash
 mkdir -p ~/Library/LaunchAgents
-cp launchd/com.marathoncoach.daily-digest.plist ~/Library/LaunchAgents/
-launchctl unload ~/Library/LaunchAgents/com.marathoncoach.daily-digest.plist 2>/dev/null || true
-launchctl load ~/Library/LaunchAgents/com.marathoncoach.daily-digest.plist
+cp launchd/com.runningcoach.daily-digest.plist ~/Library/LaunchAgents/
+launchctl unload ~/Library/LaunchAgents/com.runningcoach.daily-digest.plist 2>/dev/null || true
+launchctl load ~/Library/LaunchAgents/com.runningcoach.daily-digest.plist
 ```
 
 ## LLM Providers
@@ -276,4 +276,4 @@ If the configured model is unavailable, the app still works and falls back to de
 
 - The app stores structured digest history in `coaching_decisions` and keeps legacy LLM history in `llm_memory`.
 - Manual athlete notes are stored on activities.
-- The mock athlete profile is backfilled into a default marathon goal when no goals exist yet.
+- The mock athlete profile is backfilled into a default running goal when no goals exist yet.
