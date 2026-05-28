@@ -12,6 +12,7 @@ import pandas as pd
 from config import get_settings
 from llm.factory import get_llm_client
 from llm.schemas import ActiveIntelligenceResponseSchema
+from services.llm_workflow import generate_structured_payload
 
 
 @dataclass(frozen=True)
@@ -267,18 +268,23 @@ def generate_active_intelligence(
         default=str,
         indent=2,
     )
-    try:
-        payload = client.generate_json(system_prompt, user_prompt, response_schema=ActiveIntelligenceResponseSchema)
-    except Exception as exc:
+    result = generate_structured_payload(
+        llm_client=client,
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        response_schema=ActiveIntelligenceResponseSchema,
+        unavailable_message="Smart Active Intelligence unavailable",
+    )
+    if result.warning:
         return {
             "summary": "Smart Active Intelligence is unavailable from the configured LLM provider.",
             "insights": [],
             "next_check_in": "Try again after the LLM provider is reachable.",
-            "limitations": [str(exc)],
+            "limitations": [result.warning],
             "provider": settings.llm_provider,
         }
 
-    normalized = ActiveIntelligenceResponseSchema.model_validate(payload).model_dump()
+    normalized = ActiveIntelligenceResponseSchema.model_validate(result.payload).model_dump()
     normalized["provider"] = settings.llm_provider
     normalized["model_name"] = settings.openai_model if settings.llm_provider in {"openai", "chatgpt"} else settings.ollama_model
     return normalized

@@ -17,6 +17,7 @@ from llm.factory import get_llm_client
 from llm.schemas import ActivityCoachInsightSchema
 from services.coaching_prompts import ELITE_ENDURANCE_COACH_CONTEXT
 from services.goal_service import GoalService
+from services.llm_workflow import generate_structured_payload
 from utils.formatting import format_pace_short
 
 CUSTOM_HR_ZONES = [
@@ -128,12 +129,17 @@ class ActivityCoachingService:
             snapshot=snapshot,
         )
         system_prompt, user_prompt = build_activity_coaching_prompt(context)
-        payload = self.llm_client.generate_json(
-            system_prompt,
-            user_prompt,
+        result = generate_structured_payload(
+            llm_client=self.llm_client,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
             response_schema=ActivityCoachInsightSchema,
+            normalize=_normalize_payload,
+            unavailable_message="Activity coaching model unavailable",
         )
-        normalized = _normalize_payload(payload)
+        if result.error is not None:
+            raise result.error
+        normalized = result.payload
         if not normalized["overall_assessment"]:
             raise RuntimeError("The configured LLM did not return a usable activity analysis.")
 
@@ -185,12 +191,17 @@ class ActivityCoachingService:
             )
 
         system_prompt, user_prompt = build_activity_coaching_prompt(context)
-        payload = self.llm_client.generate_json(
-            system_prompt,
-            user_prompt,
+        result = generate_structured_payload(
+            llm_client=self.llm_client,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
             response_schema=ActivityCoachInsightSchema,
+            normalize=_normalize_payload,
+            unavailable_message="Activity coaching model unavailable",
         )
-        normalized = _normalize_payload(payload)
+        if result.error is not None:
+            raise result.error
+        normalized = result.payload
         if not normalized["overall_assessment"]:
             raise RuntimeError("The configured LLM did not return a usable activity analysis.")
 

@@ -396,7 +396,7 @@ def _render_active_intelligence(bundle, snapshot: dict, nutrition_entries: pd.Da
                 )
 
 
-def _render_performance_dashboard(bundle, nutrition_entries: pd.DataFrame) -> None:
+def _render_performance(bundle, nutrition_entries: pd.DataFrame) -> None:
     daily = _daily_performance_frame(bundle.activities, bundle.health_metrics, nutrition_entries)
     metric_options = [
         "distance_km",
@@ -573,11 +573,11 @@ with session_scope() as session:
 if not nutrition_entries.empty:
     nutrition_entries["entry_date"] = pd.to_datetime(nutrition_entries["entry_date"])
 
-tabs = st.tabs(["Active Intelligence", "Performance Dashboard", "Training Guidance", "3D Maps", "Nutrition"])
+tabs = st.tabs(["Active Intelligence", "Performance", "Training Guidance", "3D Maps", "Nutrition"])
 with tabs[0]:
     _render_active_intelligence(bundle, bundle.snapshot, nutrition_entries)
 with tabs[1]:
-    _render_performance_dashboard(bundle, nutrition_entries)
+    _render_performance(bundle, nutrition_entries)
 with tabs[2]:
     _render_training_guidance(bundle.snapshot)
 with tabs[3]:

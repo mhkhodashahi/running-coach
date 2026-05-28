@@ -455,42 +455,13 @@ def _similar_activities(runs: pd.DataFrame, activity: pd.Series) -> pd.DataFrame
 
 
 def _load_activity_detail_data(activity_id: int) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Load GPS points and laps, tolerating stale Streamlit module state during hot reload."""
+    """Load GPS points and laps for one activity."""
 
     with session_scope() as session:
-        if hasattr(repository, "track_points_dataframe") and hasattr(repository, "activity_laps_dataframe"):
-            return (
-                repository.track_points_dataframe(session, activity_id),
-                repository.activity_laps_dataframe(session, activity_id),
-            )
-
-        track_points = pd.read_sql_query(
-            """
-            SELECT id, activity_id, point_index, timestamp, elapsed_seconds, distance_km,
-                   latitude, longitude, elevation, pace, speed, heart_rate, cadence
-            FROM activity_track_points
-            WHERE activity_id = :activity_id
-            ORDER BY point_index ASC
-            """,
-            session.bind,
-            params={"activity_id": activity_id},
+        return (
+            repository.track_points_dataframe(session, activity_id),
+            repository.activity_laps_dataframe(session, activity_id),
         )
-        laps = pd.read_sql_query(
-            """
-            SELECT id, activity_id, lap_index, lap_type, start_time, duration, distance,
-                   pace, avg_hr, max_hr, elevation_gain, avg_cadence
-            FROM activity_laps
-            WHERE activity_id = :activity_id
-            ORDER BY lap_index ASC
-            """,
-            session.bind,
-            params={"activity_id": activity_id},
-        )
-        if not track_points.empty:
-            track_points["timestamp"] = pd.to_datetime(track_points["timestamp"])
-        if not laps.empty:
-            laps["start_time"] = pd.to_datetime(laps["start_time"])
-        return track_points, laps
 
 
 def _load_activity_coach_insight(activity_id: int, user_id: int) -> dict[str, object] | None:

@@ -16,6 +16,7 @@ from db.session import session_scope
 from db.setup import init_db
 from llm.factory import get_llm_client
 from llm.schemas import TelegramTrainingChatSchema
+from services.llm_workflow import generate_structured_payload
 
 
 @dataclass(frozen=True)
@@ -58,16 +59,18 @@ class TrainingChatService:
             indent=2,
         )
 
-        try:
-            payload = self.llm_client.generate_json(
-                system_prompt,
-                user_prompt,
-                response_schema=TelegramTrainingChatSchema,
-            )
-        except Exception as exc:
+        result = generate_structured_payload(
+            llm_client=self.llm_client,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            response_schema=TelegramTrainingChatSchema,
+            unavailable_message="Model unavailable",
+        )
+        if result.warning:
             fallback = self._fallback_answer(question, context)
-            return TrainingChatReply(f"{fallback}\n\nModel unavailable: {exc}", False)
+            return TrainingChatReply(f"{fallback}\n\n{result.warning}", False)
 
+        payload = result.payload
         answer = str(payload.get("answer") or payload.get("explanation") or "").strip()
         evidence = [str(item).strip() for item in payload.get("evidence", []) if str(item).strip()]
         follow_up = str(payload.get("follow_up") or "").strip()

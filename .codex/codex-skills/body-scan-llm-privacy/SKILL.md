@@ -10,6 +10,7 @@ description: Keep Running Coach body scan LLM insights private, conservative, an
 Read `.codex/agent.md` first. Inspect current files before editing:
 
 - `services/body_scan_insight_service.py`
+- `services/llm_workflow.py`
 - `llm/schemas.py`
 - `app/pages/9_Body_Progress.py`
 - `body_progress/mesh_analysis.py`
@@ -40,7 +41,7 @@ Never send runtime/debug/local machine data to LLM prompts:
 - `stderr_tail`
 - raw image paths or local filesystem paths
 
-Use `_compact_measurements()` and `_compact_shape_metrics()` as the main allowlist boundary.
+Use `_compact_measurements()` and `_compact_shape_metrics()` as the main allowlist boundary. Keep structured model calls routed through `services/llm_workflow.py`.
 
 ## Prompt Rules
 
@@ -60,3 +61,5 @@ Run:
 python -m ruff check services/body_scan_insight_service.py llm/schemas.py tests/test_body_progress.py
 python -m pytest tests/test_body_progress.py
 ```
+
+If `pytest` is unavailable, run `py_compile`, `ruff`, and a direct smoke check for `_compact_measurements()`.

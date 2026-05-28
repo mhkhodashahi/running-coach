@@ -11,6 +11,7 @@ from db import repository
 from llm.factory import get_llm_client
 from services.coaching_prompts import ELITE_ENDURANCE_COACH_CONTEXT
 from services.goal_service import GoalService
+from services.llm_workflow import generate_structured_payload
 
 
 def build_rule_recommendations(snapshot: dict[str, Any]) -> list[str]:
@@ -262,11 +263,15 @@ class CoachingEngine:
             indent=2,
         )
 
-        llm_payload = {}
-        try:
-            llm_payload = self.llm_client.generate_json(system_prompt, user_prompt)
-        except Exception as exc:
-            llm_payload = {"explanation": f"LLM provider unavailable: {exc}"}
+        result = generate_structured_payload(
+            llm_client=self.llm_client,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            unavailable_message="LLM provider unavailable",
+        )
+        llm_payload = result.payload
+        if result.warning:
+            llm_payload = {"explanation": result.warning}
 
         coaching = _fallback_response(snapshot, rules)
         coaching.update(_normalize_llm_payload(llm_payload))
