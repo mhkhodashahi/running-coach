@@ -9,7 +9,7 @@ description: Work safely and efficiently in the Running Coach Streamlit reposito
 
 Read `.codex/agent.md` first. It is the persistent all-in-one project instruction file.
 
-Use this skill for general Running Coach repo work. For Body Progress/SAM changes, use `$body-progress`. For scan insight prompts or privacy review, use `$scan-insight-privacy`. For review-only work, use `$review-running`.
+Use this skill for general Running Coach repo work. For Body Progress, SAM, or scan insight privacy changes, use `$body-progress`. For review-only work, use `$review-running`.
 
 ## Repo Map
 

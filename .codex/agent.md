@@ -27,8 +27,7 @@ Prefer these skill names when invoking repo guidance:
 
 - `$project-guide`: general Running Coach changes, debugging, setup, tests, and explanations.
 - `$review-running`: code-review mode for diffs, PR-like changes, regressions, privacy leaks, and missing tests.
-- `$body-progress`: Body Progress, scan uploads, MediaPipe, SAM 3D Body, mesh metrics, and avatar work.
-- `$scan-insight-privacy`: body scan LLM insight prompts, schema alignment, prompt context filtering, and privacy checks.
+- `$body-progress`: Body Progress, scan uploads, MediaPipe, SAM 3D Body, mesh metrics, avatar work, and scan insight privacy.
 
 ## Development Rules
 
