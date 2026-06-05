@@ -159,6 +159,33 @@ def test_decision_prompt_sends_all_activities_from_latest_day() -> None:
     assert "current_local_human" in user_prompt
 
 
+def test_decision_and_telegram_prompts_include_running_memory() -> None:
+    system_prompt, user_prompt = build_decision_prompt(
+        decision_type="daily",
+        user=DummyUser(),
+        goal=DummyGoal(),
+        snapshot={},
+        activities_df=pd.DataFrame(),
+        prior_decisions=[],
+        athlete_note="",
+        rules=[],
+        running_memory="# Coach Running Memory\n- Easy days stay easy.",
+    )
+    telegram_system_prompt, telegram_user_prompt = build_telegram_prompt(
+        user=DummyUser(),
+        goal=DummyGoal(),
+        decision_payload={"summary": "Controlled aerobic day."},
+        running_memory="# Coach Running Memory\n- Easy days stay easy.",
+    )
+
+    assert "<running_memory>" in user_prompt
+    assert "Easy days stay easy." in user_prompt
+    assert "Treat it as durable context" in system_prompt
+    assert "<running_memory>" in telegram_user_prompt
+    assert "Easy days stay easy." in telegram_user_prompt
+    assert "running_memory block" in telegram_system_prompt
+
+
 def test_calendar_context_marks_latest_activity_today() -> None:
     today = datetime.now().astimezone().date()
     context = build_calendar_context(

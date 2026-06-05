@@ -22,6 +22,11 @@ from services.coaching_engine import (
 from services.coaching_prompts import build_calendar_context, build_decision_prompt, build_telegram_prompt
 from services.goal_service import GoalService
 from services.llm_workflow import generate_structured_payload
+from services.running_coach_memory import (
+    build_memory_entry_from_decision,
+    load_running_memory,
+    update_running_memory,
+)
 from services.telegram_service import TelegramService
 
 
@@ -278,6 +283,7 @@ class CoachingWorkflowService:
         snapshot = build_training_snapshot(user, activities_df, health_df, goal=goal)
         rules = build_rule_recommendations(snapshot)
         calendar_context = build_calendar_context(activities_df, health_df)
+        running_memory = load_running_memory()
 
         decision = _fallback_decision(
             decision_type=decision_type,
@@ -296,6 +302,7 @@ class CoachingWorkflowService:
             prior_decisions=prior_decisions,
             athlete_note=athlete_note,
             rules=rules,
+            running_memory=running_memory,
         )
         decision_result = generate_structured_payload(
             llm_client=self.llm_client,
@@ -320,7 +327,12 @@ class CoachingWorkflowService:
         decision["snapshot_summary"] = snapshot
 
         message_payload = _fallback_message_payload(goal, decision)
-        system_prompt, user_prompt = build_telegram_prompt(user=user, goal=goal, decision_payload=decision)
+        system_prompt, user_prompt = build_telegram_prompt(
+            user=user,
+            goal=goal,
+            decision_payload=decision,
+            running_memory=running_memory,
+        )
         message_result = generate_structured_payload(
             llm_client=self.llm_client,
             system_prompt=system_prompt,
@@ -362,6 +374,11 @@ class CoachingWorkflowService:
             fatigue_flag=bool(snapshot["fatigue"]["level"] == "high"),
             confidence_score=float(decision.get("confidence", snapshot["prediction"]["confidence"])),
         )
+        try:
+            memory_entry = build_memory_entry_from_decision(decision_type, str(decision_date), decision)
+            update_running_memory(entry=memory_entry)
+        except Exception:
+            pass
 
         delivery_status = "not_sent"
         delivery_message = ""

@@ -12,6 +12,12 @@ from llm.factory import get_llm_client
 from services.coaching_prompts import ELITE_ENDURANCE_COACH_CONTEXT
 from services.goal_service import GoalService
 from services.llm_workflow import generate_structured_payload
+from services.running_coach_memory import (
+    build_memory_entry_from_decision,
+    load_running_memory,
+    running_memory_block,
+    update_running_memory,
+)
 
 
 def build_rule_recommendations(snapshot: dict[str, Any]) -> list[str]:
@@ -230,6 +236,7 @@ class CoachingEngine:
         snapshot = build_training_snapshot(user, activities_df, health_df, goal=goal)
         rules = build_rule_recommendations(snapshot)
         projection = snapshot.get("active_goal_projection") or snapshot["prediction"]
+        running_memory = load_running_memory()
 
         system_prompt = (
             f"{ELITE_ENDURANCE_COACH_CONTEXT}\n\n"
@@ -241,26 +248,30 @@ class CoachingEngine:
             "Judge whether the current training looks effective for the active goal based only on the provided analytics. "
             "Use the custom heart-rate zones from the coaching context. Be honest about pacing discipline, aerobic durability, "
             "fatigue resistance, recovery quality, and whether the athlete is turning easy days into moderate days. "
+            "Use the running_memory block as durable context, but prefer the current analytics if anything conflicts. "
             "Map the requested coaching structure into the available JSON fields: daily_advice and weekly_advice are recommendations, "
             "daily_why and weekly_why are physiological interpretation, training_effectiveness.working contains strengths, "
             "training_effectiveness.limiters contains mistakes/inefficiencies, and explanation ends with a brutally honest conclusion."
         )
-        user_prompt = json.dumps(
-            {
-                "goal": {
-                    "name": goal.name,
-                    "goal_type": goal.goal_type,
-                    "target_distance_km": goal.target_distance_km,
-                    "target_time_minutes": goal.target_time_minutes,
-                    "target_date": goal.target_date,
-                    "target_pace_min_per_km": snapshot["goal_pace"],
+        user_prompt = (
+            f"{running_memory_block(running_memory)}\n"
+            + json.dumps(
+                {
+                    "goal": {
+                        "name": goal.name,
+                        "goal_type": goal.goal_type,
+                        "target_distance_km": goal.target_distance_km,
+                        "target_time_minutes": goal.target_time_minutes,
+                        "target_date": goal.target_date,
+                        "target_pace_min_per_km": snapshot["goal_pace"],
+                    },
+                    "analytics": snapshot,
+                    #"rule_recommendations": rules,
+                    "athlete_note": athlete_note,
                 },
-                "analytics": snapshot,
-                #"rule_recommendations": rules,
-                "athlete_note": athlete_note,
-            },
-            default=str,
-            indent=2,
+                default=str,
+                indent=2,
+            )
         )
 
         result = generate_structured_payload(
@@ -288,4 +299,13 @@ class CoachingEngine:
             fatigue_flag=bool(coaching.get("fatigue_warning")),
             confidence_score=float(coaching.get("confidence", projection["confidence"])),
         )
+        try:
+            memory_entry = build_memory_entry_from_decision(
+                "coaching",
+                str(snapshot.get("date") or goal.target_date or ""),
+                coaching,
+            )
+            update_running_memory(entry=memory_entry)
+        except Exception:
+            pass
         return coaching

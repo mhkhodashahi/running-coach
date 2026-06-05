@@ -18,6 +18,12 @@ from llm.schemas import ActivityCoachInsightSchema
 from services.coaching_prompts import ELITE_ENDURANCE_COACH_CONTEXT
 from services.goal_service import GoalService
 from services.llm_workflow import generate_structured_payload
+from services.running_coach_memory import (
+    build_memory_entry_from_activity,
+    load_running_memory,
+    running_memory_block,
+    update_running_memory,
+)
 from utils.formatting import format_pace_short
 
 CUSTOM_HR_ZONES = [
@@ -118,6 +124,9 @@ class ActivityCoachingService:
         if not readiness.allowed:
             raise ValueError(readiness.reason)
         snapshot = build_training_snapshot(user, activities, health, goal=goal)
+        running_memory = load_running_memory()
+        activity_date_text = str(activity.date)
+        activity_name = getattr(activity, "activity_name", None)
         context = build_activity_coaching_context(
             user=user,
             goal=goal,
@@ -128,7 +137,7 @@ class ActivityCoachingService:
             laps=laps,
             snapshot=snapshot,
         )
-        system_prompt, user_prompt = build_activity_coaching_prompt(context)
+        system_prompt, user_prompt = build_activity_coaching_prompt(context, running_memory=running_memory)
         result = generate_structured_payload(
             llm_client=self.llm_client,
             system_prompt=system_prompt,
@@ -153,6 +162,14 @@ class ActivityCoachingService:
             model_provider=self.settings.llm_provider,
             model_name=_model_name(self.settings),
         )
+        try:
+            memory_entry = build_memory_entry_from_activity(
+                activity_date_text,
+                normalized | {"selected_activity_name": activity_name},
+            )
+            update_running_memory(entry=memory_entry)
+        except Exception:
+            pass
         return normalized
 
     def generate_for_activity(self, *, user_id: int, activity_id: int) -> dict[str, Any]:
@@ -179,6 +196,9 @@ class ActivityCoachingService:
             if not readiness.allowed:
                 raise ValueError(readiness.reason)
             snapshot = build_training_snapshot(user, activities, health, goal=goal)
+            running_memory = load_running_memory()
+            activity_date_text = str(activity.date)
+            activity_name = getattr(activity, "activity_name", None)
             context = build_activity_coaching_context(
                 user=user,
                 goal=goal,
@@ -190,7 +210,7 @@ class ActivityCoachingService:
                 snapshot=snapshot,
             )
 
-        system_prompt, user_prompt = build_activity_coaching_prompt(context)
+        system_prompt, user_prompt = build_activity_coaching_prompt(context, running_memory=running_memory)
         result = generate_structured_payload(
             llm_client=self.llm_client,
             system_prompt=system_prompt,
@@ -216,10 +236,18 @@ class ActivityCoachingService:
                 model_provider=self.settings.llm_provider,
                 model_name=_model_name(self.settings),
             )
+        try:
+            memory_entry = build_memory_entry_from_activity(
+                activity_date_text,
+                normalized | {"selected_activity_name": activity_name},
+            )
+            update_running_memory(entry=memory_entry)
+        except Exception:
+            pass
         return normalized
 
 
-def build_activity_coaching_prompt(context: dict[str, Any]) -> tuple[str, str]:
+def build_activity_coaching_prompt(context: dict[str, Any], running_memory: str | None = None) -> tuple[str, str]:
     """Build the structured per-workout coaching prompt."""
 
     system_prompt = (
@@ -227,6 +255,8 @@ def build_activity_coaching_prompt(context: dict[str, Any]) -> tuple[str, str]:
         "# Per-Workout Analysis Task\n"
         "Analyze exactly one workout using the supplied athlete profile, active goal, selected activity, "
         "recent training context, recovery metrics, lap data, and stream summaries.\n\n"
+        "# Running Memory\n"
+        "Use the running_memory block for durable coaching context. Prefer the selected activity and latest metrics when they conflict with older notes.\n\n"
         "# Context Engineering\n"
         "First decide what kind of workout this most likely was from selected_activity, notes, pace, HR, "
         "training effect, lap pattern, and stream_analysis. Then judge whether the execution matched that likely purpose. "
@@ -253,7 +283,7 @@ def build_activity_coaching_prompt(context: dict[str, Any]) -> tuple[str, str]:
         "- Be specific about what to do in the next run or next 24-48 hours.\n"
         "- Keep medical language conservative and do not diagnose."
     )
-    user_prompt = json.dumps(context, default=_json_default, indent=2)
+    user_prompt = f"{running_memory_block(running_memory)}\n{json.dumps(context, default=_json_default, indent=2)}"
     return system_prompt, user_prompt
 
 
