@@ -420,7 +420,7 @@ def prediction_snapshots_dataframe(session: Session, user_id: int) -> pd.DataFra
         ORDER BY ps.prediction_date ASC, ps.created_at ASC
         """
     )
-    df = pd.read_sql_query(query, session.bind, params={"user_id": user_id})
+    df = pd.read_sql_query(query, session.connection(), params={"user_id": user_id})
     if not df.empty:
         for column in ("prediction_date", "created_at"):
             df[column] = pd.to_datetime(df[column])
@@ -463,7 +463,7 @@ def activities_dataframe(session: Session, user_id: int) -> pd.DataFrame:
         ORDER BY date ASC
         """
     )
-    df = pd.read_sql_query(query, session.bind, params={"user_id": user_id})
+    df = pd.read_sql_query(query, session.connection(), params={"user_id": user_id})
     if not df.empty:
         df["date"] = pd.to_datetime(df["date"])
     return df
@@ -481,7 +481,7 @@ def health_metrics_dataframe(session: Session, user_id: int) -> pd.DataFrame:
         ORDER BY date ASC
         """
     )
-    df = pd.read_sql_query(query, session.bind, params={"user_id": user_id})
+    df = pd.read_sql_query(query, session.connection(), params={"user_id": user_id})
     if not df.empty:
         df["date"] = pd.to_datetime(df["date"])
     return df

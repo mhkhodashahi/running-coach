@@ -10,7 +10,6 @@ Use these repository-specific instructions for Codex work in this project.
 - Dashboard page: `app/dashboard.py`
 - Streamlit pages: `app/pages/`
 - Body Progress page: `app/pages/9_Body_Progress.py`
-- Performance Dashboard page: `app/pages/6_Analysis.py`, embedding `app/performance_dashboard.html`
 - Activity Detail page: `app/pages/8_Activity_Detail.py`
 - Reusable body scan code: `body_progress/`
 - Data access: `db/repository.py`, `db/session.py`, and SQLAlchemy models in `db/models.py`
@@ -28,8 +27,7 @@ Prefer these skill names when invoking repo guidance:
 
 - `$project-guide`: general Running Coach changes, debugging, setup, tests, and explanations.
 - `$review-running`: code-review mode for diffs, PR-like changes, regressions, privacy leaks, and missing tests.
-- `$body-progress`: Body Progress, scan uploads, MediaPipe, SAM 3D Body, mesh metrics, and avatar work.
-- `$scan-insight-privacy`: body scan LLM insight prompts, schema alignment, prompt context filtering, and privacy checks.
+- `$body-progress`: Body Progress, scan uploads, MediaPipe, SAM 3D Body, mesh metrics, avatar work, and scan insight privacy.
 
 ## Development Rules
 
@@ -52,6 +50,7 @@ Prefer these skill names when invoking repo guidance:
 ## Garmin Import And Recovery Data
 
 - Garmin live sync lives in `services/garmin_client.py`; CSV/mock import uses `CSVGarminClient` in the same module.
+- Garmin payload normalization lives in `services/garmin_normalization.py`; keep Garmin field-shape and unit conversion rules there.
 - Activity rows should include `external_id`, `activity_name`, date/type/distance/duration/pace, HR/cadence/elevation/training effects, and notes.
 - Health rows should include sleep, resting HR, HRV, stress, body battery, recovery time, and VO2max when available.
 - `recovery_time` is displayed directly from `health_metrics.recovery_time`; the app does not calculate Garmin recovery time itself.
@@ -71,15 +70,6 @@ sqlite3 db/running_coach.db "select date, recovery_time, sleep_score, body_batte
 - After CSV import, demo seed, or Garmin sync, store prediction snapshots for running activities so Activity Detail can show "Prediction After This Run" and Dashboard can show "Prediction Trend".
 - Prediction snapshots should be tied to the active goal and activity when possible. They represent the prediction using data up to that activity date, not today's full future dataset.
 - Keep the prediction model deterministic and explainable; do not replace it with LLM output.
-
-## Performance Dashboard
-
-- The old Analysis page has been replaced by a Performance Dashboard.
-- `app/pages/6_Analysis.py` is intentionally a thin Streamlit wrapper. It loads real Garmin-style data with `load_training_bundle()`, maps it into a JSON payload, injects `window.PERFORMANCE_DASHBOARD_DATA`, and embeds `app/performance_dashboard.html`.
-- `app/performance_dashboard.html` is a complete static HTML/CSS/JS app. It can open directly in a browser, in which case it falls back to mock data. Inside Streamlit it should prefer injected real data.
-- Keep the page single-file on the frontend side unless there is a strong reason to split it. If editing JavaScript, validate by extracting inline scripts and running `node --check` on the temporary JS file.
-- Do not hardcode mock data over real data. Any new chart should use the injected payload when present and only fall back to generated demo data when opened outside Streamlit.
-- The dashboard should stay dense, athletic, and comparison-oriented: filters, KPIs, widget actions, local overrides, exports, details drawer, light/dark mode, and responsive behavior should keep working.
 
 ## Activity Detail, Maps, And HR Zones
 
@@ -147,7 +137,7 @@ sqlite3 db/running_coach.db "select date, recovery_time, sleep_score, body_batte
 ## UX Preferences
 
 - Keep the app style practical and motivational: warm orange accents, rounded cards, Plotly charts, and athlete-friendly labels.
-- Dashboard, Performance Dashboard, and analysis-style pages should answer coaching questions, not just show raw data.
+- Dashboard and analysis-style pages should answer coaching questions, not just show raw data.
 - First-run/demo data should remain useful without Garmin, OpenAI, Ollama, Telegram, Google Maps, or SAM configured.
 - Optional/experimental surfaces should stay setup-aware and degrade gracefully instead of failing at page load.
 - Body Progress should make scan outputs understandable: preview image, scan metrics, SAM shape metrics, LLM insight history, and mesh-based avatar when available.
@@ -167,13 +157,6 @@ For linting:
 
 ```bash
 .venv/bin/python -m ruff check path/to/file.py
-```
-
-For `app/performance_dashboard.html` JavaScript:
-
-```bash
-perl -0ne 'while(/<script>(.*?)<\\/script>/sg){print $1}' app/performance_dashboard.html > /private/tmp/performance_dashboard.js
-node --check /private/tmp/performance_dashboard.js
 ```
 
 - For body progress changes, run:

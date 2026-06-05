@@ -4,6 +4,16 @@ from __future__ import annotations
 
 from sqlalchemy import inspect, text
 
+from body_progress.insight_sql import (
+    BODY_SCAN_INSIGHTS_CREATE_TABLE_SQL,
+    BODY_SCAN_INSIGHTS_DATE_INDEX_SQL,
+    BODY_SCAN_INSIGHTS_USER_INDEX_SQL,
+)
+from body_progress.sql import (
+    BODY_SCANS_CREATE_TABLE_SQL,
+    BODY_SCANS_DATE_INDEX_SQL,
+    BODY_SCANS_INDEX_SQL,
+)
 from config import get_settings
 from db.models import Base
 from db.session import engine
@@ -19,6 +29,7 @@ def init_db() -> None:
     _migrate_activities_table()
     _migrate_activity_coaching_insights_table()
     _create_prediction_snapshots_table()
+    _create_body_progress_tables()
 
 
 def _migrate_users_table() -> None:
@@ -31,11 +42,45 @@ def _migrate_users_table() -> None:
         "name": "ALTER TABLE users ADD COLUMN name VARCHAR(80)",
         "training_days_per_week": "ALTER TABLE users ADD COLUMN training_days_per_week INTEGER",
         "injury_notes": "ALTER TABLE users ADD COLUMN injury_notes TEXT",
+        "running_goal_time": "ALTER TABLE users ADD COLUMN running_goal_time VARCHAR(16) NOT NULL DEFAULT '03:59:59'",
+        "running_date": "ALTER TABLE users ADD COLUMN running_date DATE",
     }
     with engine.begin() as connection:
         for column_name, statement in migrations.items():
             if column_name not in existing_columns:
                 connection.execute(text(statement))
+        if "marathon_goal_time" in existing_columns:
+            connection.execute(
+                text(
+                    """
+                    UPDATE users
+                    SET running_goal_time = marathon_goal_time
+                    WHERE marathon_goal_time IS NOT NULL
+                    """
+                )
+            )
+        if "marathon_date" in existing_columns:
+            connection.execute(
+                text(
+                    """
+                    UPDATE users
+                    SET running_date = marathon_date
+                    WHERE marathon_date IS NOT NULL
+                    """
+                )
+            )
+
+    _migrate_goal_type_values()
+
+
+def _migrate_goal_type_values() -> None:
+    inspector = inspect(engine)
+    if "goals" not in inspector.get_table_names():
+        return
+
+    with engine.begin() as connection:
+        connection.execute(text("UPDATE goals SET goal_type = 'running_pb' WHERE goal_type = 'marathon_pb'"))
+        connection.execute(text("UPDATE goals SET name = REPLACE(name, 'Marathon', 'Running') WHERE name LIKE '%Marathon%'"))
 
 
 def _migrate_activities_table() -> None:
@@ -102,3 +147,15 @@ def _create_prediction_snapshots_table() -> None:
         connection.execute(text("CREATE INDEX IF NOT EXISTS ix_prediction_snapshots_activity_id ON prediction_snapshots (activity_id)"))
         connection.execute(text("CREATE INDEX IF NOT EXISTS ix_prediction_snapshots_goal_id ON prediction_snapshots (goal_id)"))
         connection.execute(text("CREATE INDEX IF NOT EXISTS ix_prediction_snapshots_prediction_date ON prediction_snapshots (prediction_date)"))
+
+
+def _create_body_progress_tables() -> None:
+    """Create body progress tables and indexes for lightweight local setup."""
+
+    with engine.begin() as connection:
+        connection.execute(text(BODY_SCANS_CREATE_TABLE_SQL))
+        connection.execute(text(BODY_SCANS_INDEX_SQL))
+        connection.execute(text(BODY_SCANS_DATE_INDEX_SQL))
+        connection.execute(text(BODY_SCAN_INSIGHTS_CREATE_TABLE_SQL))
+        connection.execute(text(BODY_SCAN_INSIGHTS_DATE_INDEX_SQL))
+        connection.execute(text(BODY_SCAN_INSIGHTS_USER_INDEX_SQL))

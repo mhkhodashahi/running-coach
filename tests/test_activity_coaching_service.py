@@ -175,7 +175,10 @@ def test_activity_coaching_prompt_uses_profile_and_required_analysis_categories(
         laps=pd.DataFrame(),
         snapshot={"readiness": {"score": 72}, "weekly_mileage": {"7d": 32.0}},
     )
-    system_prompt, user_prompt = build_activity_coaching_prompt(context)
+    system_prompt, user_prompt = build_activity_coaching_prompt(
+        context,
+        running_memory="# Coach Running Memory\n- Easy days stay easy.",
+    )
 
     assert "honest feedback, strengths, mistakes, pacing analysis" in system_prompt
     assert "aerobic_efficiency_analysis" in system_prompt
@@ -193,3 +196,5 @@ def test_activity_coaching_prompt_uses_profile_and_required_analysis_categories(
     assert '"key_questions"' in user_prompt
     assert "Zone 2 Easy/Aerobic" in user_prompt
     assert "custom_zone_distribution" in user_prompt
+    assert "<running_memory>" in user_prompt
+    assert "Easy days stay easy." in user_prompt

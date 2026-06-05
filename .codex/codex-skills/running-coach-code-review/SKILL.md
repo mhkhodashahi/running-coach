@@ -7,7 +7,7 @@ description: Review Running Coach repository changes for bugs, regressions, priv
 
 ## Start Here
 
-Read `.codex/agent.md` first. Use `$project-guide` for general repo context, 
+Read `.codex/agent.md` first. Use `$project-guide` for general repo context.
 
 Default to a code-review stance: findings first, ordered by severity, with file and line references. Keep summaries secondary.
 
@@ -34,9 +34,9 @@ If the workspace is not a Git repository, review the named files directly and sa
 - SQLite persistence: model fields, repository writes, fallback `CREATE TABLE IF NOT EXISTS` SQL, dataframe readers, and commits must stay consistent.
 - Streamlit pages: avoid import-time side effects beyond existing page patterns; preserve page names and navigation conventions.
 - Body scans: never leak raw image paths, mesh paths, checkpoint paths, command logs, stdout/stderr tails, or local runtime paths to LLM prompts or user-facing insight text unless explicitly requested for debugging.
-- LLM workflows: keep schemas, prompts, normalization, and fallback payloads aligned.
+- LLM workflows: keep schemas, prompts, normalization, fallback payloads, and `services/llm_workflow.py` usage aligned.
 - SAM 3D Body: treat metrics as relative proxies only; do not imply diagnosis, exact anthropometry, body fat, or injury certainty.
-- Garmin sync/import: avoid breaking activity IDs, GPS points, laps/splits, token handling, or mock-data fallback.
+- Garmin sync/import: avoid breaking activity IDs, GPS points, laps/splits, token handling, mock-data fallback, or the split between `services/garmin_client.py` orchestration and `services/garmin_normalization.py` field/unit rules.
 - Goal/coaching logic: keep analytics deterministic and explainable unless the user explicitly asks for LLM behavior.
 - UI changes: ensure text fits, preserve practical dashboard styling, and avoid unrelated redesigns.
 
@@ -46,12 +46,14 @@ Look for:
 
 - behavior regressions, data loss, or broken persistence
 - schema drift between DB models, SQL strings, repository functions, and tests
+- table creation outside `db/setup.py` when lightweight setup should be centralized
 - prompt/privacy leaks or overly broad LLM context
 - missing error handling around external services or local heavy processors
 - brittle path assumptions, especially around SAM paths and local output directories
 - tests that assert implementation details while missing user-visible behavior
 - missing targeted tests for new branches or privacy boundaries
 - dead code, accidental `print`, debug logging, or exposed local paths
+- stale references to removed pages such as `app/pages/6_Analysis.py` or `app/performance_dashboard.html`
 
 ## Output Format
 

@@ -10,20 +10,9 @@ from pathlib import Path
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
-from sqlalchemy import text
 
 from body_progress.avatar import build_avatar_state
 from body_progress.domain import BodyScanSummary
-from body_progress.insight_sql import (
-    BODY_SCAN_INSIGHTS_CREATE_TABLE_SQL,
-    BODY_SCAN_INSIGHTS_DATE_INDEX_SQL,
-    BODY_SCAN_INSIGHTS_USER_INDEX_SQL,
-)
-from body_progress.sql import (
-    BODY_SCANS_CREATE_TABLE_SQL,
-    BODY_SCANS_DATE_INDEX_SQL,
-    BODY_SCANS_INDEX_SQL,
-)
 from config import get_settings
 from db import repository
 from db.session import session_scope
@@ -42,28 +31,7 @@ VIEW_OPTIONS = {
 
 
 def _body_scans_dataframe(session, user_id: int) -> pd.DataFrame:
-    session.execute(text(BODY_SCANS_CREATE_TABLE_SQL))
-    session.execute(text(BODY_SCANS_INDEX_SQL))
-    session.execute(text(BODY_SCANS_DATE_INDEX_SQL))
-    if hasattr(repository, "body_scans_dataframe"):
-        return repository.body_scans_dataframe(session, user_id)
-
-    query = text(
-        """
-        SELECT id, user_id, scan_date, view, status, source_image_path,
-               preview_image_path, mesh_path, keypoints_json, measurements_json,
-               pose_quality, processor_name,
-               error_message, consent_to_store_image, notes, created_at, updated_at
-        FROM body_scans
-        WHERE user_id = :user_id
-        ORDER BY scan_date ASC, created_at ASC
-        """
-    )
-    df = pd.read_sql_query(query, session.bind, params={"user_id": user_id})
-    if not df.empty:
-        for column in ("scan_date", "created_at", "updated_at"):
-            df[column] = pd.to_datetime(df[column])
-    return df
+    return repository.body_scans_dataframe(session, user_id)
 
 
 def _body_scan_summaries(scans_df: pd.DataFrame) -> list[BodyScanSummary]:
@@ -90,26 +58,7 @@ def _body_scan_summaries(scans_df: pd.DataFrame) -> list[BodyScanSummary]:
 
 
 def _body_scan_insights_dataframe(session, user_id: int) -> pd.DataFrame:
-    session.execute(text(BODY_SCAN_INSIGHTS_CREATE_TABLE_SQL))
-    session.execute(text(BODY_SCAN_INSIGHTS_USER_INDEX_SQL))
-    session.execute(text(BODY_SCAN_INSIGHTS_DATE_INDEX_SQL))
-    if hasattr(repository, "body_scan_insights_dataframe"):
-        return repository.body_scan_insights_dataframe(session, user_id)
-
-    query = text(
-        """
-        SELECT id, user_id, insight_date, scan_ids_json, summary, payload_json,
-               prompt_context_json, model_provider, model_name, created_at
-        FROM body_scan_insights
-        WHERE user_id = :user_id
-        ORDER BY insight_date DESC, created_at DESC
-        """
-    )
-    df = pd.read_sql_query(query, session.bind, params={"user_id": user_id})
-    if not df.empty:
-        for column in ("insight_date", "created_at"):
-            df[column] = pd.to_datetime(df[column])
-    return df
+    return repository.body_scan_insights_dataframe(session, user_id)
 
 
 def _body_progress_css() -> None:

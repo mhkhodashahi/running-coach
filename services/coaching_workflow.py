@@ -21,6 +21,12 @@ from services.coaching_engine import (
 )
 from services.coaching_prompts import build_calendar_context, build_decision_prompt, build_telegram_prompt
 from services.goal_service import GoalService
+from services.llm_workflow import generate_structured_payload
+from services.running_coach_memory import (
+    build_memory_entry_from_decision,
+    load_running_memory,
+    update_running_memory,
+)
 from services.telegram_service import TelegramService
 
 
@@ -277,6 +283,7 @@ class CoachingWorkflowService:
         snapshot = build_training_snapshot(user, activities_df, health_df, goal=goal)
         rules = build_rule_recommendations(snapshot)
         calendar_context = build_calendar_context(activities_df, health_df)
+        running_memory = load_running_memory()
 
         decision = _fallback_decision(
             decision_type=decision_type,
@@ -286,27 +293,29 @@ class CoachingWorkflowService:
             rules=rules,
         )
 
-        try:
-            system_prompt, user_prompt = build_decision_prompt(
-                decision_type=decision_type,
-                user=user,
-                goal=goal,
-                snapshot=snapshot,
-                activities_df=activities_df,
-                prior_decisions=prior_decisions,
-                athlete_note=athlete_note,
-                rules=rules,
-            )
-            llm_payload = _normalize_decision_payload(
-                self.llm_client.generate_json(
-                    system_prompt,
-                    user_prompt,
-                    response_schema=CoachingDecisionSchema,
-                )
-            )
-            decision.update(llm_payload)
-        except Exception as exc:
-            decision["llm_warning"] = f"Coaching model unavailable: {exc}"
+        system_prompt, user_prompt = build_decision_prompt(
+            decision_type=decision_type,
+            user=user,
+            goal=goal,
+            snapshot=snapshot,
+            activities_df=activities_df,
+            prior_decisions=prior_decisions,
+            athlete_note=athlete_note,
+            rules=rules,
+            running_memory=running_memory,
+        )
+        decision_result = generate_structured_payload(
+            llm_client=self.llm_client,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            response_schema=CoachingDecisionSchema,
+            normalize=_normalize_decision_payload,
+            unavailable_message="Coaching model unavailable",
+        )
+        if decision_result.warning:
+            decision["llm_warning"] = decision_result.warning
+        else:
+            decision.update(decision_result.payload)
 
         decision["decision_type"] = decision_type
         decision["athlete_name"] = user.name
@@ -318,21 +327,28 @@ class CoachingWorkflowService:
         decision["snapshot_summary"] = snapshot
 
         message_payload = _fallback_message_payload(goal, decision)
-        try:
-            system_prompt, user_prompt = build_telegram_prompt(user=user, goal=goal, decision_payload=decision)
-            llm_message_payload = _normalize_message_payload(
-                self.llm_client.generate_json(
-                    system_prompt,
-                    user_prompt,
-                    response_schema=TelegramMessageSchema,
-                )
-            )
+        system_prompt, user_prompt = build_telegram_prompt(
+            user=user,
+            goal=goal,
+            decision_payload=decision,
+            running_memory=running_memory,
+        )
+        message_result = generate_structured_payload(
+            llm_client=self.llm_client,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            response_schema=TelegramMessageSchema,
+            normalize=_normalize_message_payload,
+            unavailable_message="Telegram drafting model unavailable",
+        )
+        if message_result.warning:
+            decision["message_warning"] = message_result.warning
+        else:
+            llm_message_payload = message_result.payload
             if llm_message_payload["message_title"]:
                 message_payload["message_title"] = llm_message_payload["message_title"]
             if llm_message_payload["message_body"]:
                 message_payload["message_body"] = llm_message_payload["message_body"]
-        except Exception as exc:
-            decision["message_warning"] = f"Telegram drafting model unavailable: {exc}"
 
         decision.update(message_payload)
         decision["email_subject"] = message_payload["message_title"]
@@ -358,6 +374,11 @@ class CoachingWorkflowService:
             fatigue_flag=bool(snapshot["fatigue"]["level"] == "high"),
             confidence_score=float(decision.get("confidence", snapshot["prediction"]["confidence"])),
         )
+        try:
+            memory_entry = build_memory_entry_from_decision(decision_type, str(decision_date), decision)
+            update_running_memory(entry=memory_entry)
+        except Exception:
+            pass
 
         delivery_status = "not_sent"
         delivery_message = ""

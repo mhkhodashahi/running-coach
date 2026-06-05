@@ -9,6 +9,7 @@ from typing import Any
 import pandas as pd
 
 from services.goal_service import GoalService
+from services.running_coach_memory import running_memory_block
 
 ELITE_ENDURANCE_COACH_CONTEXT = """
 # Elite Endurance Coaching Context
@@ -319,6 +320,7 @@ def build_decision_prompt(
     prior_decisions: list[dict[str, Any]],
     athlete_note: str,
     rules: list[str],
+    running_memory: str | None = None,
 ) -> tuple[str, str]:
     compact_snapshot = _compact_snapshot(snapshot)
     user_payload = _user_payload(user)
@@ -334,6 +336,7 @@ def build_decision_prompt(
         "# Task\n"
         f"Produce one structured {decision_type} coaching decision using only the supplied goal, athlete profile, training history, metrics, and note.\n\n"
         "# Coaching Responsibilities\n"
+        "Use the running_memory block as long-term coaching memory. Treat it as durable context, but prefer the current data if it conflicts with older notes.\n"
         "Use the supplied calendar_context to understand today's exact date and weekday before writing the decision.\n"
         "If the latest activity happened today, describe it as today's run/session. Do not call it yesterday.\n"
         "If the latest activity happened yesterday, describe it as yesterday. Otherwise use the exact activity date.\n"
@@ -384,6 +387,7 @@ def build_decision_prompt(
     )
     user_prompt = (
         "# Decision Context\n"
+        f"{running_memory_block(running_memory)}\n"
         f"<decision_type>{decision_type}</decision_type>\n"
         f"<athlete_profile>{json.dumps(user_payload, default=str, ensure_ascii=True)}</athlete_profile>\n"
         f"<calendar_context>{json.dumps(calendar_context, default=str, ensure_ascii=True)}</calendar_context>\n"
@@ -402,6 +406,7 @@ def build_telegram_prompt(
     user: Any | None = None,
     goal: Any | None,
     decision_payload: dict[str, Any],
+    running_memory: str | None = None,
 ) -> tuple[str, str]:
     athlete_name = getattr(user, "name", None) if user is not None else None
     compact_payload = {
@@ -428,6 +433,8 @@ def build_telegram_prompt(
         "# Task\n"
         "Turn the coaching decision into a concrete Telegram message grounded in the athlete's actual latest data.\n"
         "The athlete is unhappy with generic messages. Be specific about what they did and what their body signals show.\n\n"
+        "# Continuity\n"
+        "Use the running_memory block when it adds useful continuity, but do not override the concrete coaching decision or the latest data.\n\n"
         "# Evidence Requirements\n"
         "- Use calendar_context to understand today's exact date and whether the latest activity was today, yesterday, or earlier.\n"
         "- If the latest activity was today, call it today's run/session instead of yesterday's.\n"
@@ -459,6 +466,7 @@ def build_telegram_prompt(
     )
     user_prompt = (
         "# Delivery Context\n"
+        f"{running_memory_block(running_memory)}\n"
         f"<athlete_name>{athlete_name or ''}</athlete_name>\n"
         f"<active_goal>{json.dumps(_goal_payload(goal), default=str, ensure_ascii=True)}</active_goal>\n"
         f"<coaching_decision>{json.dumps(compact_payload, default=str, ensure_ascii=True)}</coaching_decision>"

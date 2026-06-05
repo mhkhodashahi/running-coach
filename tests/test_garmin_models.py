@@ -6,8 +6,9 @@ import pandas as pd
 import pytest
 from pydantic import ValidationError
 
-from services.garmin_client import CSVGarminClient, GarminAPIClient, _extract_recovery_time_hours, extract_activity_track_points
+from services.garmin_client import CSVGarminClient, GarminAPIClient
 from services.garmin_models import validate_laps, validate_track_points
+from services.garmin_normalization import _extract_recovery_time_hours, extract_activity_track_points
 from ui.google_maps import downsample_route, encode_polyline, route_heading_degrees
 
 

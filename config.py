@@ -19,6 +19,13 @@ def _resolve_path(raw_path: str, fallback: Path) -> Path:
     return path if path.is_absolute() else (BASE_DIR / path).resolve()
 
 
+def _resolve_db_path(raw_path: str, fallback: Path) -> Path:
+    path = Path(raw_path) if raw_path else fallback
+    if path.name == "marathon_coach.db":
+        path = path.with_name("running_coach.db")
+    return path if path.is_absolute() else (BASE_DIR / path).resolve()
+
+
 def _env_bool(name: str, default: bool = False) -> bool:
     value = os.getenv(name)
     if value is None:
@@ -89,7 +96,7 @@ def get_settings() -> Settings:
         base_dir=BASE_DIR,
         data_dir=data_dir,
         db_dir=db_dir,
-        db_path=_resolve_path(os.getenv("DB_PATH", ""), db_dir / "running_coach.db"),
+        db_path=_resolve_db_path(os.getenv("DB_PATH", ""), db_dir / "running_coach.db"),
         mock_activities_path=data_dir / "mock_activities.csv",
         mock_health_path=data_dir / "mock_health_metrics.csv",
         body_scan_dir=_resolve_path(os.getenv("BODY_SCAN_DIR", "data/body_scans"), data_dir / "body_scans"),

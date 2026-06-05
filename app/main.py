@@ -19,7 +19,6 @@ pages = [
     ),
     st.Page("pages/4_AI_Coach.py", title="AI Coach", icon=":material/smart_toy:"),
     st.Page("pages/5_Goals_and_Digests.py", title="Goals and Digests", icon=":material/event_note:"),
-    st.Page("pages/6_Analysis.py", title="Performance Dashboard", icon=":material/analytics:"),
     st.Page("pages/7_Quality_Sessions.py", title="Quality Sessions", icon=":material/fitness_center:"),
     st.Page("pages/8_Activity_Detail.py", title="Activity Detail", icon=":material/route:"),
     st.Page("pages/10_Connect_Plus.py", title="Connect+ Premium", icon=":material/diamond:"),

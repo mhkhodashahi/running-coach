@@ -8,22 +8,12 @@ from datetime import date
 from typing import Any
 
 import pandas as pd
-from sqlalchemy import text
 
-from body_progress.insight_sql import (
-    BODY_SCAN_INSIGHTS_CREATE_TABLE_SQL,
-    BODY_SCAN_INSIGHTS_DATE_INDEX_SQL,
-    BODY_SCAN_INSIGHTS_USER_INDEX_SQL,
-)
-from body_progress.sql import (
-    BODY_SCANS_CREATE_TABLE_SQL,
-    BODY_SCANS_DATE_INDEX_SQL,
-    BODY_SCANS_INDEX_SQL,
-)
 from config import get_settings
 from db import repository
 from llm.factory import get_llm_client
 from llm.schemas import BodyScanInsightSchema
+from services.llm_workflow import generate_structured_payload
 
 
 @dataclass(frozen=True)
@@ -233,7 +223,6 @@ class BodyScanInsightService:
         )
 
     def generate(self, session, user, athlete_question: str = "") -> BodyScanInsightResult:
-        self._ensure_tables(session)
         scans_df = self._body_scans_dataframe(session, user.id)
         prior_insights_df = self._body_scan_insights_dataframe(session, user.id)
         context = self._build_context(user, scans_df, prior_insights_df, athlete_question)
@@ -242,14 +231,19 @@ class BodyScanInsightService:
         if scans_df.empty:
             payload["summary"] = "No body scans are available yet. Upload at least one scan before asking for analysis."
         else:
-            try:
-                system_prompt, user_prompt = self._build_prompt(context)
-                llm_payload = self.llm_client.generate_json(
-                    system_prompt,
-                    user_prompt,
-                    response_schema=BodyScanInsightSchema,
-                )
-                normalized = _normalize_insight_payload(llm_payload)
+            system_prompt, user_prompt = self._build_prompt(context)
+            result = generate_structured_payload(
+                llm_client=self.llm_client,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                response_schema=BodyScanInsightSchema,
+                unavailable_message="Body scan insight model unavailable",
+            )
+            if result.warning:
+                payload["llm_warning"] = result.warning
+            else:
+                llm_payload = result.payload
+                normalized = _normalize_insight_payload(result.payload)
                 if normalized.get("summary"):
                     payload.update(normalized)
                     if "explanation" in llm_payload and not llm_payload.get("visual_changes"):
@@ -257,8 +251,6 @@ class BodyScanInsightService:
                 else:
                     payload[
                         "llm_warning"] = f"LLM returned an unusable payload: {json.dumps(llm_payload, default=str)[:500]}"
-            except Exception as exc:
-                payload["llm_warning"] = f"Body scan insight model unavailable: {exc}"
 
         payload["athlete_name"] = user.name
         payload["scan_count"] = len(context["scans"])
@@ -279,42 +271,11 @@ class BodyScanInsightService:
         payload["body_scan_insight_id"] = stored
         return BodyScanInsightResult(insight_id=stored, payload=payload)
 
-    def _ensure_tables(self, session) -> None:
-        session.execute(text(BODY_SCANS_CREATE_TABLE_SQL))
-        session.execute(text(BODY_SCANS_INDEX_SQL))
-        session.execute(text(BODY_SCANS_DATE_INDEX_SQL))
-        session.execute(text(BODY_SCAN_INSIGHTS_CREATE_TABLE_SQL))
-        session.execute(text(BODY_SCAN_INSIGHTS_USER_INDEX_SQL))
-        session.execute(text(BODY_SCAN_INSIGHTS_DATE_INDEX_SQL))
-
     def _body_scans_dataframe(self, session, user_id: int) -> pd.DataFrame:
         return repository.body_scans_dataframe(session, user_id)
 
     def _body_scan_insights_dataframe(self, session, user_id: int) -> pd.DataFrame:
-        if hasattr(repository, "body_scan_insights_dataframe"):
-            return repository.body_scan_insights_dataframe(session, user_id)
-        query = text(
-            """
-            SELECT id,
-                   user_id,
-                   insight_date,
-                   scan_ids_json,
-                   summary,
-                   payload_json,
-                   prompt_context_json,
-                   model_provider,
-                   model_name,
-                   created_at
-            FROM body_scan_insights
-            WHERE user_id = :user_id
-            ORDER BY insight_date DESC, created_at DESC
-            """
-        )
-        df = pd.read_sql_query(query, session.bind, params={"user_id": user_id})
-        if not df.empty:
-            for column in ("insight_date", "created_at"):
-                df[column] = pd.to_datetime(df[column])
-        return df
+        return repository.body_scan_insights_dataframe(session, user_id)
 
     def _build_context(
             self,
@@ -492,40 +453,15 @@ Now analyze this athlete’s scan history:
             payload_json: str,
             prompt_context_json: str,
     ) -> int:
-        if hasattr(repository, "store_body_scan_insight"):
-            stored = repository.store_body_scan_insight(
-                session=session,
-                user_id=user_id,
-                insight_date=insight_date,
-                scan_ids=scan_ids,
-                summary=summary,
-                payload_json=payload_json,
-                prompt_context_json=prompt_context_json,
-                model_provider=self.settings.llm_provider,
-                model_name=self.settings.openai_model if self.settings.llm_provider == "openai" else self.settings.ollama_model,
-            )
-            return int(stored.id)
-
-        result = session.execute(
-            text(
-                """
-                INSERT INTO body_scan_insights (user_id, insight_date, scan_ids_json, summary, payload_json,
-                                                prompt_context_json, model_provider, model_name, created_at)
-                VALUES (:user_id, :insight_date, :scan_ids_json, :summary, :payload_json,
-                        :prompt_context_json, :model_provider, :model_name, CURRENT_TIMESTAMP)
-                """
-            ),
-            {
-                "user_id": user_id,
-                "insight_date": insight_date,
-                "scan_ids_json": json.dumps(scan_ids),
-                "summary": summary,
-                "payload_json": payload_json,
-                "prompt_context_json": prompt_context_json,
-                "model_provider": self.settings.llm_provider,
-                "model_name": self.settings.openai_model
-                if self.settings.llm_provider == "openai"
-                else self.settings.ollama_model,
-            },
+        stored = repository.store_body_scan_insight(
+            session=session,
+            user_id=user_id,
+            insight_date=insight_date,
+            scan_ids=scan_ids,
+            summary=summary,
+            payload_json=payload_json,
+            prompt_context_json=prompt_context_json,
+            model_provider=self.settings.llm_provider,
+            model_name=self.settings.openai_model if self.settings.llm_provider == "openai" else self.settings.ollama_model,
         )
-        return int(result.lastrowid)
+        return int(stored.id)
