@@ -1,0 +1,34 @@
+name: Code Quality
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  quality:
+    name: Ruff and Syntax
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: poetry
+
+      - name: Install Poetry
+        run: pipx install poetry
+
+      - name: Install dependencies
+        run: poetry install --extras dev
+
+      - name: Run Ruff
+        run: poetry run ruff check .
+
+      - name: Check Python syntax
+        run: poetry run python -m compileall -q .
