@@ -152,9 +152,8 @@ def build_memory_entry_from_decision(decision_type: str, decision_date_text: str
     evidence = _string_items(decision_payload.get("evidence"))
     if not evidence and decision_payload.get("goal_alignment"):
         evidence = [str(decision_payload["goal_alignment"]).strip()]
-    headline = f"{decision_type.title()} coaching"
-    if decision_payload.get("risk_level"):
-        headline = f"{headline} ({str(decision_payload.get('risk_level')).strip().lower()})"
+    risk_level = str(decision_payload.get("risk_level") or "moderate").strip().lower()
+    headline = f"{decision_type.title()} coaching ({risk_level})"
     return build_memory_entry(
         source=f"decision:{decision_type}",
         date_text=decision_date_text,
