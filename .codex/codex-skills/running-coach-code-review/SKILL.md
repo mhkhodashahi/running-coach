@@ -24,7 +24,7 @@ Useful commands:
 git diff -- path/to/file.py
 git status --short
 rg -n "symbol_or_field_name" relevant_dir
-python -m pytest tests/test_body_progress.py
+
 ```
 
 If the workspace is not a Git repository, review the named files directly and say that no git diff was available.
