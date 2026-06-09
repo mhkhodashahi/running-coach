@@ -161,9 +161,6 @@ For linting:
 
 - For body progress changes, run:
 
-```bash
-.venv/bin/python -m pytest tests/test_body_progress.py
-```
 
 - For broader changes, run:
 
