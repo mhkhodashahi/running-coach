@@ -14,6 +14,7 @@ from services.activity_coaching_service import (
     build_activity_coaching_context,
     build_activity_coaching_prompt,
     can_generate_activity_coach_opinion,
+    normalize_activity_coach_payload,
     supports_activity_coach_opinion,
 )
 
@@ -198,3 +199,83 @@ def test_activity_coaching_prompt_uses_profile_and_required_analysis_categories(
     assert "custom_zone_distribution" in user_prompt
     assert "<running_memory>" in user_prompt
     assert "Easy days stay easy." in user_prompt
+
+
+def test_activity_coach_payload_accepts_ollama_explanation_text() -> None:
+    normalized = normalize_activity_coach_payload(
+        {
+            "explanation": (
+                "This was a controlled aerobic run. The average HR stayed mostly in the easy range, "
+                "but the finish drifted harder than ideal."
+            )
+        }
+    )
+
+    assert normalized["overall_assessment"].startswith("This was a controlled aerobic run")
+    assert normalized["confidence"] == 0
+
+
+def test_activity_coach_payload_accepts_common_local_model_aliases() -> None:
+    normalized = normalize_activity_coach_payload(
+        {
+            "summary": "Easy run with useful aerobic work, but not fully disciplined.",
+            "strengths": "Good early control.",
+            "areas_to_improve": ["Keep the last 10 minutes easier."],
+            "recommendations": "Next easy run should stay in Zone 2.",
+            "pacing": "Started controlled and faded slightly.",
+            "aerobic_efficiency": "HR drift suggests mild fatigue.",
+            "mental": "Good patience early.",
+            "conclusion": "Useful work, but do not race easy days.",
+            "confidence": "68",
+        }
+    )
+
+    assert normalized["overall_assessment"] == "Easy run with useful aerobic work, but not fully disciplined."
+    assert normalized["what_was_good"] == ["Good early control."]
+    assert normalized["mistakes_or_inefficiencies"] == ["Keep the last 10 minutes easier."]
+    assert normalized["training_recommendations"] == ["Next easy run should stay in Zone 2."]
+    assert normalized["pacing_analysis"] == "Started controlled and faded slightly."
+    assert normalized["aerobic_efficiency_analysis"] == "HR drift suggests mild fatigue."
+    assert normalized["mental_performance_insights"] == "Good patience early."
+    assert normalized["brutally_honest_conclusion"] == "Useful work, but do not race easy days."
+    assert normalized["confidence"] == 68
+
+
+def test_activity_coach_payload_accepts_nested_local_model_analysis() -> None:
+    normalized = normalize_activity_coach_payload(
+        {
+            "analysis": {
+                "overall_assessment": "The run was useful but too hard for a pure recovery day.",
+                "what_was_good": ["Consistent cadence"],
+                "pacing_analysis": ["First half was controlled", "Second half got sharper"],
+            }
+        }
+    )
+
+    assert normalized["overall_assessment"] == "The run was useful but too hard for a pure recovery day."
+    assert normalized["what_was_good"] == ["Consistent cadence"]
+    assert normalized["pacing_analysis"] == "First half was controlled\nSecond half got sharper"
+
+
+def test_activity_coach_payload_preserves_nested_values_when_outer_schema_defaults_are_empty() -> None:
+    normalized = normalize_activity_coach_payload(
+        {
+            "analysis": {"overall_assessment": "Nested assessment should survive."},
+            "overall_assessment": "",
+        }
+    )
+
+    assert normalized["overall_assessment"] == "Nested assessment should survive."
+
+
+def test_activity_coach_payload_stringifies_list_object_items() -> None:
+    normalized = normalize_activity_coach_payload(
+        {
+            "summary": "Usable assessment.",
+            "recommendations": [{"action": "Keep easy runs in Zone 2."}],
+            "strengths": [{"point": "Good cadence control."}],
+        }
+    )
+
+    assert normalized["training_recommendations"] == ['{"action": "Keep easy runs in Zone 2."}']
+    assert normalized["what_was_good"] == ['{"point": "Good cadence control."}']
