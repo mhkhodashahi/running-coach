@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from datetime import date, datetime
 from typing import Any
 
@@ -10,15 +9,12 @@ import pandas as pd
 from sqlalchemy import delete, select, text
 from sqlalchemy.orm import Session
 
-from body_progress.domain import BodyScanCreate, BodyScanProcessingResult, BodyScanSummary
 from config import get_settings
 from db.models import (
     Activity,
     ActivityCoachingInsight,
     ActivityLap,
     ActivityTrackPoint,
-    BodyScan,
-    BodyScanInsight,
     CoachingDecision,
     EmailDelivery,
     Goal,
@@ -533,133 +529,6 @@ def delete_nutrition_entry(session: Session, entry_id: int, user_id: int) -> Non
         raise ValueError(f"Unknown nutrition entry id: {entry_id}")
     session.delete(entry)
     session.flush()
-
-
-def create_body_scan(session: Session, payload: BodyScanCreate) -> BodyScan:
-    """Register a body progress scan."""
-
-    scan = BodyScan(
-        user_id=payload.user_id,
-        scan_date=payload.scan_date,
-        view=payload.view,
-        source_image_path=str(payload.source_image_path) if payload.consent_to_store_image else None,
-        consent_to_store_image=payload.consent_to_store_image,
-        notes=payload.notes.strip() or None,
-    )
-    session.add(scan)
-    session.flush()
-    return scan
-
-
-def update_body_scan_result(session: Session, scan_id: int, result: BodyScanProcessingResult) -> BodyScan:
-    """Persist processor outputs for one body scan."""
-
-    scan = session.get(BodyScan, scan_id)
-    if scan is None:
-        raise ValueError(f"Unknown body scan id: {scan_id}")
-
-    scan.status = result.status
-    scan.preview_image_path = result.preview_image_path
-    scan.mesh_path = result.mesh_path
-    scan.keypoints_json = json.dumps(result.keypoints_json) if result.keypoints_json is not None else None
-    scan.measurements_json = json.dumps(result.measurements_json) if result.measurements_json is not None else None
-    scan.pose_quality = result.pose_quality
-    scan.processor_name = result.processor_name
-    scan.error_message = result.error_message
-    session.flush()
-    return scan
-
-
-def list_body_scans(session: Session, user_id: int) -> list[BodyScanSummary]:
-    """Return body scans as portable summaries."""
-
-    rows = session.scalars(
-        select(BodyScan).where(BodyScan.user_id == user_id).order_by(BodyScan.scan_date.desc(), BodyScan.created_at.desc())
-    ).all()
-    return [
-        BodyScanSummary(
-            id=row.id,
-            user_id=row.user_id,
-            scan_date=row.scan_date,
-            view=row.view,  # type: ignore[arg-type]
-            status=row.status,  # type: ignore[arg-type]
-            source_image_path=row.source_image_path,
-            preview_image_path=row.preview_image_path,
-            mesh_path=row.mesh_path,
-            pose_quality=row.pose_quality,
-            notes=row.notes,
-            created_at=row.created_at,
-        )
-        for row in rows
-    ]
-
-
-def body_scans_dataframe(session: Session, user_id: int) -> pd.DataFrame:
-    """Return body scan timeline rows as a dataframe."""
-
-    query = text(
-        """
-        SELECT id, user_id, scan_date, view, status, source_image_path,
-               preview_image_path, mesh_path, keypoints_json, measurements_json,
-               pose_quality, processor_name,
-               error_message, consent_to_store_image, notes, created_at, updated_at
-        FROM body_scans
-        WHERE user_id = :user_id
-        ORDER BY scan_date ASC, created_at ASC
-        """
-    )
-    df = pd.read_sql_query(query, session.bind, params={"user_id": user_id})
-    if not df.empty:
-        for column in ("scan_date", "created_at", "updated_at"):
-            df[column] = pd.to_datetime(df[column])
-    return df
-
-
-def body_scan_insights_dataframe(session: Session, user_id: int) -> pd.DataFrame:
-    """Return stored body scan LLM insights as a dataframe."""
-
-    query = text(
-        """
-        SELECT id, user_id, insight_date, scan_ids_json, summary, payload_json,
-               prompt_context_json, model_provider, model_name, created_at
-        FROM body_scan_insights
-        WHERE user_id = :user_id
-        ORDER BY insight_date DESC, created_at DESC
-        """
-    )
-    df = pd.read_sql_query(query, session.bind, params={"user_id": user_id})
-    if not df.empty:
-        for column in ("insight_date", "created_at"):
-            df[column] = pd.to_datetime(df[column])
-    return df
-
-
-def store_body_scan_insight(
-    session: Session,
-    user_id: int,
-    insight_date: date,
-    scan_ids: list[int],
-    summary: str,
-    payload_json: str,
-    prompt_context_json: str,
-    model_provider: str | None,
-    model_name: str | None,
-) -> BodyScanInsight:
-    """Persist one LLM interpretation of body scan history."""
-
-    insight = BodyScanInsight(
-        user_id=user_id,
-        insight_date=insight_date,
-        scan_ids_json=json.dumps(scan_ids),
-        summary=summary,
-        payload_json=payload_json,
-        prompt_context_json=prompt_context_json,
-        model_provider=model_provider,
-        model_name=model_name,
-    )
-    session.add(insight)
-    session.flush()
-    return insight
 
 
 def llm_memory_dataframe(session: Session, user_id: int) -> pd.DataFrame:

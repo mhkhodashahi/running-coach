@@ -41,8 +41,6 @@ class User(Base):
     activity_coaching_insights: Mapped[list[ActivityCoachingInsight]] = relationship(back_populates="user")
     prediction_snapshots: Mapped[list[PredictionSnapshot]] = relationship(back_populates="user")
     email_deliveries: Mapped[list[EmailDelivery]] = relationship(back_populates="user")
-    body_scans: Mapped[list[BodyScan]] = relationship(back_populates="user")
-    body_scan_insights: Mapped[list[BodyScanInsight]] = relationship(back_populates="user")
     nutrition_entries: Mapped[list[NutritionEntry]] = relationship(back_populates="user")
 
 
@@ -161,51 +159,6 @@ class NutritionEntry(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
 
     user: Mapped[User] = relationship(back_populates="nutrition_entries")
-
-
-class BodyScan(Base):
-    """Body progress photo and optional 3D output metadata."""
-
-    __tablename__ = "body_scans"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True, nullable=False)
-    scan_date: Mapped[date] = mapped_column(Date, index=True, nullable=False)
-    view: Mapped[str] = mapped_column(String(32), nullable=False, default="front")
-    status: Mapped[str] = mapped_column(String(32), nullable=False, default="uploaded")
-    source_image_path: Mapped[str | None] = mapped_column(Text)
-    preview_image_path: Mapped[str | None] = mapped_column(Text)
-    mesh_path: Mapped[str | None] = mapped_column(Text)
-    keypoints_json: Mapped[str | None] = mapped_column(Text)
-    measurements_json: Mapped[str | None] = mapped_column(Text)
-    pose_quality: Mapped[float | None] = mapped_column(Float)
-    processor_name: Mapped[str | None] = mapped_column(String(64))
-    error_message: Mapped[str | None] = mapped_column(Text)
-    consent_to_store_image: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    notes: Mapped[str | None] = mapped_column(Text)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow, onupdate=_utcnow)
-
-    user: Mapped[User] = relationship(back_populates="body_scans")
-
-
-class BodyScanInsight(Base):
-    """Stored LLM interpretation of body scan history."""
-
-    __tablename__ = "body_scan_insights"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True, nullable=False)
-    insight_date: Mapped[date] = mapped_column(Date, index=True, nullable=False)
-    scan_ids_json: Mapped[str] = mapped_column(Text, nullable=False)
-    summary: Mapped[str] = mapped_column(Text, nullable=False)
-    payload_json: Mapped[str] = mapped_column(Text, nullable=False)
-    prompt_context_json: Mapped[str] = mapped_column(Text, nullable=False)
-    model_provider: Mapped[str | None] = mapped_column(String(32))
-    model_name: Mapped[str | None] = mapped_column(String(80))
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
-
-    user: Mapped[User] = relationship(back_populates="body_scan_insights")
 
 
 class LLMMemory(Base):

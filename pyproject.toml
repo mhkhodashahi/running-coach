@@ -37,7 +37,6 @@ telegram-chat = "utils.telegram_chat_cli:main"
 packages = [
     { include = "app" },
     { include = "analytics" },
-    { include = "body_progress" },
     { include = "db" },
     { include = "llm" },
     { include = "services" },

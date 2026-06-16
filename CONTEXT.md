@@ -47,14 +47,3 @@ generation, and optional Telegram delivery.
 
 A one-time stored LLM interpretation of a single running workout. It is generated
 only when enough activity context exists and is not regenerated automatically.
-
-## Body Scan
-
-A body progress upload with optional pose, preview, mesh, and shape metrics. Body
-scan outputs are coaching and tracking proxies, not medical or diagnostic data.
-
-## Body Scan Insight
-
-A conservative LLM interpretation of body scan history. Its prompt context must
-contain only coaching-relevant scan metrics and must not include local paths,
-runtime commands, checkpoint paths, or debug logs.

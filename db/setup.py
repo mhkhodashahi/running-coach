@@ -4,16 +4,6 @@ from __future__ import annotations
 
 from sqlalchemy import inspect, text
 
-from body_progress.insight_sql import (
-    BODY_SCAN_INSIGHTS_CREATE_TABLE_SQL,
-    BODY_SCAN_INSIGHTS_DATE_INDEX_SQL,
-    BODY_SCAN_INSIGHTS_USER_INDEX_SQL,
-)
-from body_progress.sql import (
-    BODY_SCANS_CREATE_TABLE_SQL,
-    BODY_SCANS_DATE_INDEX_SQL,
-    BODY_SCANS_INDEX_SQL,
-)
 from config import get_settings
 from db.models import Base
 from db.session import engine
@@ -29,7 +19,6 @@ def init_db() -> None:
     _migrate_activities_table()
     _migrate_activity_coaching_insights_table()
     _create_prediction_snapshots_table()
-    _create_body_progress_tables()
 
 
 def _migrate_users_table() -> None:
@@ -147,15 +136,3 @@ def _create_prediction_snapshots_table() -> None:
         connection.execute(text("CREATE INDEX IF NOT EXISTS ix_prediction_snapshots_activity_id ON prediction_snapshots (activity_id)"))
         connection.execute(text("CREATE INDEX IF NOT EXISTS ix_prediction_snapshots_goal_id ON prediction_snapshots (goal_id)"))
         connection.execute(text("CREATE INDEX IF NOT EXISTS ix_prediction_snapshots_prediction_date ON prediction_snapshots (prediction_date)"))
-
-
-def _create_body_progress_tables() -> None:
-    """Create body progress tables and indexes for lightweight local setup."""
-
-    with engine.begin() as connection:
-        connection.execute(text(BODY_SCANS_CREATE_TABLE_SQL))
-        connection.execute(text(BODY_SCANS_INDEX_SQL))
-        connection.execute(text(BODY_SCANS_DATE_INDEX_SQL))
-        connection.execute(text(BODY_SCAN_INSIGHTS_CREATE_TABLE_SQL))
-        connection.execute(text(BODY_SCAN_INSIGHTS_DATE_INDEX_SQL))
-        connection.execute(text(BODY_SCAN_INSIGHTS_USER_INDEX_SQL))

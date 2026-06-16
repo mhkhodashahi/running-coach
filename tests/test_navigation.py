@@ -6,7 +6,7 @@ from pathlib import Path
 def test_default_navigation_pages_do_not_include_removed_surfaces() -> None:
     from app.main import navigation_specs
 
-    page_paths = [spec.path for spec in navigation_specs(use_sam=False)]
+    page_paths = [spec.path for spec in navigation_specs()]
 
     assert page_paths == [
         "dashboard.py",
@@ -18,16 +18,6 @@ def test_default_navigation_pages_do_not_include_removed_surfaces() -> None:
         "pages/7_Quality_Sessions.py",
         "pages/8_Activity_Detail.py",
     ]
-
-
-def test_body_progress_page_is_only_in_navigation_when_sam_is_enabled() -> None:
-    from app.main import navigation_specs
-
-    disabled_paths = [spec.path for spec in navigation_specs(use_sam=False)]
-    enabled_paths = [spec.path for spec in navigation_specs(use_sam=True)]
-
-    assert "pages/9_Body_Progress.py" not in disabled_paths
-    assert "pages/9_Body_Progress.py" in enabled_paths
 
 
 def test_streamlit_navigation_excludes_removed_pages() -> None:
