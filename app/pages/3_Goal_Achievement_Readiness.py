@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import streamlit as st
 
+from services.training_context_service import load_training_bundle
 from ui.charts import goal_pace_chart, intensity_distribution_chart, long_run_progression_chart
 from ui.components import render_goal_summary
-from utils.bootstrap import load_training_bundle
 from utils.formatting import format_gap_minutes, format_goal_time, format_pace
 
 st.title("Goal Achievement Readiness")

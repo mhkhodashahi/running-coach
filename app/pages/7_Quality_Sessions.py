@@ -6,8 +6,8 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
+from services.training_context_service import load_training_bundle
 from ui.components import apply_dashboard_theme
-from utils.bootstrap import load_training_bundle
 
 ANALYSIS_BLUE = "#2563eb"
 ANALYSIS_GREEN = "#16a34a"

@@ -10,8 +10,8 @@ from config import get_settings
 from db import repository
 from db.session import session_scope
 from services.coaching_workflow import CoachingWorkflowService
+from services.training_context_service import load_training_bundle
 from ui.components import render_coaching_card
-from utils.bootstrap import load_training_bundle
 
 st.title("AI Coach")
 
