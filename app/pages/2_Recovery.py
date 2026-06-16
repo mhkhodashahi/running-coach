@@ -5,8 +5,8 @@ from __future__ import annotations
 import plotly.express as px
 import streamlit as st
 
+from services.training_context_service import load_training_bundle
 from ui.charts import sleep_performance_chart, sleep_recovery_chart, vo2max_trend_chart
-from utils.bootstrap import load_training_bundle
 from utils.formatting import format_metric_number
 
 st.title("Recovery")

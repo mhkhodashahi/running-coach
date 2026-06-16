@@ -1,4 +1,0 @@
-interface:
-  display_name: "Body Progress"
-  short_description: "Work on scan uploads and body progress"
-  default_prompt: "Use $body-progress to change Body Progress safely."

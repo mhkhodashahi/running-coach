@@ -46,20 +46,6 @@ class ActivityCoachInsightSchema(BaseModel):
     confidence: float = Field(default=0, ge=0, le=100)
 
 
-class BodyScanInsightSchema(BaseModel):
-    summary: str = Field(default="")
-    visual_changes: list[str] = Field(default_factory=list)
-    posture_and_symmetry: list[str] = Field(default_factory=list)
-    running_form_implications: list[str] = Field(default_factory=list)
-    progress_trends: list[str] = Field(default_factory=list)
-    risks_or_unknowns: list[str] = Field(default_factory=list)
-    coaching_actions: list[str] = Field(default_factory=list)
-    next_photo_protocol: list[str] = Field(default_factory=list)
-    evidence: list[str] = Field(default_factory=list)
-    limitations: list[str] = Field(default_factory=list)
-    confidence: float = Field(default=0, ge=0, le=100)
-
-
 class ActiveIntelligenceInsightSchema(BaseModel):
     title: str = Field(default="")
     status: Literal["positive", "stable", "caution", "urgent"] = "stable"

@@ -10,7 +10,7 @@ from analytics.performance import GOAL_RACE_DISTANCES, goal_time_minutes
 from db import repository
 from db.session import session_scope
 from services.goal_service import GoalService
-from utils.bootstrap import load_training_bundle
+from services.training_context_service import load_training_bundle
 from utils.formatting import format_goal_time, format_pace
 
 st.title("Goals and Digests")

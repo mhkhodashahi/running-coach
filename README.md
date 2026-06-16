@@ -1,168 +1,95 @@
 # Running Coach
 
-Local running coach application that uses Garmin-style training data, recovery metrics, analytics, and optional LLM guidance to coach against active goals such as a 5K PB, half running PB, or running PB.
+Running Coach is a local-first Streamlit app for reviewing Garmin-style running data, recovery metrics, goals, predictions, and optional LLM coaching. It stores data in SQLite on your machine and can work with mock CSV data, Garmin Connect sync, OpenAI, Ollama, Telegram, and Google Maps.
+
+This project is not affiliated with Garmin, Strava, OpenAI, Telegram, or Google. It is not medical advice.
+
+## License
+
+Running Coach is open source under the GNU Affero General Public License v3.0.
+See `LICENSE`.
+
+If you modify the app and make it available over a network, AGPL-3.0 requires
+you to make the corresponding source code available to users of that service.
 
 ## Features
 
-- Streamlit dashboard with a motivational, Strava-inspired running design
-- Hero summary, focus cards, and key metrics for weekly mileage, readiness, recovery, VO2max, and predicted finish
-- Weekly and monthly running progress chart for distance, time, and activity count
-- Recent running log with activity-sized circles for quick visual training review
-- Runalyze-inspired analysis page for quality sessions, training load, strain, performance curves, streaks, distributions, and efficiency
-- Streamlit goal management and digest history pages
-- SQLite-backed storage for users, activities, health metrics, and LLM memory
-- First-class goal tracking for 5K, 10K, half running, and running targets
-- CSV Garmin import pipeline with mock-data fallback
-- Live Garmin sync can store activity names, GPS/chart points, and laps/splits for detailed activity views
-- Per-run LLM coach opinions on the activity detail page, generated once and then served from SQLite
-- Prediction snapshots after each run so predicted finish history can be reviewed over time
-- Rule-based fatigue and recovery checks
-- LLM coaching with either OpenAI or Ollama
-- Explainable daily and weekly coaching that states why a recommendation is better and whether current training looks effective
-- End-of-day digest drafting with optional Telegram delivery
-- Plotly charts for mileage, pace, heart rate, VO2max, recovery, training load, and goal pace
-- Manual notes for training sessions
+- Streamlit dashboard for weekly mileage, readiness, recovery, VO2max, predicted finish, and goal progress
+- Garmin-style CSV import and optional live Garmin Connect sync
+- Activity detail page with route maps, laps, stream data, HR zones, similar activities, and stored per-run coach opinions
+- Goal tracking for 5K, 10K, half, and custom running targets
+- Deterministic training analytics and prediction snapshots after imported or synced runs
+- Daily and weekly coaching digests with optional Telegram delivery
+- LLM support through OpenAI or a local Ollama model
+- SQLite persistence for activities, health metrics, goals, predictions, digests, LLM memory, and activity coach opinions
 
-## Project Structure
-
-```text
-.codex/      Codex agent guide and project skills
-app/          Streamlit navigation entry point, dashboard page, and pages
-analytics/    Training and recovery analytics
-data/         Mock Garmin CSV data
-db/           SQLite models, session, and repositories
-llm/          OpenAI and Ollama adapters
-services/     Import, goal, coaching, and Telegram services
-ui/           Plotly charts and reusable Streamlit components
-utils/        Bootstrap, CLI workflows, and formatting helpers
-```
-
-`app/main.py` owns Streamlit navigation with `st.navigation`, while `app/dashboard.py` contains the dashboard page content. Repository-specific agent guidance lives in `.codex/agent.md`.
-
-## Setup
-
-1. Create a virtual environment or use Poetry.
-2. Install dependencies:
+## Quickstart
 
 ```bash
+python -m venv .venv
+source .venv/bin/activate
 pip install -e ".[dev]"
-```
-
-or
-
-```bash
-poetry install
-```
-
-3. Create your environment file:
-
-```bash
 cp .env.example .env
+streamlit run app/main.py
 ```
 
-4. Set the feature flags and providers you want in `.env`.
+On first launch, the app creates `db/running_coach.db` and loads the bundled mock CSV data if no activities or health metrics exist yet.
 
-## Environment Settings
+## Configuration
 
-Add only the services you plan to use to `.env`. The most common settings are:
+Edit `.env` after copying `.env.example`.
 
 ```bash
-# OpenAI coaching
-LLM_PROVIDER=openai
-OPENAI_API_KEY=your_openai_api_key
-OPENAI_MODEL=gpt-5-mini
-
-# Local Ollama coaching
+# LLM provider: ollama, openai, or chatgpt
 LLM_PROVIDER=ollama
+
+# Local Ollama
 OLLAMA_BASE_URL=http://localhost:11434
 OLLAMA_MODEL=qwen3:14b
 
-# Garmin sync
-GARMIN_EMAIL=your_garmin_email@example.com
-GARMIN_PASSWORD=your_garmin_password
+# OpenAI
+OPENAI_API_KEY=
+OPENAI_MODEL=gpt-5-mini
+
+# Garmin Connect sync
+GARMIN_EMAIL=
+GARMIN_PASSWORD=
 GARMIN_SYNC_DAYS=90
 GARMIN_HEALTH_SYNC_DAYS=21
+
+# Optional Google Maps route display
+GOOGLE_MAPS_API_KEY=
+GOOGLE_MAPS_MAP_ID=
+
+# Optional Telegram digest delivery
+TELEGRAM_BOT_TOKEN=
+TELEGRAM_CHAT_ID=
 ```
 
-Create an OpenAI API key from your OpenAI platform account, then paste it into `OPENAI_API_KEY`. Use the same Garmin username/email and password you use to sign in to Garmin Connect for `GARMIN_EMAIL` and `GARMIN_PASSWORD`.
+Do not commit `.env`, Garmin token files, SQLite databases, logs, or personal exports. The `.gitignore` is set up for the common local outputs, but you should still run a secret scan before publishing forks or releases.
 
-If you want OpenAI coaching, set `OPENAI_API_KEY` and `LLM_PROVIDER=openai`. If you want local coaching with Ollama, set `LLM_PROVIDER=ollama` and make sure Ollama is running.
-
-If you want Telegram delivery, configure your bot token and chat id:
-
-```bash
-TELEGRAM_BOT_TOKEN=123456:your_bot_token
-TELEGRAM_CHAT_ID=123456789
-```
-
-If you want exact GPS route polylines on the `Activity Detail` page, configure Google Maps:
-
-```bash
-GOOGLE_MAPS_API_KEY=your_google_maps_javascript_api_key
-GOOGLE_MAPS_MAP_ID=your_optional_vector_map_id
-```
-
-Without this key, the page still embeds Google Maps centered on the activity start when GPS points exist, but it cannot draw the exact route polyline. `GOOGLE_MAPS_MAP_ID` is optional, but recommended for the 3D-style tilted hybrid route map.
-
-## Run
+## Running The App
 
 ```bash
 streamlit run app/main.py
 ```
 
-On first launch the app creates `db/running_coach.db` and loads the bundled mock data if no activities or health metrics exist yet.
-
-## Dashboard Design
-
-The main dashboard uses a Strava-inspired visual direction without depending on Strava branding:
-
-- Orange-accented run visuals, dark hero card, rounded metric cards, and warmer background gradients
-- Focus cards that translate current training into an immediate weekly target, main focus, and intensity balance
-- `Running Progress` chart with weekly distance bars and monthly distance trend line
-- `Recent Running Log` chart where each run is shown as a circle sized and colored by distance
-- `Prediction Trend` chart built from per-run prediction snapshots
-- Existing recovery, VO2max, training load, and goal pace charts restyled to match the same design system
-
-Streamlit navigation is implemented in `app/main.py`, the dashboard page lives in `app/dashboard.py`, reusable layout components live in `ui/components.py`, and Plotly chart builders live in `ui/charts.py`.
+The dashboard sidebar can import activity/health CSV files or sync recent Garmin data when credentials are configured.
 
 ## Streamlit Pages
 
-- `Dashboard`: motivational overview, weekly/monthly running progress, recent running log, active goal projection, prediction trend, Garmin sync, and profile management
-- `Goal Achievement Readiness`: active-goal confidence, pace gap, goal-specific training interpretation, and scenario planning
-- `AI Coach`: generate daily or weekly coaching digests and preview the Telegram message
-- `Goals and Digests`: create goals, switch the active goal, and review digest/delivery history
-- `Analysis`: Runalyze-inspired quality sessions, training condition, acute/chronic load, strain and monotony, pace curve, streak heatmap, longest streaks, HR-vs-pace efficiency, histograms, boxplots, and latest activity table
-- `Quality Sessions`: focused Runalyze-inspired quality-workout page with workload chart, type breakdown, and detected session table
-- `Activity Detail`: Strava-inspired single-activity view with Garmin activity name, summary hero, effort stats, route map, context chart, prediction after this run, one-time stored LLM coach opinion, notes, and similar activities
+- `Dashboard`: weekly/monthly running progress, recent run log, active goal projection, prediction trend, Garmin sync, and profile management
+- `Activities`: imported and synced activity table
+- `Recovery`: sleep, HRV, resting HR, body battery, stress, and recovery charts
+- `Goal Achievement Readiness`: active-goal confidence, pace gap, and scenario planning
+- `AI Coach`: daily or weekly coaching digest generation and Telegram preview
+- `Goals and Digests`: goal management and digest history
+- `Quality Sessions`: quality-workout detection, workload chart, and session table
+- `Activity Detail`: single-activity view with route, effort stats, prediction after the run, notes, and one-time stored LLM coach opinion
 
-## Prediction Snapshots
+## Garmin Sync
 
-Goal predictions are recalculated after every imported or synced run and stored in `prediction_snapshots`. The dashboard uses those saved rows to show how predicted finish time changes over time, and the `Activity Detail` page shows the prediction that existed immediately after the selected run.
-
-If old data has no snapshots yet, the app backfills them during bootstrap from the existing activity history.
-
-## Per-Run Coach Opinions
-
-The `Activity Detail` page can generate a high-context LLM coach opinion for each run. The app sends the selected run, athlete profile, active goal, recent activity context, laps, stream points, notes, and recovery context to the configured LLM provider, then saves the structured result in `activity_coaching_insights`.
-
-Each activity is analyzed once. After the result is stored, the page loads the saved coach opinion from SQLite instead of calling the LLM again.
-
-## CSV Import
-
-The dashboard sidebar accepts two CSV files:
-
-- Activities CSV
-- Health metrics CSV
-
-The bundled mock files in `data/` are valid examples of the expected schema.
-
-The importer also handles the Garmin activity CSV shape produced by the existing `sport/garmin_data_fetcher.py` export, including fields such as `activityId`, `startTimeLocal`, `averageHR`, and Garmin training-effect columns.
-
-## Direct Garmin Sync
-
-You can sync directly from Garmin Connect in the dashboard sidebar.
-
-1. Set credentials in `.env`:
+Garmin sync uses the `garminconnect` Python package and your own Garmin account credentials.
 
 ```bash
 GARMIN_EMAIL=your_email
@@ -173,62 +100,44 @@ GARMIN_HEALTH_SYNC_DAYS=21
 GARMIN_RATE_LIMIT_COOLDOWN_MINUTES=30
 ```
 
-2. Start the app:
-
-```bash
-streamlit run app/main.py
-```
-
-3. In the sidebar, use `Sync from Garmin`.
-
 Notes:
 
 - Activities are fetched in one date-range call.
-- For each synced activity, the app attempts to fetch Garmin activity details, GPS/chart points, and laps/splits into `activity_track_points` and `activity_laps`.
-- Activity detail data is visible on the `Activity Detail` page when present.
 - Health metrics are fetched day-by-day, so the health window is intentionally shorter.
-- Successful logins are cached in `GARMIN_TOKEN_DIR`, with `garminconnect 0.3.x` storing tokens in `garmin_tokens.json`.
-- The first sync after upgrading from `garminconnect 0.2.x` requires a fresh login because the old OAuth token files are no longer reused.
-- If Garmin rate-limits the account, the app records a short cooldown locally and shows when you can retry.
-- If Garmin rate-limits the account repeatedly, reduce the sync windows and retry later.
+- Garmin activity details, GPS/chart points, and laps/splits are stored when available.
+- Login tokens are cached under `GARMIN_TOKEN_DIR`.
+- If Garmin rate-limits the account, the app records a local cooldown and shows when to retry.
 
-### Daily macOS Health Sync
+## LLM Providers
 
-On a Mac, use `launchd` instead of cron.
-
-1. Manual health-only sync:
+OpenAI:
 
 ```bash
-./scripts/run_daily_health_sync.sh
+LLM_PROVIDER=openai
+OPENAI_API_KEY=your_openai_api_key
+OPENAI_MODEL=gpt-5-mini
 ```
 
-2. Install the daily 9:00 AM job:
+Ollama:
 
 ```bash
-mkdir -p ~/Library/LaunchAgents
-cp launchd/com.runningcoach.health-sync.plist ~/Library/LaunchAgents/
-launchctl unload ~/Library/LaunchAgents/com.runningcoach.health-sync.plist 2>/dev/null || true
-launchctl load ~/Library/LaunchAgents/com.runningcoach.health-sync.plist
+LLM_PROVIDER=ollama
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_MODEL=qwen3:14b
 ```
 
-3. Optional checks:
+If the configured model is unavailable, some workflows fall back to deterministic rule-based coaching. Ollama prompts are guarded by a local input-size estimate to avoid sending oversized requests.
 
-```bash
-launchctl list | grep com.runningcoach.health-sync
-tail -f logs/garmin-health-sync.log
-```
+## Telegram Digest
 
-The wrapper runs `python -m utils.garmin_sync_cli --health-only --days 1 --health-days 1`, so it writes only health rows to the database.
-
-## Daily Coaching Digest
-
-Generate a goal-aware digest from the command line:
+Generate a digest:
 
 ```bash
 python -m utils.daily_digest_cli --decision-type daily
+python -m utils.daily_digest_cli --decision-type weekly --skip-sync
 ```
 
-Generate and send the Telegram message after syncing Garmin:
+Send the generated Telegram message:
 
 ```bash
 python -m utils.daily_digest_cli --decision-type daily --send-telegram
@@ -240,40 +149,55 @@ Run the private Telegram training chat bot:
 python -m utils.telegram_chat_cli
 ```
 
-Then message your configured bot from the Telegram chat id in `TELEGRAM_CHAT_ID`. The bot only answers that configured chat and uses your local SQLite training database plus the configured LLM provider to answer questions such as "How is my recovery today?", "What was my weekly mileage?", or "Am I on track for my running goal?".
+The bot only answers the configured `TELEGRAM_CHAT_ID`.
 
-Generate a weekly coaching digest without syncing first:
+## Development
 
-```bash
-python -m utils.daily_digest_cli --decision-type weekly --skip-sync
-```
-
-### Daily macOS Digest Job
-
-Manual digest run:
+Install dev dependencies:
 
 ```bash
-./scripts/run_daily_digest.sh
+pip install -e ".[dev]"
 ```
 
-Install the daily 8:30 PM job:
+Run checks:
 
 ```bash
-mkdir -p ~/Library/LaunchAgents
-cp launchd/com.runningcoach.daily-digest.plist ~/Library/LaunchAgents/
-launchctl unload ~/Library/LaunchAgents/com.runningcoach.daily-digest.plist 2>/dev/null || true
-launchctl load ~/Library/LaunchAgents/com.runningcoach.daily-digest.plist
+python -m ruff check .
+python -m compileall -q app analytics db llm services ui utils tests
+python -m pytest
 ```
 
-## LLM Providers
+CI runs the same ruff, syntax, and pytest checks.
 
-- OpenAI: Uses the Python SDK with the Responses API.
-- Ollama: Uses the local `/api/generate` endpoint.
+## Project Structure
 
-If the configured model is unavailable, the app still works and falls back to deterministic rule-based coaching.
+```text
+app/        Streamlit entry point, dashboard, and pages
+analytics/  Training and recovery analytics
+data/       Mock CSV data and local-only generated memory files
+db/         SQLAlchemy models, SQLite setup, and repository helpers
+llm/        OpenAI and Ollama clients plus response schemas
+services/   Garmin import, coaching, goals, Telegram, and prediction services
+ui/         Plotly chart builders and Streamlit components
+utils/      CLI workflows and formatting helpers
+tests/      Unit and integration-style regression tests
+```
 
-## Notes
+Domain vocabulary lives in `CONTEXT.md`; architecture decisions live in `docs/adr/`.
+Database upgrade notes live in `docs/upgrade.md`.
 
-- The app stores structured digest history in `coaching_decisions` and keeps legacy LLM history in `llm_memory`.
-- Manual athlete notes are stored on activities.
-- The mock athlete profile is backfilled into a default running goal when no goals exist yet.
+## Privacy And Safety
+
+- The app is local-first and stores data in SQLite.
+- Garmin credentials, tokens, logs, and databases must stay out of git.
+- LLM prompts include summarized training, recovery, goal, and activity context. Use Ollama if you do not want to send coaching context to an external API.
+- The app is for training reflection and planning. It is not a medical device and does not replace professional advice.
+
+## Open Source Checklist
+
+Before publishing your fork or repository:
+
+- Review `LICENSE`, `CONTRIBUTING.md`, and `SECURITY.md` for your preferred contact details.
+- Run a git-history secret scan with a tool such as `gitleaks` or `trufflehog`.
+- Keep personal files such as `data/couch_running_memory.md` ignored locally.
+- Confirm `.env`, `.garmin_tokens/`, `db/*.db`, logs, and personal exports are not tracked.

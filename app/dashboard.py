@@ -10,6 +10,7 @@ from db import repository
 from db.session import session_scope
 from services.coaching_engine import build_rule_recommendations
 from services.import_service import GarminImportService
+from services.training_context_service import load_training_bundle
 from ui.charts import (
     activity_calendar_chart,
     goal_pace_chart,
@@ -28,7 +29,6 @@ from ui.components import (
     render_overview_metrics,
     render_warning_list,
 )
-from utils.bootstrap import load_training_bundle
 from utils.formatting import format_gap_minutes, format_goal_time, format_pace
 
 st.set_page_config(page_title="Running Coach", page_icon="R", layout="wide")

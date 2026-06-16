@@ -18,8 +18,8 @@ class NavigationSpec:
     icon: str
 
 
-def navigation_specs(use_sam: bool) -> list[NavigationSpec]:
-    specs = [
+def navigation_specs() -> list[NavigationSpec]:
+    return [
         NavigationSpec("dashboard.py", title="Dashboard", icon=":material/dashboard:"),
         NavigationSpec("pages/1_Activities.py", title="Activities", icon=":material/directions_run:"),
         NavigationSpec("pages/2_Recovery.py", title="Recovery", icon=":material/monitor_heart:"),
@@ -34,20 +34,13 @@ def navigation_specs(use_sam: bool) -> list[NavigationSpec]:
         NavigationSpec("pages/8_Activity_Detail.py", title="Activity Detail", icon=":material/route:"),
     ]
 
-    if use_sam:
-        specs.append(
-            NavigationSpec("pages/9_Body_Progress.py", title="Body Progress", icon=":material/accessibility_new:")
-        )
 
-    return specs
-
-
-def build_pages(use_sam: bool) -> list[st.Page]:
-    return [st.Page(spec.path, title=spec.title, icon=spec.icon) for spec in navigation_specs(use_sam)]
+def build_pages() -> list[st.Page]:
+    return [st.Page(spec.path, title=spec.title, icon=spec.icon) for spec in navigation_specs()]
 
 
 def main() -> None:
-    navigation = st.navigation(build_pages(settings.use_sam))
+    navigation = st.navigation(build_pages())
     navigation.run()
 
 

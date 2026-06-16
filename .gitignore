@@ -12,6 +12,7 @@ db/*.db
 garmin_data/
 data/body_scans/
 data/body_scan_outputs/
+data/couch_running_memory.md
 
 # Logs and runtime output
 logs/
@@ -37,7 +38,6 @@ env/
 
 # Streamlit local config
 .streamlit/secrets.toml
-../sam/*
 /poetry.lock
 /content/
 /.codex/content-series-plan.md

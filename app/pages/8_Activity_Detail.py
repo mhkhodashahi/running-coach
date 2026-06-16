@@ -19,9 +19,9 @@ from services.activity_coaching_service import (
     supports_activity_coach_opinion,
 )
 from services.hr_zones import HR_ZONE_COLORS, heart_rate_zone_summary, supports_hr_zone_view
+from services.training_context_service import load_training_bundle
 from ui.components import apply_dashboard_theme
 from ui.google_maps import render_activity_route_map
-from utils.bootstrap import load_training_bundle
 from utils.formatting import (
     format_duration_minutes,
     format_gap_minutes,

@@ -9,14 +9,12 @@ description: Work safely and efficiently in the Running Coach Streamlit reposito
 
 Read `.codex/agent.md` first. It is the persistent all-in-one project instruction file.
 
-Use this skill for general Running Coach repo work. For Body Progress, SAM, or scan insight privacy changes, use `$body-progress`. For review-only work, use `$review-running`.
+Use this skill for general Running Coach repo work. For review-only work, use `$review-running`.
 
 ## Repo Map
 
 - Streamlit entry point: `app/main.py`
 - Streamlit pages: `app/pages/`
-- Body Progress page: `app/pages/9_Body_Progress.py`
-- Body scan reusable package: `body_progress/`
 - Garmin client/auth/sync orchestration: `services/garmin_client.py`
 - Garmin payload and unit normalization: `services/garmin_normalization.py`
 - Services and LLM workflows: `services/`
@@ -33,12 +31,11 @@ Use this skill for general Running Coach repo work. For Body Progress, SAM, or s
 1. Inspect current files before editing; do not assume the code matches memory.
 2. Prefer existing local patterns over new abstractions.
 3. Keep edits scoped to the request.
-4. Do not remove Garmin, goal, Telegram, activity-detail, body-progress, or LLM workflows unless explicitly requested.
-5. Preserve privacy around body scan data; do not send raw local paths, command logs, or debug output to LLM prompts.
-6. If adding SQLite tables or columns, update models/repository and centralized lightweight setup in `db/setup.py` consistently because this project does not use real migrations.
-7. Keep Garmin field-shape and unit conversion rules in `services/garmin_normalization.py`; keep auth/API orchestration in `services/garmin_client.py`.
-8. Route structured LLM calls through `services/llm_workflow.py` unless there is a concrete reason to bypass it.
-9. The standalone Performance Dashboard page was removed. Do not re-add `app/pages/6_Analysis.py` or `app/performance_dashboard.html` unless explicitly requested.
+4. Do not remove Garmin, goal, Telegram, activity-detail, or LLM workflows unless explicitly requested.
+5. If adding SQLite tables or columns, update models/repository and centralized lightweight setup in `db/setup.py` consistently because this project does not use real migrations.
+6. Keep Garmin field-shape and unit conversion rules in `services/garmin_normalization.py`; keep auth/API orchestration in `services/garmin_client.py`.
+7. Route structured LLM calls through `services/llm_workflow.py` unless there is a concrete reason to bypass it.
+8. The standalone Performance Dashboard page was removed. Do not re-add `app/pages/6_Analysis.py` or `app/performance_dashboard.html` unless explicitly requested.
 
 ## Checks
 
@@ -47,12 +44,6 @@ For touched Python files:
 ```bash
 python -m py_compile path/to/file.py
 python -m ruff check path/to/file.py
-```
-
-For Body Progress changes:
-
-```bash
-python -m pytest tests/test_body_progress.py
 ```
 
 For wider changes:

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import sys
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -26,13 +25,6 @@ def _resolve_db_path(raw_path: str, fallback: Path) -> Path:
     return path if path.is_absolute() else (BASE_DIR / path).resolve()
 
 
-def _env_bool(name: str, default: bool = False) -> bool:
-    value = os.getenv(name)
-    if value is None:
-        return default
-    return value.strip().lower() in {"1", "true", "yes", "on"}
-
-
 @dataclass(frozen=True)
 class Settings:
     """Typed application settings loaded from environment variables."""
@@ -43,17 +35,6 @@ class Settings:
     db_path: Path
     mock_activities_path: Path
     mock_health_path: Path
-    body_scan_dir: Path
-    use_sam: bool
-    body_scan_processor: str
-    sam3d_repo_dir: Path
-    sam3d_checkpoint_path: Path
-    sam3d_mhr_path: Path
-    sam3d_output_dir: Path
-    sam3d_python_executable: str
-    sam3d_timeout_seconds: int
-    multihmr_repo_dir: Path
-    multihmr_output_dir: Path
     llm_provider: str
     openai_api_key: str
     openai_model: str
@@ -99,26 +80,6 @@ def get_settings() -> Settings:
         db_path=_resolve_db_path(os.getenv("DB_PATH", ""), db_dir / "running_coach.db"),
         mock_activities_path=data_dir / "mock_activities.csv",
         mock_health_path=data_dir / "mock_health_metrics.csv",
-        body_scan_dir=_resolve_path(os.getenv("BODY_SCAN_DIR", "data/body_scans"), data_dir / "body_scans"),
-        use_sam=_env_bool("USE_SAM", _env_bool("use_sam")),
-        body_scan_processor=os.getenv("BODY_SCAN_PROCESSOR", "mediapipe").strip().lower(),
-        sam3d_repo_dir=_resolve_path(os.getenv("SAM3D_REPO_DIR", "../sam/sam-3d-body"), BASE_DIR / "sam" / "sam-3d-body"),
-        sam3d_checkpoint_path=_resolve_path(
-            os.getenv("SAM3D_CHECKPOINT_PATH", "../sam/sam-3d-body/checkpoints/sam-3d-body-dinov3/model.ckpt"),
-            BASE_DIR / "sam" / "sam-3d-body" / "checkpoints" / "sam-3d-body-dinov3" / "model.ckpt",
-        ),
-        sam3d_mhr_path=_resolve_path(
-            os.getenv("SAM3D_MHR_PATH", "../sam/sam-3d-body/checkpoints/sam-3d-body-dinov3/assets/mhr_model.pt"),
-            BASE_DIR / "sam" / "sam-3d-body" / "checkpoints" / "sam-3d-body-dinov3" / "assets" / "mhr_model.pt",
-        ),
-        sam3d_output_dir=_resolve_path(os.getenv("SAM3D_OUTPUT_DIR", "data/body_scan_outputs/sam3d"), data_dir / "body_scan_outputs" / "sam3d"),
-        sam3d_python_executable=os.getenv("SAM3D_PYTHON", "").strip() or sys.executable,
-        sam3d_timeout_seconds=int(os.getenv("SAM3D_TIMEOUT_SECONDS", "900")),
-        multihmr_repo_dir=_resolve_path(os.getenv("MULTIHMR_REPO_DIR", "../sam/multi-hmr"), BASE_DIR / "sam" / "multi-hmr"),
-        multihmr_output_dir=_resolve_path(
-            os.getenv("MULTIHMR_OUTPUT_DIR", "data/body_scan_outputs"),
-            data_dir / "body_scan_outputs",
-        ),
         llm_provider=os.getenv("LLM_PROVIDER", "ollama").strip().lower(),
         openai_api_key=os.getenv("OPENAI_API_KEY", "").strip(),
         openai_model=os.getenv("OPENAI_MODEL", "gpt-5-mini").strip(),
