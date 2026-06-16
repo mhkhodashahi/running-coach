@@ -12,6 +12,7 @@ db/*.db
 garmin_data/
 data/body_scans/
 data/body_scan_outputs/
+data/couch_running_memory.md
 
 # Logs and runtime output
 logs/

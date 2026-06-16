@@ -177,7 +177,7 @@ CI runs the same ruff, syntax, and pytest checks.
 ```text
 app/        Streamlit entry point, dashboard, and pages
 analytics/  Training and recovery analytics
-data/       Mock CSV data and optional local memory template
+data/       Mock CSV data and local-only generated memory files
 db/         SQLAlchemy models, SQLite setup, and repository helpers
 llm/        OpenAI and Ollama clients plus response schemas
 services/   Garmin import, coaching, goals, Telegram, and prediction services
@@ -202,5 +202,5 @@ Before publishing your fork or repository:
 
 - Review `LICENSE`, `CONTRIBUTING.md`, and `SECURITY.md` for your preferred contact details.
 - Run a git-history secret scan with a tool such as `gitleaks` or `trufflehog`.
-- Replace personal files such as `data/couch_running_memory.md` with a generic template or keep them ignored locally.
+- Keep personal files such as `data/couch_running_memory.md` ignored locally.
 - Confirm `.env`, `.garmin_tokens/`, `db/*.db`, logs, and personal exports are not tracked.
