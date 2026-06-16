@@ -143,7 +143,7 @@ class ActivityCoachingService:
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             response_schema=ActivityCoachInsightSchema,
-            normalize=_normalize_payload,
+            normalize=normalize_activity_coach_payload,
             unavailable_message="Activity coaching model unavailable",
         )
         if result.error is not None:
@@ -216,7 +216,7 @@ class ActivityCoachingService:
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             response_schema=ActivityCoachInsightSchema,
-            normalize=_normalize_payload,
+            normalize=normalize_activity_coach_payload,
             unavailable_message="Activity coaching model unavailable",
         )
         if result.error is not None:
@@ -624,14 +624,79 @@ def _format_context_value(key: str, value: Any) -> Any:
     return value
 
 
-def _normalize_payload(payload: dict[str, Any]) -> dict[str, Any]:
+def normalize_activity_coach_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Normalize common structured and local-model activity analysis responses."""
+
     payload = dict(payload or {})
+    for container_key in ("activity_analysis", "analysis", "coach_opinion", "result", "response"):
+        nested = payload.get(container_key)
+        if isinstance(nested, dict):
+            outer = {key: value for key, value in payload.items() if key != container_key and _has_value(value)}
+            payload = nested | outer
+            break
+    _copy_first_present(
+        payload,
+        target="overall_assessment",
+        aliases=("summary", "assessment", "analysis", "coach_opinion", "explanation", "response", "message"),
+    )
+    _copy_first_present(payload, target="what_was_good", aliases=("strengths", "positives", "what_went_well"))
+    _copy_first_present(
+        payload,
+        target="mistakes_or_inefficiencies",
+        aliases=("weaknesses", "areas_to_improve", "mistakes", "limiters"),
+    )
+    _copy_first_present(payload, target="training_recommendations", aliases=("recommendations", "next_steps", "actions"))
+    _copy_first_present(payload, target="pacing_analysis", aliases=("pacing", "pace_analysis"))
+    _copy_first_present(
+        payload,
+        target="aerobic_efficiency_analysis",
+        aliases=("aerobic_efficiency", "efficiency_analysis"),
+    )
+    _copy_first_present(payload, target="recovery_analysis", aliases=("recovery",))
+    _copy_first_present(payload, target="mental_performance_insights", aliases=("mental", "mindset"))
+    _copy_first_present(payload, target="brutally_honest_conclusion", aliases=("conclusion", "honest_conclusion"))
     for key in ("what_was_good", "mistakes_or_inefficiencies", "training_recommendations", "evidence"):
         value = payload.get(key)
         if isinstance(value, str):
             payload[key] = [value]
+        elif isinstance(value, list):
+            payload[key] = [_stringify_model_value(item) for item in value if _has_value(item)]
+        elif value is not None and not isinstance(value, list):
+            payload[key] = [_stringify_model_value(value)]
+    for key in (
+        "overall_assessment",
+        "pacing_analysis",
+        "aerobic_efficiency_analysis",
+        "recovery_analysis",
+        "mental_performance_insights",
+        "brutally_honest_conclusion",
+    ):
+        if key in payload:
+            payload[key] = _stringify_model_value(payload[key])
     normalized = ActivityCoachInsightSchema(**payload).model_dump()
     return normalized
+
+
+def _copy_first_present(payload: dict[str, Any], *, target: str, aliases: tuple[str, ...]) -> None:
+    if _has_value(payload.get(target)):
+        return
+    for alias in aliases:
+        value = payload.get(alias)
+        if _has_value(value):
+            payload[target] = value
+            return
+
+
+def _stringify_model_value(value: Any) -> str:
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, list):
+        return "\n".join(_stringify_model_value(item) for item in value if _has_value(item))
+    if isinstance(value, dict):
+        return json.dumps(value, default=_json_default, ensure_ascii=False)
+    if value is None:
+        return ""
+    return str(value).strip()
 
 
 def _model_name(settings: Settings) -> str:
