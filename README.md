@@ -6,14 +6,11 @@ This project is not affiliated with Garmin, Strava, OpenAI, Telegram, or Google.
 
 ## License
 
-Running Coach is source-available for personal, non-commercial use under the
-Running Coach Personal Use License 1.0. See `LICENSE`.
+Running Coach is open source under the GNU Affero General Public License v3.0.
+See `LICENSE`.
 
-Business, commercial, professional, SaaS, consultancy, employer, client, or
-revenue-generating use is not allowed without separate written permission.
-
-Because commercial use is restricted, this is not an OSI-approved open-source
-license.
+If you modify the app and make it available over a network, AGPL-3.0 requires
+you to make the corresponding source code available to users of that service.
 
 ## Features
 

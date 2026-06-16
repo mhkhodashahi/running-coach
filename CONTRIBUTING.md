@@ -4,9 +4,8 @@ Thanks for considering a contribution to Running Coach.
 
 ## License
 
-This project is source-available for personal, non-commercial use under the
-Running Coach Personal Use License 1.0 in `LICENSE`. It is not an OSI-approved
-open-source license because business and commercial use are not allowed.
+This project is open source under the GNU Affero General Public License v3.0.
+See `LICENSE`.
 
 By contributing code, documentation, tests, examples, or other changes, you
 agree that your contribution is provided under the same license.
