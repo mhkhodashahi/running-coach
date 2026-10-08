@@ -31,6 +31,49 @@ from ui.components import (
 )
 from utils.formatting import format_gap_minutes, format_goal_time, format_pace
 
+DASHBOARD_CHART_MONTHS = 3
+
+
+def _latest_date(dataframe: pd.DataFrame, column: str) -> pd.Timestamp | None:
+    if dataframe.empty or column not in dataframe:
+        return None
+    dates = pd.to_datetime(dataframe[column], errors="coerce").dropna()
+    if dates.empty:
+        return None
+    return dates.max()
+
+
+def _latest_dashboard_chart_date(
+    snapshot: dict,
+    activities: pd.DataFrame,
+    health_metrics: pd.DataFrame,
+    predictions: pd.DataFrame,
+) -> pd.Timestamp | None:
+    candidates = [
+        _latest_date(activities, "date"),
+        _latest_date(health_metrics, "date"),
+        _latest_date(predictions, "prediction_date"),
+        _latest_date(snapshot["weekly_mileage"]["weekly_series"], "week"),
+        _latest_date(snapshot["training_load"], "date"),
+    ]
+    valid = [candidate for candidate in candidates if candidate is not None]
+    return max(valid) if valid else None
+
+
+def _filter_last_months(
+    dataframe: pd.DataFrame,
+    date_column: str,
+    latest_date: pd.Timestamp | None,
+    months: int = DASHBOARD_CHART_MONTHS,
+) -> pd.DataFrame:
+    if dataframe.empty or latest_date is None or date_column not in dataframe:
+        return dataframe.copy()
+    filtered = dataframe.copy()
+    filtered[date_column] = pd.to_datetime(filtered[date_column], errors="coerce")
+    cutoff = latest_date - pd.DateOffset(months=months)
+    return filtered[filtered[date_column] >= cutoff].copy()
+
+
 st.set_page_config(page_title="Running Coach", page_icon="R", layout="wide")
 apply_dashboard_theme()
 
@@ -39,6 +82,17 @@ bundle = load_training_bundle()
 user = bundle.user
 snapshot = bundle.snapshot
 active_goal_projection = snapshot.get("active_goal_projection")
+latest_chart_date = _latest_dashboard_chart_date(
+    snapshot,
+    bundle.activities,
+    bundle.health_metrics,
+    bundle.prediction_snapshots,
+)
+chart_activities = _filter_last_months(bundle.activities, "date", latest_chart_date)
+chart_health_metrics = _filter_last_months(bundle.health_metrics, "date", latest_chart_date)
+chart_prediction_snapshots = _filter_last_months(bundle.prediction_snapshots, "prediction_date", latest_chart_date)
+chart_weekly_mileage = _filter_last_months(snapshot["weekly_mileage"]["weekly_series"], "week", latest_chart_date)
+chart_training_load = _filter_last_months(snapshot["training_load"], "date", latest_chart_date)
 
 hero_motivation = (
     "Track the same things that move race fitness: weekly distance, monthly consistency, "
@@ -169,21 +223,21 @@ if active_goal_projection:
 
 st.subheader("Running Progress")
 progress_col, log_col = st.columns([1.35, 1])
-progress_col.plotly_chart(running_progress_chart(bundle.activities), width="stretch")
-log_col.plotly_chart(activity_calendar_chart(bundle.activities), width="stretch")
+progress_col.plotly_chart(running_progress_chart(chart_activities), width="stretch")
+log_col.plotly_chart(activity_calendar_chart(chart_activities), width="stretch")
 
 st.subheader("Prediction Trend")
-st.plotly_chart(prediction_snapshot_chart(bundle.prediction_snapshots), width="stretch")
+st.plotly_chart(prediction_snapshot_chart(chart_prediction_snapshots), width="stretch")
 
 col1, col2 = st.columns(2)
-col1.plotly_chart(weekly_mileage_chart(snapshot["weekly_mileage"]["weekly_series"]), width="stretch")
-col2.plotly_chart(vo2max_trend_chart(bundle.health_metrics), width="stretch")
+col1.plotly_chart(weekly_mileage_chart(chart_weekly_mileage), width="stretch")
+col2.plotly_chart(vo2max_trend_chart(chart_health_metrics), width="stretch")
 
 col3, col4 = st.columns(2)
-col3.plotly_chart(sleep_recovery_chart(bundle.health_metrics), width="stretch")
-col4.plotly_chart(training_load_chart(snapshot["training_load"]), width="stretch")
+col3.plotly_chart(sleep_recovery_chart(chart_health_metrics), width="stretch")
+col4.plotly_chart(training_load_chart(chart_training_load), width="stretch")
 
-st.plotly_chart(vo2max_activity_chart(bundle.health_metrics, bundle.activities), width="stretch")
+st.plotly_chart(vo2max_activity_chart(chart_health_metrics, chart_activities), width="stretch")
 
 st.subheader("Goal Progress")
 goal_prediction = active_goal_projection or snapshot["prediction"]
@@ -195,7 +249,7 @@ st.write(
     f"**{format_pace(goal_prediction['predicted_pace'])}**, which maps to "
     f"**{format_goal_time(predicted_time)}**."
 )
-st.plotly_chart(goal_pace_chart(bundle.activities, snapshot["goal_pace"]), width="stretch")
+st.plotly_chart(goal_pace_chart(chart_activities, snapshot["goal_pace"]), width="stretch")
 
 if not bundle.goals.empty:
     st.subheader("Goals")
