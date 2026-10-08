@@ -301,6 +301,8 @@ def _race_equivalent_pace_candidates(
 ) -> list[tuple[float, float]]:
     eligible = _window(runs.dropna(subset=["distance", "duration", "pace"]), 70, ref_day)
     eligible = eligible[(eligible["distance"] >= 5) & (eligible["duration"] >= 20)].copy()
+    if race_distance_km <= 5:
+        eligible = eligible[eligible["distance"] <= 10].copy()
     if eligible.empty:
         return []
 
@@ -412,23 +414,31 @@ def predict_finish_time_for_distance(
         long_runs = _window(runs[runs["distance"] >= 18], 56, ref_day)
         steady_runs = _window(runs[(runs["distance"] >= 10) & (runs["distance"] <= 18)], 56, ref_day)
         latest_vo2 = vo2max_trend(health)["latest"]
-        if not long_runs.empty:
+        if not long_runs.empty and race_distance_km > 10:
             long_run_factor = 0.975 if race_distance_km >= 21 else 0.99
             candidate_paces.append((float(long_runs.tail(3)["pace"].median()) * long_run_factor, 0.28))
-        if not steady_runs.empty:
+        if not steady_runs.empty and race_distance_km > 5:
             steady_factor = 0.99 if race_distance_km <= 10 else 1.01
             candidate_paces.append((float(steady_runs.nsmallest(4, "pace")["pace"].median()) * steady_factor, 0.24))
         if latest_vo2 is not None:
             vo2_factor = np.clip(42.195 / race_distance_km, 1.0, 2.0)
             candidate_paces.append((max(3.2, 7.00 - latest_vo2 * (0.028 * vo2_factor)), 0.18))
-        candidate_paces.append((float(runs["pace"].median()) * 1.12, 0.08))
+        fallback_runs = runs
+        fallback_factor = 1.12
+        if race_distance_km <= 5:
+            fallback_runs = _window(runs[(runs["distance"] >= 4.5) & (runs["distance"] <= 10)], 70, ref_day)
+            fallback_factor = 1.03
+        if not fallback_runs.empty:
+            candidate_paces.append((float(fallback_runs["pace"].median()) * fallback_factor, 0.08))
 
         predicted_pace = _weighted_average(candidate_paces) or goal_pace * 1.05
         endurance_penalty, weekly_average, longest_recent = _training_endurance_penalty(runs, ref_day, consistency)
         if race_distance_km >= 21:
             predicted_pace *= endurance_penalty
+        elif race_distance_km <= 5:
+            predicted_pace *= 1.0
         elif race_distance_km <= 10:
-            predicted_pace *= float(np.clip(endurance_penalty - 0.02, 0.9, 1.12))
+            predicted_pace *= float(np.clip(1.0 + (endurance_penalty - 1.0) * 0.35, 0.96, 1.06))
         else:
             predicted_pace *= float(np.clip(endurance_penalty - 0.01, 0.9, 1.16))
         predicted_pace += max(0.0, fatigue - 45) / 170

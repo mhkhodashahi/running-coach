@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from analytics.performance import build_training_snapshot, consistency_score, weekly_mileage
+from analytics.performance import build_goal_projection, build_training_snapshot, consistency_score, weekly_mileage
 
 
 class DummyUser:
@@ -90,3 +90,44 @@ def test_training_snapshot_uses_active_goal_target_instead_of_legacy_running_goa
     assert projection["target_time_minutes"] == 50.0
     assert projection["predicted_time_minutes"] == 54.0
     assert projection["gap_minutes"] == 4.0
+
+
+def test_5k_projection_uses_recent_short_race_fitness_without_marathon_penalty() -> None:
+    activities = pd.DataFrame(
+        [
+            {
+                "date": "2026-05-01",
+                "type": "running",
+                "distance": 18.0,
+                "duration": 144.0,
+                "pace": 8.0,
+                "avg_hr": 145,
+                "aerobic_effect": 2.0,
+                "anaerobic_effect": 0.0,
+            },
+            {
+                "date": "2026-05-10",
+                "type": "running",
+                "distance": 5.0,
+                "duration": 28.85,
+                "pace": 5.77,
+                "avg_hr": 172,
+                "aerobic_effect": 3.0,
+                "anaerobic_effect": 1.0,
+            },
+            {
+                "date": "2026-05-15",
+                "type": "running",
+                "distance": 6.0,
+                "duration": 34.2,
+                "pace": 5.7,
+                "avg_hr": 170,
+                "aerobic_effect": 3.0,
+                "anaerobic_effect": 1.0,
+            },
+        ]
+    )
+
+    projection = build_goal_projection(DummyUser(), activities, EMPTY_HEALTH, "5k_pb", 24.7, 5.0)
+
+    assert projection["predicted_time_minutes"] < 30.0
