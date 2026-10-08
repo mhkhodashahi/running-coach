@@ -108,12 +108,12 @@ def test_activity_coach_opinion_is_loaded_from_db_without_regeneration() -> None
 
 def test_activity_coaching_prompt_uses_profile_and_required_analysis_categories() -> None:
     user = SimpleNamespace(
-        name="Mohammad",
-        age=39,
-        gender="male",
-        weight=89.0,
-        height=178.0,
-        max_hr=184,
+        name="Demo Athlete",
+        age=35,
+        gender="unspecified",
+        weight=75.0,
+        height=175.0,
+        max_hr=185,
         training_days_per_week=5,
         injury_notes="None",
     )
@@ -187,8 +187,8 @@ def test_activity_coaching_prompt_uses_profile_and_required_analysis_categories(
     assert "Use the athlete_profile values" in system_prompt
     assert "# Context Engineering" in system_prompt
     assert "context_engineering.analysis_frame" in system_prompt
-    assert '"age": 39' in user_prompt
-    assert '"weight_kg": 89.0' in user_prompt
+    assert '"age": 35' in user_prompt
+    assert '"weight_kg": 75.0' in user_prompt
     assert '"pace": "6:00"' in user_prompt
     assert '"median_pace": "6:12"' in user_prompt
     assert "pace_min_per_km" not in user_prompt

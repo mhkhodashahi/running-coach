@@ -117,10 +117,12 @@ def test_default_user_matches_activity_coach_profile() -> None:
     with session_factory() as session:
         user = repository.get_or_create_default_user(session, 1)
 
-    assert user.age == 39
-    assert user.gender == "male"
-    assert user.weight == 89.0
-    assert user.max_hr == 184
+    assert user.name == "Demo Athlete"
+    assert user.age == 35
+    assert user.gender == "unspecified"
+    assert user.weight == 75.0
+    assert user.height == 175.0
+    assert user.max_hr == 185
 
 
 def test_update_user_profile_saves_max_hr() -> None:

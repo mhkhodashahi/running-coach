@@ -18,7 +18,7 @@ class DummyGoal:
 
 
 class DummyUser:
-    name = "Mohammad"
+    name = "Demo Athlete"
 
 
 def test_telegram_prompt_requires_specific_training_and_recovery_data() -> None:

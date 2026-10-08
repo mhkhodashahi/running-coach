@@ -2,9 +2,18 @@
 name = "running-coach"
 version = "0.1.0"
 description = "Local Streamlit running coach for Garmin-style training data"
+readme = "README.md"
 license = { file = "LICENSE" }
+authors = [
+    { name = "Mohammad and Running Coach contributors" },
+]
+keywords = ["running", "garmin", "streamlit", "coaching", "sqlite", "llm"]
 classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: End Users/Desktop",
     "License :: OSI Approved :: GNU Affero General Public License v3",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
 ]
 requires-python = ">=3.11,<4.0"
 dependencies = [
@@ -29,6 +38,11 @@ dev = [
 [project.scripts]
 sync-garmin = "utils.garmin_sync_cli:main"
 telegram-chat = "utils.telegram_chat_cli:main"
+
+[project.urls]
+Homepage = "https://github.com/mhkhodashahi/running-coach"
+Repository = "https://github.com/mhkhodashahi/running-coach"
+Issues = "https://github.com/mhkhodashahi/running-coach/issues"
 
 [tool.poetry]
 packages = [

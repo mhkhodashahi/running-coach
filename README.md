@@ -159,6 +159,13 @@ Install dev dependencies:
 pip install -e ".[dev]"
 ```
 
+CI installs with Poetry from the committed `poetry.lock` file. If you prefer
+Poetry locally, run:
+
+```bash
+poetry install --extras dev
+```
+
 Run checks:
 
 ```bash

@@ -37,12 +37,12 @@ def get_or_create_default_user(session: Session, default_user_id: int) -> User:
 
     user = User(
         id=default_user_id,
-        name="Mohammad",
-        age=39,
-        gender="male",
-        weight=89.0,
-        height=178.0,
-        max_hr=184,
+        name="Demo Athlete",
+        age=35,
+        gender="unspecified",
+        weight=75.0,
+        height=175.0,
+        max_hr=185,
         training_days_per_week=5,
         injury_notes=None,
         running_date=date(2026, 9, 27),
@@ -55,12 +55,12 @@ def get_or_create_default_user(session: Session, default_user_id: int) -> User:
 def _backfill_legacy_default_profile(user: User) -> None:
     """Update old demo defaults without overwriting user-edited profiles."""
 
-    if user.name == "Mohammad" and user.age == 34:
-        user.age = 39
-    if user.name == "Mohammad" and user.weight == 73.0:
-        user.weight = 89.0
-    if user.name == "Mohammad" and user.max_hr == 188:
-        user.max_hr = 184
+    if user.name == "Demo Athlete" and user.age == 34:
+        user.age = 35
+    if user.name == "Demo Athlete" and user.weight == 73.0:
+        user.weight = 75.0
+    if user.name == "Demo Athlete" and user.max_hr == 188:
+        user.max_hr = 185
 
 
 def get_or_create_default_goal(session: Session, user: User) -> Goal:
