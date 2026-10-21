@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from datetime import date
 
+import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from db import repository
 from db.models import Base
+from services.import_service import GarminImportService
 
 
 def test_bulk_upsert_activities_updates_existing_external_activity() -> None:
@@ -136,6 +138,41 @@ def test_update_user_profile_saves_max_hr() -> None:
         updated = repository.get_or_create_default_user(session, 1)
 
     assert updated.max_hr == 194
+
+
+def test_garmin_sync_status_is_saved_only_after_success(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    session_factory = sessionmaker(bind=engine, future=True)
+
+    class SuccessfulClient:
+        def __init__(self, **kwargs):
+            pass
+
+        def sync_recent_data(self, **kwargs):
+            return [], []
+
+    class FailingClient(SuccessfulClient):
+        def sync_recent_data(self, **kwargs):
+            raise RuntimeError("Garmin unavailable")
+
+    with session_factory.begin() as session:
+        repository.get_or_create_default_user(session, 1)
+        assert repository.get_last_garmin_sync(session, 1) is None
+
+    monkeypatch.setattr("services.import_service.GarminAPIClient", SuccessfulClient)
+    with session_factory.begin() as session:
+        GarminImportService().sync_garmin(session, user_id=1)
+
+    with session_factory() as session:
+        synced_at = repository.get_last_garmin_sync(session, 1)
+        assert synced_at is not None
+
+    monkeypatch.setattr("services.import_service.GarminAPIClient", FailingClient)
+    with session_factory() as session:
+        with pytest.raises(RuntimeError, match="Garmin unavailable"):
+            GarminImportService().sync_garmin(session, user_id=1)
+        assert repository.get_last_garmin_sync(session, 1) == synced_at
 
 
 def test_nutrition_entries_can_be_created_listed_and_deleted() -> None:

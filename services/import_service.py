@@ -114,7 +114,7 @@ class GarminImportService:
                         validate_laps(payload["laps"]),
                     )
 
-        return ImportSummary(
+        summary = ImportSummary(
             activities_imported=activities_imported,
             health_rows_imported=repository.bulk_upsert_health_metrics(session, health_rows) if include_health else 0,
             track_points_imported=track_points_imported,
@@ -129,3 +129,5 @@ class GarminImportService:
                 else 0
             ),
         )
+        repository.record_garmin_sync(session, user_id)
+        return summary

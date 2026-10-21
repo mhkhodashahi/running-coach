@@ -7,7 +7,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from services.training_context_service import load_training_bundle
-from ui.components import apply_dashboard_theme
+from ui.sidebar import render_sidebar_menu
 
 ANALYSIS_BLUE = "#2563eb"
 ANALYSIS_GREEN = "#16a34a"
@@ -140,7 +140,7 @@ def _quality_volume_frame(runs: pd.DataFrame, quality: pd.DataFrame) -> pd.DataF
 def _quality_sessions_chart(volume: pd.DataFrame) -> go.Figure:
     figure = go.Figure()
     if volume.empty:
-        return _themed_figure(figure, "Quality Sessions: Weekly Workload")
+        return _themed_figure(figure, "Key Sessions: Weekly Workload")
     figure.add_trace(
         go.Bar(
             x=volume["week"],
@@ -163,7 +163,7 @@ def _quality_sessions_chart(volume: pd.DataFrame) -> go.Figure:
             ),
         )
     )
-    _themed_figure(figure, "Quality Sessions: Weekly Workload")
+    _themed_figure(figure, "Key Sessions: Weekly Workload")
     figure.update_layout(barmode="overlay", yaxis_title="Distance (km)")
     return figure
 
@@ -191,8 +191,8 @@ def _quality_type_chart(quality: pd.DataFrame) -> go.Figure:
     return _themed_figure(figure, "Quality Session Types")
 
 
-apply_dashboard_theme()
-st.title("Quality Sessions")
+render_sidebar_menu()
+st.title("Key Sessions")
 st.caption(
     "Runalyze-inspired tempo-session review. Sessions are classified from pace, distance, effects, type, and notes."
 )
@@ -200,7 +200,7 @@ st.caption(
 bundle = load_training_bundle()
 runs = _running_activities(bundle.activities)
 if runs.empty:
-    st.info("No running activities available yet. Import activities from the dashboard sidebar to unlock quality sessions.")
+    st.info("No running activities available yet. Import activities from the sidebar to unlock quality sessions.")
     st.stop()
 
 quality_sessions = _quality_sessions_frame(runs)

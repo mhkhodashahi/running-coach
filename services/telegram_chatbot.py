@@ -6,6 +6,7 @@ import time
 from dataclasses import dataclass
 
 from config import Settings, get_settings
+from db.setup import init_db
 from services.telegram_service import TelegramService
 from services.training_chat_service import TrainingChatService
 
@@ -52,6 +53,7 @@ class TelegramTrainingChatBot:
     def run_polling(self, poll_timeout: int = 30, idle_sleep_seconds: float = 1.0) -> None:
         """Run a local long-polling loop until interrupted."""
 
+        init_db()
         if not self.settings.telegram_bot_token:
             raise ValueError("TELEGRAM_BOT_TOKEN is not configured.")
         if not self.settings.telegram_chat_id:

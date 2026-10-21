@@ -16,8 +16,16 @@ def test_default_navigation_pages_do_not_include_removed_surfaces() -> None:
         "pages/4_AI_Coach.py",
         "pages/5_Goals_and_Digests.py",
         "pages/7_Quality_Sessions.py",
-        "pages/8_Activity_Detail.py",
     ]
+
+
+def test_activity_details_stays_registered_without_sidebar_link() -> None:
+    from app.main import build_pages
+
+    pages = build_pages()
+
+    assert len(pages) == 8
+    assert pages[-1].visibility == "hidden"
 
 
 def test_streamlit_navigation_excludes_removed_pages() -> None:

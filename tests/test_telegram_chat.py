@@ -31,6 +31,7 @@ class FakeChat:
 
 
 def test_training_chat_service_uses_llm_answer_and_evidence(monkeypatch) -> None:
+    monkeypatch.setattr("services.training_chat_service.init_db", lambda: None)
     service = TrainingChatService(
         llm_client=FakeLLM(
             {
@@ -62,6 +63,7 @@ def test_training_chat_service_uses_llm_answer_and_evidence(monkeypatch) -> None
 
 
 def test_training_chat_service_falls_back_when_llm_returns_empty(monkeypatch) -> None:
+    monkeypatch.setattr("services.training_chat_service.init_db", lambda: None)
     service = TrainingChatService(llm_client=FakeLLM({}))
     monkeypatch.setattr(
         service,

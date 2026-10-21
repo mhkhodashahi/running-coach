@@ -55,7 +55,7 @@ class AppBootstrapService:
         self.snapshot_builder = snapshot_builder
 
     def initialize_default_user(self) -> Any:
-        """Create schema, default user, demo data, and prediction history when needed."""
+        """Check schema, then create default user, demo data, and history when needed."""
 
         self.init_database()
         with self.session_scope_factory() as session:
@@ -101,7 +101,7 @@ class AppBootstrapService:
 
 
 def bootstrap_app() -> Any:
-    """Initialize the app database and seed demo data when empty."""
+    """Check database readiness and seed demo data when empty."""
 
     return AppBootstrapService().initialize_default_user()
 

@@ -1,68 +1,206 @@
-# Upgrade Guide
+# Database Upgrade Guide
 
-Running Coach is a local SQLite app. It does not use Alembic or another formal
-database migration tool yet. Schema evolution is handled explicitly in
-`db/setup.py`, as documented in `docs/adr/0001-lightweight-sqlite-setup.md`.
+Running Coach now uses Alembic through a **backup-first runner**. This supersedes
+the lightweight setup decision in `docs/adr/0001-lightweight-sqlite-setup.md`.
+Only milestone 1 is implemented; opinion generation and JSON payloads are unchanged.
 
-## Before Upgrading
+## Upgrade
 
-1. Stop the Streamlit app and any CLI jobs.
-2. Back up your local database:
-
-```bash
-cp db/running_coach.db "db/running_coach.$(date +%Y%m%d-%H%M%S).bak"
-```
-
-3. Pull or apply the new project version.
-4. Install dependencies:
+Stop Streamlit, Garmin sync, Telegram and scheduled jobs first. Install the new
+dependencies, then run from the repository root:
 
 ```bash
-pip install -e ".[dev]"
+.venv/bin/python -m pip install -e ".[dev]"
+.venv/bin/python -m scripts.upgrade_db --db db/running_coach.db
 ```
 
-5. Start the app or run a command that initializes the app. Startup calls
-   `db.setup.init_db()`, which creates missing tables and applies the lightweight
-   compatibility updates listed below.
+The command uses the exact path supplied: it does **not** redirect
+`marathon_coach.db` to `running_coach.db`. Check the path before running it.
 
-## Current Lightweight Schema Updates
+- Existing databases needing an upgrade are backed up automatically to
+  `<database-directory>/backups/<stem>.<UTC-timestamp>.<unique-suffix>.db`.
+  Override that directory with `--backup-dir /private/path/backups`.
+- Backups use SQLite's online backup API, include committed WAL data, are
+  integrity-checked, and are created with owner-only file permissions.
+  Backup failure aborts the upgrade before stamping or modifying tables.
+- An unversioned existing app database is **stamped** at `0001_baseline`.
+  Stamping only adds Alembic's version metadata, never runs baseline table DDL.
+- A new database runs the baseline, then revisions 2 and 3.
+- Stamp and upgrade are one explicit SQLite transaction. A failure rolls back
+  both schema changes and revision metadata; the backup remains available.
+- Repeating an upgrade at head changes nothing and creates no extra backup.
+- Only `scripts.upgrade_db` runs migrations. Streamlit, Telegram polling/chat,
+  Garmin sync and digest startup perform a read-only revision check. Missing,
+  unversioned or behind-head databases stop startup without creating tables,
+  changing data, stamping revisions or taking backups. Run the upgrade command
+  explicitly, including on first installation. Do not upgrade alongside writers.
 
-`db/setup.py` currently handles these local database updates:
+Startup reports the resolved database path in this message:
 
-- `users`: adds `name`, `training_days_per_week`, `injury_notes`,
-  `running_goal_time`, and `running_date` when missing.
-- `users`: copies old `marathon_goal_time` and `marathon_date` values into the
-  current running-goal fields when those old columns exist.
-- `goals`: renames legacy `marathon_pb` goal types and goal names to running
-  terminology.
-- `activities`: adds `activity_name` when missing.
-- `activity_coaching_insights`: adds `updated_at` when missing.
-- `prediction_snapshots`: creates the table and indexes when missing.
+```text
+Database needs an upgrade. Stop all jobs, then run:
+python -m scripts.upgrade_db --db <path>
+```
 
-These updates are intentionally additive or compatibility-oriented. They should
-not delete user data.
+A revision that does not match this application's head is also rejected rather
+than silently accepted or migrated.
 
-## Contributor Rules For Schema Changes
+Raw `alembic upgrade`, `stamp`, and `downgrade` are deliberately blocked by
+the migration environment without the runner's connection. Do not manually stamp
+a database at head: doing so skips required changes. Destructive downgrades are
+unsupported; restore the backup instead.
 
-When a change adds or changes persisted data:
+## Revisions and Data Risks
 
-- Update SQLAlchemy models in `db/models.py`.
-- Update repository read/write helpers in `db/repository.py`.
-- Update lightweight setup SQL in `db/setup.py`.
-- Add or update focused tests that exercise an older database shape when
-  practical.
-- Add a note to this file explaining what existing users should expect.
-- Avoid destructive schema changes. If a destructive change is unavoidable,
-  document the manual backup and recovery path here before merging.
+1. `0001_baseline`: frozen schema-only snapshot of the observed runtime database,
+   including both `body_scan*` tables and `users.marathon_*`. No private rows
+   are included. Fresh databases reproduce its columns, defaults, constraints
+   and indexes. Existing databases are stamped, not recreated.
+2. `0002_legacy_compat`: missing application tables and the former `db/setup.py`
+   compatibility additions/backfills. Existing body-scan tables, including
+   unknown extra columns/indexes, are untouched; absent body-scan tables are
+   not added to existing databases.
+3. `0003_opinion_versions`: nullable `schema_version VARCHAR(32)` and
+   `prompt_version VARCHAR(80)` on `activity_coaching_insights`, without defaults
+   or backfills. Existing values are NULL, meaning legacy. JSON payloads,
+   prompt context and opinion timestamps are not rewritten.
 
-## When To Adopt Alembic
+Revision 2 copies each non-NULL `marathon_goal_time` / `marathon_date` into
+`running_goal_time` / `running_date` **only if that running field is NULL**.
+Every non-NULL running value is preserved, including conflicting values and
+empty strings. The fields are checked independently; no legacy columns are removed.
+When `running_goal_time` is absent, its existing column-addition definition
+supplies the non-NULL default `03:59:59`; that default is likewise preserved.
+A newly added `running_date` is NULL and can be filled from `marathon_date`.
 
-Move from lightweight setup SQL to Alembic when any of these become common:
+Revision 0002 was amended before release. A test database already upgraded
+using the earlier implementation will not rerun it, nor can this change recover
+values previously overwritten. To retest, restore a pre-upgrade backup to a
+separate copy and run the explicit upgrade command on that copy.
 
-- More than a few schema changes per release.
-- Data backfills become multi-step or order-dependent.
-- Downgrades or repeatable named migration versions are needed.
-- Multiple contributors are changing schema in parallel.
-- Users need clearer release-by-release database state tracking.
+All `marathon_pb` goal types still become `running_pb`. Name replacement is now
+restricted to the exact old generated signature:
 
-Until then, keep `db/setup.py` as the single place for compatibility SQL and keep
-upgrade notes in this guide.
+```sql
+UPDATE goals SET name = 'Primary Running Goal'
+WHERE name = 'Primary Marathon Goal'
+  AND goal_type = 'marathon_pb'
+  AND notes = 'Default active goal created from app settings.';
+```
+
+This runs before type conversion. Other names are preserved. There is no edit
+history to distinguish a user re-entering the identical generated signature.
+Previously overwritten names cannot be recovered without an older backup.
+
+The frozen schema requires `users.marathon_goal_time` without a SQL default.
+Default-user creation supplies that legacy field only when it exists; it does
+not add it to newer model-only databases.
+
+## Manual Backup
+
+```bash
+.venv/bin/python -m scripts.backup_db --db db/running_coach.db
+.venv/bin/python -m scripts.backup_db --db db/running_coach.db --backup-dir /private/path/backups
+```
+
+The command prints the backup path. It fails if the source is missing rather
+than creating an empty source database. Backups contain private health data;
+keep them out of source control and public release archives.
+
+## Verify on a Copy
+
+Stop writers first. These commands read the working database to make a
+consistent backup, but upgrade **only** the candidate copy:
+
+```bash
+CHECK_DIR="$(mktemp -d /tmp/running-coach-upgrade.XXXXXX)"
+BACKUP="$(.venv/bin/python -m scripts.backup_db --db db/running_coach.db)"
+cp "$BACKUP" "$CHECK_DIR/before.db"
+cp "$BACKUP" "$CHECK_DIR/candidate.db"
+.venv/bin/python -m scripts.upgrade_db --db "$CHECK_DIR/candidate.db"
+sqlite3 "$CHECK_DIR/candidate.db" "SELECT version_num FROM alembic_version; PRAGMA integrity_check; PRAGMA foreign_key_check;"
+```
+
+Expect `0003_opinion_versions`, `ok`, and no foreign-key violations.
+Compare counts, exact JSON strings and complete body-scan schemas/rows:
+
+```bash
+.venv/bin/python - "$CHECK_DIR/before.db" "$CHECK_DIR/candidate.db" <<'PY'
+import sqlite3
+import sys
+from contextlib import closing
+
+with closing(sqlite3.connect(sys.argv[1])) as before, closing(sqlite3.connect(sys.argv[2])) as after:
+    tables = [r[0] for r in before.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' "
+        "AND name NOT LIKE 'sqlite_%' AND name != 'alembic_version'"
+    )]
+    for table in tables:
+        quoted = '"' + table.replace('"', '""') + '"'
+        assert before.execute(f"SELECT count(*) FROM {quoted}").fetchone() == after.execute(f"SELECT count(*) FROM {quoted}").fetchone(), table
+        columns = {r[1] for r in before.execute(f"PRAGMA table_info({quoted})")}
+        for column in ("payload_json", "prompt_context_json"):
+            if column in columns:
+                query = f"SELECT id, {column} FROM {quoted} ORDER BY id"
+                assert before.execute(query).fetchall() == after.execute(query).fetchall(), (table, column)
+        if table.startswith("body_scan"):
+            query = "SELECT type, name, sql FROM sqlite_master WHERE tbl_name=? ORDER BY type, name"
+            assert before.execute(query, (table,)).fetchall() == after.execute(query, (table,)).fetchall(), table
+            assert before.execute(f"SELECT * FROM {quoted} ORDER BY id").fetchall() == after.execute(f"SELECT * FROM {quoted} ORDER BY id").fetchall(), table
+    assert after.execute("SELECT count(*) FROM activity_coaching_insights WHERE schema_version IS NOT NULL OR prompt_version IS NOT NULL").fetchone() == (0,)
+print("Counts, JSON payloads, body-scan schema/data, and legacy NULL versions preserved.")
+PY
+
+shasum -a 256 "$CHECK_DIR/candidate.db"
+.venv/bin/python -m scripts.upgrade_db --db "$CHECK_DIR/candidate.db"
+shasum -a 256 "$CHECK_DIR/candidate.db"
+```
+
+The two hashes should match. This checks preservation, not the correctness of
+your profile/goal backfill: inspect the copy's user and goal values as well.
+
+Automated tests use invented old-schema and runtime-shaped fixtures, copied
+under pytest temporary directories. They never connect to your working DB:
+
+```bash
+.venv/bin/python -m pytest tests/test_migrations.py -q
+```
+
+## Restore
+
+Stop **all** app and job processes. Preserve the failed/current database with
+the manual backup command first, if readable. Select the correct pre-upgrade
+backup; restoring discards changes made after that backup. Use SQLite's backup
+API to restore, rather than overwriting a database file with stale WAL sidecars:
+
+```bash
+.venv/bin/python - /absolute/path/pre-upgrade-backup.db db/running_coach.db <<'PY'
+import sqlite3
+import sys
+from contextlib import closing
+from pathlib import Path
+
+source = Path(sys.argv[1]).resolve(strict=True)
+destination = Path(sys.argv[2]).resolve()
+assert source != destination, "Backup and destination must differ"
+with closing(sqlite3.connect(source.as_uri() + "?mode=ro", uri=True)) as backup:
+    assert backup.execute("PRAGMA integrity_check").fetchall() == [("ok",)]
+    with closing(sqlite3.connect(destination)) as target:
+        backup.backup(target)
+        assert target.execute("PRAGMA integrity_check").fetchall() == [("ok",)]
+print("Restored:", destination)
+PY
+```
+
+Restore the matching application version before restarting. If the restored
+database is behind this application's head, startup will stop with the upgrade
+message; it will not migrate the restored database automatically.
+
+## Contributor Rules
+
+Never edit an already-released revision or import live ORM models into a
+historical migration. Add a new revision with
+`alembic revision -m "description"`, implement its operations, update ORM fields
+and repository access as needed, and add fresh/legacy preservation tests.
+Do not autogenerate drops for unmodeled legacy/body-scan tables. Keep backups
+mandatory for pending upgrades and document any data-changing backfills.

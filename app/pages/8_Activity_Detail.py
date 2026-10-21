@@ -20,8 +20,8 @@ from services.activity_coaching_service import (
 )
 from services.hr_zones import HR_ZONE_COLORS, heart_rate_zone_summary, supports_hr_zone_view
 from services.training_context_service import load_training_bundle
-from ui.components import apply_dashboard_theme
 from ui.google_maps import render_activity_route_map
+from ui.sidebar import render_sidebar_menu
 from utils.formatting import (
     format_duration_minutes,
     format_gap_minutes,
@@ -509,7 +509,7 @@ def _render_activity_coach_panel(activity: pd.Series, user_id: int, track_points
 
     if not insight:
         st.info(
-            "No coach opinion stored for this activity yet. Configure Ollama or OpenAI on the AI Coach page, then generate it here."
+            "No coach opinion stored for this activity yet. Configure Ollama or OpenAI on the Coach page, then generate it here."
         )
         return
 
@@ -568,15 +568,15 @@ def _render_activity_prediction(activity_id: int, predictions: pd.DataFrame) -> 
     cols[3].metric("Confidence", format_metric_number(float(row["confidence"]), decimals=0, suffix="%"))
 
 
-apply_dashboard_theme()
-st.title("Activity Detail")
+render_sidebar_menu()
+st.title("Activity Details")
 st.caption("Strava-inspired activity view using your locally stored Garmin-style activity data.")
 
 settings = get_settings()
 bundle = load_training_bundle()
 activities = bundle.activities.copy()
 if activities.empty:
-    st.info("No activities available yet. Import a CSV or sync Garmin data from the dashboard sidebar.")
+    st.info("No activities available yet. Import a CSV or sync Garmin data from the sidebar.")
     st.stop()
 
 activities["date"] = pd.to_datetime(activities["date"])

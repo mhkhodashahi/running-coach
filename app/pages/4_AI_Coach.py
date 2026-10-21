@@ -1,4 +1,4 @@
-"""AI Coach page."""
+"""Coach page."""
 
 from __future__ import annotations
 
@@ -12,8 +12,10 @@ from db.session import session_scope
 from services.coaching_workflow import CoachingWorkflowService
 from services.training_context_service import load_training_bundle
 from ui.components import render_coaching_card
+from ui.sidebar import render_sidebar_menu
 
-st.title("AI Coach")
+render_sidebar_menu()
+st.title("Coach")
 
 bundle = load_training_bundle()
 settings = get_settings()

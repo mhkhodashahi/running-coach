@@ -7,7 +7,7 @@ import streamlit as st
 
 from services.training_context_service import load_training_bundle
 from ui.charts import hr_trend_chart, long_run_progression_chart, pace_trend_chart, weekly_mileage_chart
-from ui.components import apply_dashboard_theme
+from ui.sidebar import render_sidebar_menu
 from utils.formatting import format_duration_minutes, format_metric_number, format_pace
 
 TYPE_COLORS = {
@@ -61,7 +61,7 @@ def _render_activity_card(row) -> None:
     )
 
 
-apply_dashboard_theme()
+render_sidebar_menu()
 st.title("Activities")
 st.caption("Browse activities as cards. Open one to see the full Strava-inspired detail page.")
 
@@ -140,7 +140,7 @@ bundle = load_training_bundle()
 activities = bundle.activities.copy()
 
 if activities.empty:
-    st.info("No activities available yet. Import a CSV from the dashboard sidebar.")
+    st.info("No activities available yet. Import a CSV from the sidebar.")
 else:
     min_date = activities["date"].min().date()
     max_date = activities["date"].max().date()

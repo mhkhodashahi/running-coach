@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from typing import Any
 
 import pandas as pd
-from sqlalchemy import delete, select, text
+from sqlalchemy import MetaData, Table, delete, func, inspect, select, text
 from sqlalchemy.orm import Session
 
 from config import get_settings
@@ -17,6 +17,7 @@ from db.models import (
     ActivityTrackPoint,
     CoachingDecision,
     EmailDelivery,
+    GarminSyncStatus,
     Goal,
     HealthMetric,
     LLMMemory,
@@ -47,9 +48,37 @@ def get_or_create_default_user(session: Session, default_user_id: int) -> User:
         injury_notes=None,
         running_date=date(2026, 9, 27),
     )
+    # Runtime databases retain a required legacy column that is not mapped by User.
+    if "marathon_goal_time" in {column["name"] for column in inspect(session.connection()).get_columns("users")}:
+        table = Table("users", MetaData(), autoload_with=session.connection())
+        values = {column.name: getattr(user, column.name) for column in User.__table__.columns}
+        values["running_goal_time"] = user.running_goal_time or "03:59:59"
+        values["marathon_goal_time"] = values["running_goal_time"]
+        session.execute(table.insert().values(**values))
+        return session.get(User, default_user_id)
     session.add(user)
     session.flush()
     return user
+
+
+def get_last_garmin_sync(session: Session, user_id: int) -> datetime | None:
+    status = session.get(GarminSyncStatus, user_id)
+    return status.last_synced_at if status else None
+
+
+def latest_activity_date(session: Session, user_id: int) -> date | None:
+    return session.scalar(select(func.max(Activity.date)).where(Activity.user_id == user_id))
+
+
+def record_garmin_sync(session: Session, user_id: int) -> datetime:
+    synced_at = datetime.now(UTC).replace(tzinfo=None)
+    status = session.get(GarminSyncStatus, user_id)
+    if status is None:
+        session.add(GarminSyncStatus(user_id=user_id, last_synced_at=synced_at))
+    else:
+        status.last_synced_at = synced_at
+    session.flush()
+    return synced_at
 
 
 def _backfill_legacy_default_profile(user: User) -> None:

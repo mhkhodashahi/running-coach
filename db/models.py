@@ -42,6 +42,18 @@ class User(Base):
     prediction_snapshots: Mapped[list[PredictionSnapshot]] = relationship(back_populates="user")
     email_deliveries: Mapped[list[EmailDelivery]] = relationship(back_populates="user")
     nutrition_entries: Mapped[list[NutritionEntry]] = relationship(back_populates="user")
+    garmin_sync_status: Mapped[GarminSyncStatus | None] = relationship(back_populates="user", uselist=False)
+
+
+class GarminSyncStatus(Base):
+    """Last completed Garmin sync for an athlete."""
+
+    __tablename__ = "garmin_sync_status"
+
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), primary_key=True)
+    last_synced_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+    user: Mapped[User] = relationship(back_populates="garmin_sync_status")
 
 
 class Activity(Base):
@@ -191,6 +203,8 @@ class ActivityCoachingInsight(Base):
     prompt_context_json: Mapped[str] = mapped_column(Text, nullable=False)
     model_provider: Mapped[str | None] = mapped_column(String(32))
     model_name: Mapped[str | None] = mapped_column(String(80))
+    schema_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    prompt_version: Mapped[str | None] = mapped_column(String(80), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow, onupdate=_utcnow)
 

@@ -6,25 +6,34 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 
-STRAVA_ORANGE = "#fc4c02"
-DEEP_INK = "#111827"
-AMBER = "#ffb000"
-GREEN = "#22c55e"
+ACCENT = "#D4FF3A"
+PANEL = "#121722"
+GRID = "#2A3245"
+DEEP_INK = "#F2F4F8"
+MUTED = "#9AA3B5"
+AMBER = "#FBBF24"
+GREEN = "#34D399"
+TEAL = "#2DD4BF"
+BLUE = "#38BDF8"
+PURPLE = "#A78BFA"
+RED = "#FF7A8A"
+ORANGE = "#FB923C"
+STRAVA_ORANGE = ACCENT
 
 
 def _apply_chart_theme(figure: go.Figure, title: str | None = None) -> go.Figure:
     figure.update_layout(
         title=title,
-        template="plotly_white",
+        template="plotly_dark",
         paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(255,255,255,0.38)",
-        font=dict(family="Manrope, sans-serif", color=DEEP_INK),
-        title_font=dict(size=20, color=DEEP_INK),
+        plot_bgcolor=PANEL,
+        font=dict(family="DM Sans, system-ui, sans-serif", color=DEEP_INK),
+        title_font=dict(family="Sora, system-ui, sans-serif", size=20, color=DEEP_INK),
         margin=dict(l=32, r=28, t=58, b=36),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
     )
-    figure.update_xaxes(gridcolor="rgba(100,116,139,0.14)", zeroline=False)
-    figure.update_yaxes(gridcolor="rgba(100,116,139,0.14)", zeroline=False)
+    figure.update_xaxes(gridcolor=GRID, zeroline=False, color=MUTED, linecolor=GRID)
+    figure.update_yaxes(gridcolor=GRID, zeroline=False, color=MUTED, linecolor=GRID)
     return figure
 
 
@@ -103,8 +112,8 @@ def running_progress_chart(activities_df: pd.DataFrame) -> go.Figure:
             y=monthly["distance"],
             name="Monthly km",
             mode="lines+markers",
-            line=dict(color=DEEP_INK, width=3),
-            marker=dict(size=9, color=AMBER, line=dict(color=DEEP_INK, width=1)),
+            line=dict(color=BLUE, width=3),
+            marker=dict(size=9, color=AMBER, line=dict(color=PANEL, width=1)),
             customdata=monthly[["duration", "activities"]],
             hovertemplate=(
                 "Month=%{x|%b %Y}<br>Distance=%{y:.1f} km<br>"
@@ -139,8 +148,8 @@ def activity_calendar_chart(activities_df: pd.DataFrame) -> go.Figure:
             marker=dict(
                 size=size_values,
                 color=recent["distance"].fillna(0),
-                colorscale=[[0, "#fed7aa"], [1, STRAVA_ORANGE]],
-                line=dict(color="white", width=2),
+                colorscale=[[0, "#1F2534"], [1, STRAVA_ORANGE]],
+                line=dict(color=PANEL, width=2),
                 showscale=True,
                 colorbar=dict(title="km"),
             ),
@@ -169,7 +178,7 @@ def pace_trend_chart(activities_df: pd.DataFrame) -> go.Figure:
         color="type",
         title="Pace Trend",
         markers=True,
-        color_discrete_sequence=[STRAVA_ORANGE, DEEP_INK, AMBER, GREEN],
+        color_discrete_sequence=[STRAVA_ORANGE, BLUE, AMBER, GREEN],
     )
     figure.update_yaxes(autorange="reversed", title="min / km")
     _apply_chart_theme(figure, "Pace Trend")
@@ -187,7 +196,7 @@ def hr_trend_chart(activities_df: pd.DataFrame) -> go.Figure:
         color="type",
         title="Average HR Trend",
         markers=True,
-        color_discrete_sequence=[STRAVA_ORANGE, DEEP_INK, AMBER, GREEN],
+        color_discrete_sequence=[STRAVA_ORANGE, BLUE, AMBER, GREEN],
     )
     _apply_chart_theme(figure, "Average HR Trend")
     figure.update_layout(yaxis_title="bpm")
@@ -308,7 +317,7 @@ def vo2max_activity_chart(health_df: pd.DataFrame, activities_df: pd.DataFrame) 
                 mode="lines+markers",
                 name="VO2max",
                 yaxis="y2",
-                marker_color=DEEP_INK,
+                marker_color=BLUE,
                 hovertemplate="Date=%{x|%Y-%m-%d}<br>VO2max=%{y:.1f}<extra></extra>",
             )
         )
@@ -320,7 +329,7 @@ def vo2max_activity_chart(health_df: pd.DataFrame, activities_df: pd.DataFrame) 
                 mode="lines+markers",
                 name="HRV",
                 yaxis="y3",
-                marker_color=GREEN,
+                marker_color=TEAL,
                 hovertemplate="Date=%{x|%Y-%m-%d}<br>HRV=%{y:.1f}<extra></extra>",
             )
         )
@@ -339,10 +348,10 @@ def sleep_recovery_chart(health_df: pd.DataFrame) -> go.Figure:
         return _empty_figure("Sleep and Recovery")
     figure = go.Figure()
     figure.add_trace(
-        go.Scatter(x=health_df["date"], y=health_df["sleep_score"], mode="lines+markers", name="Sleep Score", line=dict(color=GREEN, width=3))
+        go.Scatter(x=health_df["date"], y=health_df["sleep_score"], mode="lines+markers", name="Sleep Score", line=dict(color=PURPLE, width=3))
     )
     figure.add_trace(
-        go.Scatter(x=health_df["date"], y=health_df["recovery_time"], mode="lines+markers", name="Recovery Time (h)", yaxis="y2", line=dict(color=STRAVA_ORANGE, width=3))
+        go.Scatter(x=health_df["date"], y=health_df["recovery_time"], mode="lines+markers", name="Recovery Time (h)", yaxis="y2", line=dict(color=ORANGE, width=3))
     )
     _apply_chart_theme(figure, "Sleep and Recovery Trend")
     figure.update_layout(
@@ -395,7 +404,7 @@ def intensity_distribution_chart(distribution: dict[str, float]) -> go.Figure:
         title="Intensity Distribution",
         hole=0.4,
     )
-    figure.update_traces(marker=dict(colors=[GREEN, AMBER, STRAVA_ORANGE]))
+    figure.update_traces(marker=dict(colors=[TEAL, AMBER, RED]))
     _apply_chart_theme(figure, "Intensity Distribution")
     return figure
 
@@ -439,7 +448,7 @@ def goal_pace_chart(activities_df: pd.DataFrame, goal_pace: float) -> go.Figure:
             y=[goal_pace] * len(runs),
             mode="lines",
             name="Goal Pace",
-            line=dict(dash="dash", color=DEEP_INK, width=2),
+            line=dict(dash="dash", color=GREEN, width=2),
         )
     )
     _apply_chart_theme(figure, "Goal Pace vs Actual")
