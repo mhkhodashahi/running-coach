@@ -90,7 +90,20 @@ duplication. Nonfinite and nonpositive HR/HRV values are missing; zero measured
 sleep is valid, negative sleep is missing. Insufficient coverage returns NULL,
 with the actual `n_days` retained. No interpolation or forward-filling.
 
-Readiness uses health values on `as_of` only, never stale latest-day values.
+Readiness v1.2 uses the mean HRV of the three nights ending on `as_of` (at
+least two distinct nights), compared with the 28-day baseline ending the day
+before. Its HRV component is `clamp(70 + (hrv_3d/hrv_28d - 1)*150, 0, 100)`;
+its RHR component is `clamp(70 - (rhr-rhr_7d)*7, 0, 100)`. An athlete at both
+personal baselines therefore scores 70 on these components. v1.1 used the
+same three-night HRV mean and factor of 150, but centred HRV and RHR on 50;
+v1 used the assessment night's HRV with a factor of 250 and centre 50. Sleep
+and load scoring are unchanged. Illness still compares the single
+assessment-night HRV with the baseline, together with RHR. Missing three-night
+coverage omits the HRV component and reweights the others; overall readiness
+needs two components including HRV or RHR.
+The daily decision is provisional when the requested day's sleep or HRV is
+missing; it uses the latest prior complete health day, states that day and
+the last sync time. The metrics snapshot API itself does not forward-fill.
 
 ## Session Load: Banister TRIMP
 
@@ -179,19 +192,19 @@ first import. Acute is NULL if no complete day is observed. Ratio is NULL if
 chronic is zero or negative. There is no extrapolation to fill missing days.
 The fixed divisor 4 follows the requested formula even with 14-27 observed days.
 
-## Readiness v1 and Illness Flag
+## Readiness and Illness Flag
 
 All scoring constants and weights live in `metrics/readiness.py`.
 
 ```text
-HRV score   = clamp(50 + (hrv / hrv_28d - 1) * 250, 0, 100)
-RHR score   = clamp(50 - (rhr - rhr_7d) * 7, 0, 100)
+HRV score (v1.2) = clamp(70 + (hrv_3d / hrv_28d - 1) * 150, 0, 100)
+RHR score (v1.2) = clamp(70 - (rhr - rhr_7d) * 7, 0, 100)
 Sleep score = clamp(sleep_hours / sleep_goal_hours * 100, 0, 100)
 ```
 
 Load score is 100 in [0.8, 1.3], linear from 50 at 0.5 to 100 at 0.8,
 and linear from 100 at 1.3 to 0 at 1.8. Outside those specified endpoints,
-v1 holds at 50 below 0.5 and at 0 above 1.8. Missing/negative ratios have no
+the engine holds at 50 below 0.5 and at 0 above 1.8. Missing/negative ratios have no
 component score. The lower-end extension is an explicit assumption to confirm.
 
 Weights: HRV 35, sleep 25, RHR 20, load 20. Available component weights are

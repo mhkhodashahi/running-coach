@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
 import pandas as pd
 import streamlit as st
 
+from config import get_settings
 from services.coaching_engine import build_rule_recommendations
+from services.daily_decision_service import get_or_create_daily_decision, set_athlete_choice
 from services.training_context_service import load_training_bundle
 from ui.charts import (
     activity_calendar_chart,
@@ -94,6 +99,40 @@ hero_motivation = "Understand recovery, energy, and training load first. Then de
 render_dashboard_hero(user.name, hero_motivation)
 
 render_today_status(snapshot)
+
+st.subheader("Today's decision")
+try:
+    settings = get_settings()
+    decision_day = datetime.now(ZoneInfo(settings.local_timezone)).date()
+    daily_decision = get_or_create_daily_decision(decision_day, settings=settings, user_id=user.id)
+    st.markdown(f"**{daily_decision.intensity.title()}** · Readiness "
+                f"{daily_decision.readiness:.0f}/100" if daily_decision.readiness is not None else
+                f"**{daily_decision.intensity.title()}** · Readiness: No data")
+    if daily_decision.provisional:
+        st.caption(f"Provisional · Based on {daily_decision.based_on} · Last sync {daily_decision.last_sync_time}")
+    st.write(daily_decision.explanation)
+    if daily_decision.sports:
+        for item in daily_decision.sports:
+            session = item["session"]
+            cap = f", cap {session['hr_cap_bpm']} bpm" if isinstance(session["hr_cap_bpm"], int) else ""
+            st.write(f"{item['rank']}. **{item['sport'].title()}**: {session['intent']}, "
+                     f"{session['duration_min']} min{cap}. {item['reason']}.")
+    elif daily_decision.optional:
+        st.write(daily_decision.optional)
+    if daily_decision.team_options:
+        st.caption("Team sports")
+        for option in daily_decision.team_options:
+            st.write(f"{option['sport'].title()}: {option['label']}.")
+    selected = st.selectbox("My intensity choice", ("Follow coach", "Rest", "Easy", "Hard"),
+                            index=("Follow coach", "Rest", "Easy", "Hard").index(
+                                daily_decision.athlete_choice.title() if daily_decision.athlete_choice else "Follow coach"),
+                            key="today_intensity_override")
+    choice = None if selected == "Follow coach" else selected.lower()
+    if choice != daily_decision.athlete_choice:
+        set_athlete_choice(decision_day, choice, settings=settings, user_id=user.id)
+        st.caption("Your choice is saved separately from the coach decision.")
+except (RuntimeError, ValueError) as exc:
+    st.warning(f"Today's decision is unavailable: {exc}")
 
 st.subheader("Health Snapshot")
 render_overview_metrics(snapshot)

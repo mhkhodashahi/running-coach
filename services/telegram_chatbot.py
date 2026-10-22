@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from config import Settings, get_settings
 from db.setup import init_db
+from services.daily_decision_service import get_or_create_daily_decision
 from services.telegram_service import TelegramService
 from services.training_chat_service import TrainingChatService
 
@@ -86,4 +89,20 @@ class TelegramTrainingChatBot:
             )
         if command == "/status":
             return self.chat_service.answer("Give me a concise current training status.").text
+        if command == "/today":
+            day = datetime.now(ZoneInfo(self.settings.local_timezone)).date()
+            decision = get_or_create_daily_decision(day, settings=self.settings)
+            lines = [f"{decision.headline} {decision.explanation}"]
+            if decision.provisional:
+                lines.append(f"Provisional: based on {decision.based_on}; last sync {decision.last_sync_time}.")
+            for item in decision.sports:
+                lines.append(f"{item['rank']}. {item['sport']}: {item['session']['intent']} "
+                             f"({item['session']['duration_min']} min). {item['reason']}.")
+            if decision.optional:
+                lines.append(decision.optional)
+            for option in decision.team_options:
+                lines.append(f"{option['sport'].title()}: {option['label']}.")
+            if decision.athlete_choice:
+                lines.append(f"Your choice: {decision.athlete_choice} (coach: {decision.intensity}).")
+            return "\n".join(lines)
         return self.chat_service.answer(text).text

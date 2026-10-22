@@ -36,6 +36,19 @@ def current_health(health: tuple[HealthDay, ...], field: str, as_of: date) -> Me
                   as_of, as_of, int(bool(values)), "assessment_day_only")
 
 
+def recent_hrv(health: tuple[HealthDay, ...], as_of: date) -> Metric:
+    """Mean of distinct nights in the three-day window ending on as_of."""
+    start = as_of - timedelta(days=2)
+    daily: dict[date, list[float]] = {}
+    for row in health:
+        if start <= row.day <= as_of and valid(row.hrv, as_of):
+            daily.setdefault(row.day, []).append(row.hrv)
+    values = [mean(items) for items in daily.values()]
+    return metric(mean(values) if len(values) >= 2 else None, "ms",
+                  ("health_metrics.hrv", "health_metrics.date"), start, as_of, len(values),
+                  "last_3_nights_mean_min_2")
+
+
 def resting_hr_for_session(health: tuple[HealthDay, ...], as_of: date) -> Metric:
     baseline = health_baseline(health, "resting_hr", 7, as_of).mean
     if baseline.value is not None:

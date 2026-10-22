@@ -3,7 +3,7 @@
 from datetime import date, timedelta
 from zoneinfo import ZoneInfo
 
-from metrics.baselines import FIELDS, current_health, health_baseline
+from metrics.baselines import FIELDS, current_health, health_baseline, recent_hrv
 from metrics.load import daily_sport_loads, load_ratio, session_metrics, weekly_sport_loads
 from metrics.models import DailySnapshot, Inputs
 from metrics.readiness import readiness
@@ -23,7 +23,8 @@ def build_daily_snapshot(inputs: Inputs, as_of: date, timezone: str, sleep_goal_
     excluded_days = frozenset(row.day for row in recent if sport_category(row.type, as_of) == "excluded")
     daily = daily_sport_loads(sessions, health, as_of, excluded_days)
     load = load_ratio(daily, as_of)
-    ready = readiness(current, {(b.field, b.days): b.mean for b in baselines}, load.ratio, sleep_goal_hours, as_of)
+    ready = readiness(current, {(b.field, b.days): b.mean for b in baselines}, load.ratio,
+                      sleep_goal_hours, as_of, hrv_recent=recent_hrv(health, as_of))
     unknown = tuple(sorted({row.type for row in activities if row.type.strip().lower() not in SPORT_MAP}))
     return DailySnapshot(as_of.isoformat(), timezone, inputs.profile.user_id, baselines, tuple(current.items()),
                          sessions, (*daily, *weekly_sport_loads(daily, as_of)), load, ready, unknown)

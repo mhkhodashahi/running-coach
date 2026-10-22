@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from metrics.baselines import current_health, health_baseline, maximum_hr, resting_hr_for_session
+from metrics.baselines import current_health, health_baseline, maximum_hr, recent_hrv, resting_hr_for_session
 from metrics.load import (
     banister_trimp,
     daily_sport_loads,
@@ -204,15 +204,43 @@ def ready(hrv=50, rhr=60, sleep=7.5, ratio=1, hrv_base=50, rhr_base=60):
     baseline = {(name, days): metric(value, "test", (f"health_metrics.{name}",), DAY - timedelta(days=days), DAY - timedelta(days=1), days, "fixture")
                 for name, days, value in (("hrv", 28, hrv_base), ("resting_hr", 7, rhr_base))}
     load = metric(ratio, "ratio", ("activities.avg_hr",), DAY - timedelta(days=27), DAY, 28, "fixture")
-    return readiness(current, baseline, load, 7.5, DAY)
+    return readiness(current, baseline, load, 7.5, DAY, hrv_recent=current["hrv"])
+
+
+def test_recent_hrv_uses_three_nights_and_needs_two_distinct_days():
+    rows = (HealthDay(DAY - timedelta(days=2), hrv=40), HealthDay(DAY - timedelta(days=1), hrv=50),
+            HealthDay(DAY, hrv=60), HealthDay(DAY + timedelta(days=1), hrv=100))
+    result = recent_hrv(rows, DAY)
+    assert result.value == 50
+    assert result.provenance.n_days == 3
+    assert recent_hrv(rows[:1], DAY).value is None
+    assert recent_hrv((rows[0], rows[0]), DAY).provenance.n_days == 1
+
+
+def test_readiness_v11_uses_smoothed_hrv_but_illness_uses_last_night():
+    rows = (HealthDay(DAY - timedelta(days=2), hrv=50), HealthDay(DAY - timedelta(days=1), hrv=50),
+            HealthDay(DAY, hrv=40))
+    current = {name: metric(value, "test", (f"health_metrics.{name}",), DAY, DAY, 1, "fixture")
+               for name, value in (("hrv", 40), ("resting_hr", 67), ("sleep_duration", 7.5))}
+    baselines = {(name, days): metric(value, "test", (f"health_metrics.{name}",),
+                                      DAY - timedelta(days=days), DAY - timedelta(days=1), days, "fixture")
+                 for name, days, value in (("hrv", 28, 50), ("resting_hr", 7, 60))}
+    ratio = metric(1, "ratio", ("activities",), DAY - timedelta(days=27), DAY, 28, "fixture")
+    new = readiness(current, baselines, ratio, 7.5, DAY, hrv_recent=recent_hrv(rows, DAY), version="v1.1")
+    newest = readiness(current, baselines, ratio, 7.5, DAY, hrv_recent=recent_hrv(rows, DAY))
+    old = readiness(current, baselines, ratio, 7.5, DAY, version="v1")
+    assert next(item.score.value for item in new.components if item.name == "hrv") == pytest.approx(40)
+    assert next(item.score.value for item in newest.components if item.name == "hrv") == pytest.approx(60)
+    assert next(item.score.value for item in old.components if item.name == "hrv") == pytest.approx(0)
+    assert newest.illness_flag.value is True
 
 
 def test_readiness_exact_components_and_reweighting():
     full = ready()
-    assert full.score.value == 72.5
-    assert {c.name: c.score.value for c in full.components} == {"hrv": 50, "sleep": 100, "rhr": 50, "load": 100}
+    assert full.score.value == 83.5
+    assert {c.name: c.score.value for c in full.components} == {"hrv": 70, "sleep": 100, "rhr": 70, "load": 100}
     partial = ready(hrv=None, ratio=None)
-    assert partial.score.value == pytest.approx((100 * 25 + 50 * 20) / 45)
+    assert partial.score.value == pytest.approx((100 * 25 + 70 * 20) / 45)
     assert {c.name: c.effective_weight for c in partial.components} == {"hrv": 0, "sleep": 25 / 45, "rhr": 20 / 45, "load": 0}
     assert ready(hrv=None, rhr=None).score.value is None
     assert ready(rhr=None, sleep=None, ratio=None).score.value is None

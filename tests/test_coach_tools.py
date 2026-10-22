@@ -86,7 +86,7 @@ def test_compare_sessions_sport_distance_window_and_same_route(coach_db):
     assert candidate["COMPARE_2_PACE_DELTA"] == "+9 s/km"
     assert candidate["COMPARE_2_HR_DELTA"] == "-5 bpm"
     assert candidate["COMPARE_2_EFFICIENCY"] == "slower at lower HR"
-    assert candidate["ACT_2_READINESS"] == "52/100"
+    assert candidate["ACT_2_READINESS"] == "64/100"
     assert candidate["ACT_2_TODAY_SLEEP_DURATION"] == "7:30 h"
     assert candidate["ACT_2_HRV_VS_BASELINE"] == "+0.0%"
 

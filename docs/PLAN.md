@@ -1,6 +1,6 @@
 # Running Coach Implementation Plan
 
-Status: current-state audit and provisional implementation plan, 2026-10-21. Root `AGENTS.md` is present and documents the current stack. Its on-disk copy does not yet contain "Target architecture", "Coach opinion JSON", the legacy mapping, or "Decisions". Those sections are required to finalize the gap assessment, milestone acceptance criteria, and answers to questions 1 and 3. This document does not authorize a schema or application change.
+Status: milestone 4a complete; milestone 4b-1 implemented on 2026-10-22. Root `AGENTS.md` contains the target architecture, opinion contract and decisions. Later milestones remain unstarted.
 
 ## Current State
 
@@ -87,9 +87,31 @@ Sequence depends on the missing target contract. Acceptance criteria below are c
 
 ### 4. Coach tools, guardrails, and chat
 
-- Files to touch: `services/training_chat_service.py`, `services/coaching_engine.py`, `services/coaching_prompts.py`, `services/llm_workflow.py`, `llm/base.py`, `llm/factory.py`, `llm/schemas.py`, `services/telegram_chatbot.py`, and `tests/test_telegram_chat.py`/new tool tests.
-- Acceptance: implement only approved, user-scoped read tools with bounded output and traceable dates/units; validate tool arguments and response JSON; retain missing-data and no-diagnosis behavior; provide deterministic fallback when the LLM fails; test unauthorized Telegram chats and attempts to request out-of-scope/private data.
-- Risks: prompt injection through imported notes, cross-user data exposure, model-invented metrics, runaway token/cost use, or an accidental write-capable tool.
+- Status: 4a complete (read-only tools, bounded chat, guardrails and user-scoped surfaces). Remaining work is split below; do not start a later part implicitly.
+
+#### 4a. Read-only coach tools, guardrails and chat
+
+- Files: `coach/`, `services/training_chat_service.py`, `services/telegram_chatbot.py`, Streamlit Coach and Activity Detail pages, and their tests.
+- Acceptance: approved user-scoped read tools return bounded, dated facts; chat validates numbers and evidence, handles missing data and blocks diagnosis; Telegram authorization and call limits are tested.
+- Risks: prompt injection through imported notes, cross-user exposure, invented metrics and runaway token use.
+
+#### 4b-1. Daily decision
+
+- Files: `metrics/readiness.py`, `metrics/snapshot.py`, `coach/decision.py`, daily decision storage/service, Today and Telegram surfaces, tests and `docs/metrics.md`.
+- Acceptance: readiness v1.1 uses a 3-night HRV mean (2-night minimum) while the illness flag uses last night; deterministic first-match intensity and four-sport ranking cite facts; stale health is provisional; `daily_v2` stores coach output and independent athlete override; LLM explains only and safely falls back; Today and `/today` agree.
+- Risks: same-day health can arrive after a provisional decision; existing daily decision rows must remain intact; short-term HRV volatility and HR-derived team-sport load are limitations.
+
+#### 4b-2. Weekly plan and proposals/approval/undo
+
+- Files: plan and proposal models/migration, `coach/`, Streamlit and Telegram approval surfaces, tests.
+- Acceptance: every proposed change has a reason and fact IDs; athlete accepts/rejects each independently; stale proposals cannot apply; undo restores the pre-change plan snapshot; logged activities never change.
+- Risks: concurrent plan edits, replayed approvals, and incomplete undo snapshots.
+
+#### 4c. Effort rating and team-sport load
+
+- Files: effort storage/migration, metrics load rules, activity input surfaces and tests.
+- Acceptance: athlete can rate effort; football and volleyball load and hard-session detection incorporate that rating without rewriting historical data.
+- Risks: HR-only load understates jumps and sprints; retrospective ratings can change decisions.
 
 ### 5. Web UI
 

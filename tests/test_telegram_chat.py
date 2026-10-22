@@ -93,3 +93,32 @@ def test_telegram_chatbot_replies_to_authorized_question() -> None:
     assert result.handled is True
     assert result.authorized is True
     assert telegram.sent == [("answer: How is my recovery?", "111")]
+
+
+def test_today_command_uses_same_daily_decision_and_keeps_allowlist(monkeypatch) -> None:
+    telegram = FakeTelegram()
+    seen = []
+
+    def fake_decision(day, settings):
+        seen.append(day)
+        return SimpleNamespace(headline="Easy today.", explanation="I see the load.", provisional=True,
+                               based_on="2026-06-28", last_sync_time="never synced",
+                               sports=({"rank": 1, "sport": "running",
+                                        "session": {"intent": "easy", "duration_min": 30}, "reason": "least done"},),
+                               optional=None, team_options=({"sport": "football",
+                                                           "label": "Only with team training today"},),
+                               athlete_choice="rest", intensity="easy")
+
+    monkeypatch.setattr("services.telegram_chatbot.get_or_create_daily_decision", fake_decision)
+    bot = TelegramTrainingChatBot(
+        settings=SimpleNamespace(telegram_chat_id="111", telegram_bot_token="token", local_timezone="Europe/Berlin"),
+        telegram_service=telegram, chat_service=FakeChat(),
+    )
+    assert not bot.handle_update({"message": {"chat": {"id": 222}, "text": "/today"}}).authorized
+    result = bot.handle_update({"message": {"chat": {"id": 111}, "text": "/today"}})
+    assert result.authorized
+    assert seen
+    assert "Provisional" in result.reply
+    assert "1. running: easy" in result.reply
+    assert "Football: Only with team training today" in result.reply
+    assert "Your choice: rest (coach: easy)" in result.reply
