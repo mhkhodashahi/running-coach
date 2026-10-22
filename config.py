@@ -63,6 +63,7 @@ class Settings:
     local_timezone: str = "Europe/Berlin"
     sleep_goal_hours: float = 7.5
     hr_zones: tuple[tuple[str, int, int | None], ...] = ()
+    coach_daily_call_limit: int = 20
 
     @property
     def db_url(self) -> str:
@@ -113,7 +114,17 @@ def get_settings() -> Settings:
         local_timezone=os.getenv("LOCAL_TIMEZONE", "Europe/Berlin"),
         sleep_goal_hours=float(os.getenv("SLEEP_GOAL_HOURS", "7.5")),
         hr_zones=_parse_hr_zones(os.getenv("HR_ZONES", "")),
+        coach_daily_call_limit=_coach_call_limit(os.getenv("COACH_DAILY_CALL_LIMIT", "")),
     )
+
+
+def _coach_call_limit(raw: str) -> int:
+    if not raw.strip():
+        return 20
+    limit = int(raw)
+    if limit < 1:
+        raise ValueError("COACH_DAILY_CALL_LIMIT must be a positive integer")
+    return limit
 
 
 def _parse_hr_zones(raw: str) -> tuple[tuple[str, int, int | None], ...]:

@@ -61,3 +61,37 @@ class OpenAIClient(LLMClient):
         if payload:
             return payload
         return {"explanation": text.strip()}
+
+    def coach_step(self, system_prompt: str, messages: list[dict[str, Any]],
+                   tool_specs: list[dict[str, Any]]) -> dict[str, Any]:
+        """Use native Responses function calls without storing provider-side state."""
+        settings = get_settings()
+        if not settings.allow_remote_llm or not settings.remote_athlete_data_approved:
+            raise PermissionError("Remote LLM access is disabled. Approve it in .env first.")
+        input_items: list[dict[str, Any]] = []
+        for item in messages:
+            if item["role"] == "function_call":
+                input_items.append({"type": "function_call", "call_id": item["call_id"],
+                                    "name": item["name"], "arguments": item["arguments"]})
+                continue
+            if item["role"] == "tool" and item.get("call_id"):
+                input_items.append({"type": "function_call_output", "call_id": item["call_id"],
+                                    "output": item["content"]})
+            elif item["role"] != "tool":
+                input_items.append({"role": item["role"], "content": item["content"]})
+            else:
+                input_items.append({"role": "user", "content": item["content"]})
+        response = self.client.responses.create(
+            model=self.model, instructions=system_prompt, input=input_items, store=False,
+            parallel_tool_calls=False,
+            tools=[{"type": "function", **spec} for spec in tool_specs],
+        )
+        calls = []
+        for item in response.output:
+            if item.type == "function_call":
+                calls.append({"name": item.name, "arguments": item.arguments, "call_id": item.call_id})
+        if calls:
+            return {"tool_calls": calls}
+        from llm.base import extract_json
+
+        return {"reply": extract_json(response.output_text)}

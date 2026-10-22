@@ -174,3 +174,36 @@ def test_openai_refuses_remote_call_without_both_config_flags(monkeypatch, allow
     client.client = SimpleNamespace(responses=SimpleNamespace(parse=lambda **kwargs: pytest.fail("sent data")))
     with pytest.raises(PermissionError, match="ALLOW_REMOTE_LLM"):
         client.generate_json("system", "athlete context", response_schema=OpinionDraftV23)
+
+
+def test_coach_step_uses_native_functions_without_provider_storage():
+    seen = {}
+
+    def create(**kwargs):
+        seen.update(kwargs)
+        return SimpleNamespace(output=[SimpleNamespace(type="function_call", name="get_activity",
+                                                       arguments='{"activity_id":1}', call_id="call-1")],
+                               output_text="")
+
+    client = OpenAIClient.__new__(OpenAIClient)
+    client.model = "synthetic"
+    client.client = SimpleNamespace(responses=SimpleNamespace(create=create))
+    result = client.coach_step("system", [
+        {"role": "user", "content": "Review my run"},
+        {"role": "function_call", "name": "get_activity", "arguments": '{"activity_id":1}',
+         "call_id": "old-call"},
+        {"role": "tool", "call_id": "old-call", "content": '{"facts":[]}'},
+    ], [{"name": "get_activity", "description": "read", "parameters": {"type": "object"}}])
+    assert result["tool_calls"][0]["call_id"] == "call-1"
+    assert seen["store"] is False
+    assert seen["tools"][0]["type"] == "function"
+    assert seen["input"][-1]["type"] == "function_call_output"
+
+
+def test_coach_step_refuses_unapproved_remote_data(monkeypatch):
+    monkeypatch.setattr("llm.openai_client.get_settings",
+                        lambda: SimpleNamespace(allow_remote_llm=False, remote_athlete_data_approved=False))
+    client = OpenAIClient.__new__(OpenAIClient)
+    client.client = SimpleNamespace(responses=SimpleNamespace(create=lambda **kwargs: pytest.fail("sent data")))
+    with pytest.raises(PermissionError, match="disabled"):
+        client.coach_step("system", [{"role": "user", "content": "private"}], [])

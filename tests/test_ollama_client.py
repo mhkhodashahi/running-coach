@@ -106,3 +106,43 @@ def test_ollama_v23_sends_recommendation_fact_ids(monkeypatch) -> None:
     recommendation = seen["format"]["$defs"]["OpinionDraftRecommendationV23"]
     assert "evidence_ids" in recommendation["properties"]
     assert recommendation["additionalProperties"] is False
+
+
+def test_ollama_coach_step_uses_chat_tools(monkeypatch) -> None:
+    seen = {}
+
+    class Response:
+        status_code = 200
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"message": {"tool_calls": [{"function": {"name": "get_activity",
+                                                             "arguments": {"activity_id": 1}}}]}}
+
+    def post(*args, **kwargs):
+        seen.update(kwargs)
+        return Response()
+
+    monkeypatch.setattr("llm.ollama_client.requests.post", post)
+    result = OllamaClient("http://localhost:11434", "synthetic").coach_step(
+        "system", [{"role": "user", "content": "Review"}],
+        [{"name": "get_activity", "parameters": {"type": "object"}}],
+    )
+    assert result["tool_calls"][0]["name"] == "get_activity"
+    assert seen["json"]["tools"][0]["function"]["name"] == "get_activity"
+
+
+def test_ollama_coach_step_falls_back_to_json_tool_call(monkeypatch):
+    class Response:
+        status_code = 400
+
+    monkeypatch.setattr("llm.ollama_client.requests.post", lambda *args, **kwargs: Response())
+    monkeypatch.setattr(OllamaClient, "generate_json", lambda *args, **kwargs: {
+        "tool_call": {"name": "get_activity", "arguments": {"activity_id": 1}},
+    })
+    result = OllamaClient("http://localhost:11434", "synthetic").coach_step(
+        "system", [{"role": "user", "content": "Review"}], [],
+    )
+    assert result["tool_calls"][0]["arguments"] == {"activity_id": 1}

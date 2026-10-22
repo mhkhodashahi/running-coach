@@ -80,6 +80,7 @@ Sequence depends on the missing target contract. Acceptance criteria below are c
 
 ### 3. Coach opinion JSON
 
+- Status: complete. `opinion-v2.3` uses code-built facts before words, validates cited evidence, and keeps legacy opinions readable. Remote providers require explicit config approval; results documents use `[redacted]` in place of athlete values.
 - Files to touch: `llm/schemas.py`, `services/activity_coaching_service.py`, `services/llm_workflow.py`, `services/coaching_prompts.py`, `db/repository.py`, `app/pages/8_Activity_Detail.py`, and `tests/test_activity_coaching_service.py`.
 - Acceptance: validate against the supplied "Coach opinion JSON" contract; normalize both Ollama and OpenAI output; persist provider/model/schema version and source evidence; read pre-existing opinions without regeneration or data loss; show missing or uncertain evidence clearly; keep one opinion per activity unless a versioned replacement flow is explicitly approved.
 - Risks: JSON shape changes can break old rows and rendering; one-time opinions may be low quality if source data is sparse; `prompt_context_json` and local memory contain personal training data and must be handled conservatively.

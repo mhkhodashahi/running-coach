@@ -54,6 +54,8 @@ class User(Base):
     email_deliveries: Mapped[list[EmailDelivery]] = relationship(back_populates="user")
     nutrition_entries: Mapped[list[NutritionEntry]] = relationship(back_populates="user")
     garmin_sync_status: Mapped[GarminSyncStatus | None] = relationship(back_populates="user", uselist=False)
+    coach_chat_turns: Mapped[list[CoachChatTurn]] = relationship(back_populates="user")
+    coach_llm_calls: Mapped[list[CoachLLMCall]] = relationship(back_populates="user")
 
 
 class GarminSyncStatus(Base):
@@ -203,6 +205,39 @@ class LLMMemory(Base):
     confidence_score: Mapped[float | None] = mapped_column(Float)
 
     user: Mapped[User] = relationship(back_populates="llm_memories")
+
+
+class CoachChatTurn(Base):
+    """One answered coach question with bounded audit metadata."""
+
+    __tablename__ = "coach_chat_turns"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True, nullable=False)
+    question: Mapped[str] = mapped_column(Text, nullable=False)
+    answer: Mapped[str] = mapped_column(Text, nullable=False)
+    evidence_json: Mapped[str] = mapped_column(Text, nullable=False)
+    activity_ids_json: Mapped[str] = mapped_column(Text, nullable=False)
+    tool_calls_json: Mapped[str] = mapped_column(Text, nullable=False)
+    model_provider: Mapped[str] = mapped_column(String(32), nullable=False)
+    model_name: Mapped[str] = mapped_column(String(80), nullable=False)
+    prompt_version: Mapped[str] = mapped_column(String(80), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
+
+    user: Mapped[User] = relationship(back_populates="coach_chat_turns")
+
+
+class CoachLLMCall(Base):
+    """Count every provider request, including retries and failures."""
+
+    __tablename__ = "coach_llm_calls"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True, nullable=False)
+    local_day: Mapped[date] = mapped_column(Date, index=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
+
+    user: Mapped[User] = relationship(back_populates="coach_llm_calls")
 
 
 class ActivityCoachingInsight(Base):

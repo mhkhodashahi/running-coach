@@ -267,6 +267,10 @@ def collect_v23_evidence_ids(draft: OpinionDraftV23, facts: list[Fact]) -> list[
         texts.append(recommendation.text)
         ids.extend(fact_id for fact_id in rec_ids if fact_id not in ids)
     for item in texts:
+        leaked_ids = [fact_id for fact_id in by_id if re.search(
+            rf"(?<![A-Za-z0-9_]){re.escape(fact_id)}(?![A-Za-z0-9_])", item)]
+        if leaked_ids:
+            errors.append("Fact IDs must not appear in opinion text: " + ", ".join(leaked_ids))
         matched, unsupported = match_text_facts(item, facts, tuple(ids))
         ids.extend(fact_id for fact_id in matched if fact_id not in ids)
         if unsupported:

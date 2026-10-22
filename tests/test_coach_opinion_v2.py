@@ -507,6 +507,58 @@ def test_v23_attaches_uncited_numeric_fact_and_strips_internal_recommendation_id
     }
 
 
+@pytest.mark.parametrize("field", [
+    "headline", "assessment", "conclusion", "worked_lead", "worked_detail",
+    "fix_lead", "fix_detail", "sections", "recommendations",
+])
+def test_v23_rejects_known_fact_ids_in_public_text(field):
+    payload = draft_payload_v23()
+    if field in ("headline", "assessment", "conclusion"):
+        payload[field] = "I saw AVG_PACE in the data."
+    elif field == "sections":
+        payload["sections"] = {"pacing": "I saw AVG_PACE in the data."}
+    elif field == "recommendations":
+        payload["recommendations"] = [{
+            "text": "Hold 6:00 /km; AVG_PACE is the target.",
+            "action": "none", "session": {}, "evidence_ids": ["AVG_PACE"],
+        }]
+    else:
+        group, part = field.split("_")
+        payload[group][0][part] = "I saw AVG_PACE in the data."
+    draft = OpinionDraftV23.model_validate(payload)
+    with pytest.raises(ValueError, match="Fact IDs must not appear in opinion text: AVG_PACE"):
+        collect_v23_evidence_ids(draft, invented_draft_facts())
+
+
+def test_v23_unknown_uppercase_token_is_not_treated_as_fact_id():
+    draft = OpinionDraftV23.model_validate(draft_payload_v23(assessment="I saw NOT_A_FACT in the data."))
+    assert collect_v23_evidence_ids(draft, invented_draft_facts())
+
+
+def test_v23_fact_id_validation_retries_and_preserves_existing_opinion(opinion_db):
+    factory, _, activity_id = opinion_db
+    original = '{ "overall_assessment": "Keep this exactly" }'
+    with factory.begin() as session:
+        repository.upsert_activity_coaching_insight(
+            session, user_id=1, activity_id=activity_id, summary="Keep this exactly",
+            payload_json=original, prompt_context_json='{"context":true}',
+            model_provider="old", model_name="old",
+        )
+    bad = draft_payload_v23(assessment="I saw AVG_PACE in the data.")
+    llm = MockLLM(bad, bad)
+    with factory.begin() as session:
+        user = repository.get_or_create_default_user(session, 1)
+        with pytest.raises(RuntimeError, match="validation failed after retry"):
+            service_for(opinion_db, llm).generate(
+                session, user=user, activity_id=activity_id, regenerate=True,
+            )
+    assert len(llm.prompts) == 2
+    assert "Fact IDs must not appear in opinion text: AVG_PACE" in llm.prompts[1][1]
+    with factory() as session:
+        assert repository.get_activity_coaching_insight(session, activity_id, 1).payload_json == original
+        assert session.scalars(select(ActivityCoachingOpinionHistory)).all() == []
+
+
 def test_v23_conditional_easy_cap_cites_zone_bound_even_when_lap_hr_matches():
     facts = invented_draft_facts() + [
         {"id": "KM1_AVG_HR", "metric": "Lap HR", "display": "139 bpm", "source": "lap"},

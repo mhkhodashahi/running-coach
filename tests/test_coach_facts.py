@@ -11,6 +11,7 @@ from services.coach_facts import (
     match_text_facts,
     unsupported_text_numbers,
 )
+from services.fact_display import duration, heart_rate, hours, pace, percent, ratio, score
 
 
 def context() -> dict:
@@ -34,8 +35,9 @@ def context() -> dict:
         "lap_analysis": {"available": True, "laps": laps},
         "stream_analysis": {
             "available": True,
-            "first_half": {"avg_pace": "6:40", "avg_hr": 130.4},
-            "second_half": {"avg_pace": "6:20", "avg_hr": 140.4},
+            "cadence_spm": {"avg": 82, "min": 80, "max": 85},
+            "first_half": {"avg_pace": "6:40", "avg_hr": 130.4, "avg_cadence": 81},
+            "second_half": {"avg_pace": "6:20", "avg_hr": 140.4, "avg_cadence": 83},
         },
         "metrics_snapshot": {
             "activity_session": {"hr_zones": zones, "hrmax": {"value": 200}},
@@ -63,6 +65,17 @@ def as_map(facts):
     return {fact["id"]: fact for fact in facts}
 
 
+def test_shared_display_formatters():
+    assert pace(6.375) == "6:22 /km"
+    assert heart_rate(143.6) == "144 bpm"
+    assert percent(31.25) == "31.2%"
+    assert duration(62.5) == "1:02 h"
+    assert hours(7.5) == "7:30 h"
+    assert ratio(1.256) == "1.26"
+    assert score(72.6) == "73/100"
+    assert score(72.64, decimals=1) == "72.6/100"
+
+
 def test_build_facts_formats_session_zones_kilometres_and_snapshot():
     facts = as_map(build_facts(10, context()))
     assert facts["DISTANCE"] == {"id": "DISTANCE", "metric": "Distance", "display": "5.0 km",
@@ -84,6 +97,12 @@ def test_build_facts_formats_session_zones_kilometres_and_snapshot():
     assert facts["LAST_FULL_KM"]["display"] == "km 5"
     assert facts["CONSERVATIVE_START"]["display"] == "yes"
     assert facts["LAP_CADENCE_RANGE"]["display"] == "160–168 spm"
+    assert facts["STREAM_CADENCE_AVG"]["display"] == "164 spm"
+    assert facts["STREAM_CADENCE_MIN"]["display"] == "160 spm"
+    assert facts["STREAM_CADENCE_MAX"]["display"] == "170 spm"
+    assert facts["FIRST_HALF_CADENCE"]["display"] == "162 spm"
+    assert facts["SECOND_HALF_CADENCE"]["display"] == "166 spm"
+    assert "doubled per-foot scale" in facts["STREAM_CADENCE_AVG"]["source"]
     assert facts["PARTIAL_LAP_DISTANCE"]["display"] == "3.20 m"
     assert facts["RECENT_MEDIAN_PACE"]["display"] == "6:35 /km"
     assert facts["READINESS"]["display"] == "72/100"
@@ -165,14 +184,53 @@ def test_detect_intent_needs_zone_evidence_except_planned_race():
     assert detect_intent(facts, "race").fact_ids == ("PLAN_INTENT",)
 
 
-def test_data_notes_short_lap_and_cadence_but_no_invented_gps_gap():
+def test_data_notes_short_lap_only_without_cadence_or_invented_gps_gap():
     data = context()
     points = [{"point_index": index, "elapsed_seconds": index * 2, "distance_km": index * 0.01,
                "cadence": 82} for index in range(5)]
     notes = build_data_notes(data["lap_analysis"]["laps"], points, 5.0)
-    assert any("3.20 m" in note for note in notes)
-    assert any("per-foot" in note for note in notes)
+    assert notes == ["Partial lap: 3.20 m. Excluded from full-km analysis."]
     assert not any("GPS" in note for note in notes)
+
+
+def test_stream_cadence_is_not_doubled_without_per_foot_signal():
+    data = context()
+    data["stream_analysis"]["cadence_spm"]["avg"] = 160
+    data["stream_analysis"]["cadence_spm"]["min"] = 156
+    data["stream_analysis"]["cadence_spm"]["max"] = 164
+    data["stream_analysis"]["first_half"]["avg_cadence"] = 158
+    data["stream_analysis"]["second_half"]["avg_cadence"] = 162
+    facts = as_map(build_facts(10, data))
+    assert facts["STREAM_CADENCE_AVG"]["display"] == "160 spm"
+    assert facts["FIRST_HALF_CADENCE"]["display"] == "158 spm"
+    assert facts["SECOND_HALF_CADENCE"]["display"] == "162 spm"
+    assert "doubled" not in facts["STREAM_CADENCE_AVG"]["source"]
+
+
+def test_stream_cadence_stays_raw_if_lap_scale_does_not_support_correction():
+    data = context()
+    data["lap_analysis"]["laps"][0]["avg_cadence"] = 130
+    facts = as_map(build_facts(10, data))
+    assert facts["STREAM_CADENCE_AVG"]["display"] == "82 spm"
+
+
+@pytest.mark.parametrize("distance,expected", [(0.0009, False), (0.001, True)])
+def test_sub_metre_lap_is_silent_but_one_metre_is_reported(distance, expected):
+    data = context()
+    data["lap_analysis"]["laps"][-1]["distance"] = distance
+    facts = as_map(build_facts(10, data))
+    notes = build_data_notes(data["lap_analysis"]["laps"], [], 5.0)
+    assert ("PARTIAL_LAP_DISTANCE" in facts) is expected
+    assert bool(notes) is expected
+    if expected:
+        assert facts["PARTIAL_LAP_DISTANCE"]["display"] == "1.00 m"
+
+
+def test_sub_metre_lap_does_not_hide_a_later_qualifying_partial_lap():
+    laps = context()["lap_analysis"]["laps"][:5]
+    laps += [{"distance": 0.0005, "duration": 0.02}, {"distance": 2.5, "duration": 0.03}]
+    notes = build_data_notes(laps, [], 5.0)
+    assert notes == ["Partial lap: 2.50 m. Excluded from full-km analysis."]
 
 
 @pytest.mark.parametrize("change", [

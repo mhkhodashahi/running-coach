@@ -2,8 +2,9 @@
 
 Running Coach now uses Alembic through a **backup-first runner**. This supersedes
 the lightweight setup decision in `docs/adr/0001-lightweight-sqlite-setup.md`.
-Revision 0004 adds the coach opinion v2 storage contract. Existing opinions are
-not regenerated or rewritten by the migration.
+Revision 0004 adds the coach opinion v2 storage contract; 0005 adds coach chat
+history and per-request counters. Existing opinions are not regenerated or
+rewritten by either migration.
 
 ## Upgrade
 
@@ -26,7 +27,7 @@ The command uses the exact path supplied: it does **not** redirect
   Backup failure aborts the upgrade before stamping or modifying tables.
 - An unversioned existing app database is **stamped** at `0001_baseline`.
   Stamping only adds Alembic's version metadata, never runs baseline table DDL.
-- A new database runs the baseline, then revisions 2 through 4.
+- A new database runs the baseline, then revisions 2 through 5.
 - Stamp and upgrade are one explicit SQLite transaction. A failure rolls back
   both schema changes and revision metadata; the backup remains available.
 - Repeating an upgrade at head changes nothing and creates no extra backup.
@@ -71,6 +72,10 @@ unsupported; restore the backup instead.
    `activity_coaching_opinion_history` table. No opinion or activity row is
    backfilled. Regeneration archives the previous opinion in the same
    transaction before replacing it.
+5. `0005_coach_chat`: new `coach_chat_turns` table stores question, answer,
+   evidence, activity IDs, tool-call names/arguments, model metadata and time;
+   `coach_llm_calls` counts every chat model request, including retries and
+   failures, by user and local day. No existing table or row is changed.
 
 Revision 2 copies each non-NULL `marathon_goal_time` / `marathon_date` into
 `running_goal_time` / `running_date` **only if that running field is NULL**.
@@ -128,7 +133,8 @@ cp "$BACKUP" "$CHECK_DIR/candidate.db"
 sqlite3 "$CHECK_DIR/candidate.db" "SELECT version_num FROM alembic_version; PRAGMA integrity_check; PRAGMA foreign_key_check;"
 ```
 
-Expect `0004_coach_opinion_v2`, `ok`, and no foreign-key violations.
+Expect `0005_coach_chat` and `ok`. Compare `foreign_key_check` with the
+pre-upgrade copy; a pre-existing violation must not be mistaken for a new one.
 Compare counts, exact JSON strings and complete body-scan schemas/rows:
 
 ```bash
@@ -154,9 +160,10 @@ with closing(sqlite3.connect(sys.argv[1])) as before, closing(sqlite3.connect(sy
             query = "SELECT type, name, sql FROM sqlite_master WHERE tbl_name=? ORDER BY type, name"
             assert before.execute(query, (table,)).fetchall() == after.execute(query, (table,)).fetchall(), table
             assert before.execute(f"SELECT * FROM {quoted} ORDER BY id").fetchall() == after.execute(f"SELECT * FROM {quoted} ORDER BY id").fetchall(), table
-    assert after.execute("SELECT count(*) FROM activity_coaching_insights WHERE schema_version IS NOT NULL OR prompt_version IS NOT NULL OR validation_notes IS NOT NULL").fetchone() == (0,)
-    assert after.execute("SELECT count(*) FROM activities WHERE planned_intent IS NOT NULL").fetchone() == (0,)
-    assert after.execute("SELECT count(*) FROM activity_coaching_opinion_history").fetchone() == (0,)
+    assert before.execute("PRAGMA foreign_key_check").fetchall() == after.execute("PRAGMA foreign_key_check").fetchall()
+    for table in ("activity_coaching_opinion_history", "coach_chat_turns", "coach_llm_calls"):
+        if table not in tables:
+            assert after.execute(f"SELECT count(*) FROM {table}").fetchone() == (0,)
 print("Counts, JSON payloads, body-scan schema/data, and legacy NULL versions preserved.")
 PY
 

@@ -19,6 +19,7 @@ from services.activity_coaching_service import (
 )
 from services.coach_opinion import load_opinion
 from services.hr_zones import HR_ZONE_COLORS, heart_rate_zone_summary, supports_hr_zone_view
+from services.training_chat_service import TrainingChatService
 from services.training_context_service import load_training_bundle
 from ui.google_maps import render_activity_route_map
 from ui.sidebar import render_sidebar_menu
@@ -772,3 +773,16 @@ else:
         ],
         width="stretch",
     )
+
+st.subheader("Ask about this run")
+with st.form(f"activity_chat_{selected_id}"):
+    activity_question = st.text_input("Question", key=f"activity_question_{selected_id}")
+    ask_activity = st.form_submit_button("Ask coach")
+if ask_activity:
+    with st.spinner("Checking this activity..."):
+        activity_reply = TrainingChatService().answer(
+            activity_question, user_id=bundle.user.id, activity_id=int(selected_id),
+        )
+    st.session_state[f"activity_chat_reply_{selected_id}"] = activity_reply.text
+if saved_reply := st.session_state.get(f"activity_chat_reply_{selected_id}"):
+    st.write(saved_reply)

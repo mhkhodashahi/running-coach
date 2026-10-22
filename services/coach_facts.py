@@ -9,6 +9,33 @@ from dataclasses import dataclass
 from typing import Any, TypedDict
 
 from metrics.readiness import LOWER_LOAD, UPPER_LOAD
+from services.fact_display import (
+    as_number as _number,
+)
+from services.fact_display import (
+    duration as _duration,
+)
+from services.fact_display import (
+    heart_rate as _hr,
+)
+from services.fact_display import (
+    hours as _hours,
+)
+from services.fact_display import (
+    milliseconds as _ms,
+)
+from services.fact_display import (
+    pace as _pace,
+)
+from services.fact_display import (
+    percent as _percent,
+)
+from services.fact_display import (
+    ratio as _ratio,
+)
+from services.fact_display import (
+    score as _score,
+)
 from services.hr_zones import heart_rate_zone_bounds
 
 
@@ -40,57 +67,6 @@ CADENCE_STREAM_MAX = 110.0
 CADENCE_LAP_MIN = 140.0
 GPS_TIME_GAP_SECONDS = 30.0
 GPS_DISTANCE_JUMP_KM = 0.2
-
-
-def _number(value: Any) -> float | None:
-    try:
-        result = float(value)
-    except (TypeError, ValueError):
-        return None
-    return result if math.isfinite(result) else None
-
-
-def _pace(value: Any) -> str | None:
-    if isinstance(value, str) and re.fullmatch(r"\d+:[0-5]\d(?:\s*/km)?", value.strip()):
-        return f"{value.strip().split()[0].removesuffix('/km')} /km"
-    minutes = _number(value)
-    if minutes is None or minutes <= 0:
-        return None
-    seconds = round(minutes * 60)
-    return f"{seconds // 60}:{seconds % 60:02d} /km"
-
-
-def _duration(value: Any) -> str | None:
-    minutes = _number(value)
-    if minutes is None or minutes < 0:
-        return None
-    seconds = round(minutes * 60)
-    if seconds >= 3600:
-        return f"{seconds // 3600}:{(seconds % 3600) // 60:02d} h"
-    return f"{seconds // 60:02d}:{seconds % 60:02d}"
-
-
-def _hours(value: Any) -> str | None:
-    hours = _number(value)
-    if hours is None or hours < 0:
-        return None
-    minutes = round(hours * 60)
-    return f"{minutes // 60}:{minutes % 60:02d} h"
-
-
-def _hr(value: Any) -> str | None:
-    number = _number(value)
-    return f"{round(number)} bpm" if number is not None and number > 0 else None
-
-
-def _ms(value: Any) -> str | None:
-    number = _number(value)
-    return f"{round(number)} ms" if number is not None and number > 0 else None
-
-
-def _percent(value: Any) -> str | None:
-    number = _number(value)
-    return f"{number:.1f}%" if number is not None else None
 
 
 def _pace_seconds(value: Any) -> int | None:
@@ -276,14 +252,14 @@ def build_facts(activity_id: int, context: Mapping[str, Any]) -> list[Fact]:
 
     readiness_field = (snapshot.get("readiness") or {}).get("score")
     readiness = _number(readiness_field.get("value") if isinstance(readiness_field, dict) else readiness_field)
-    _add(facts, "READINESS", "Readiness", f"{round(readiness)}/100" if readiness is not None else None,
+    _add(facts, "READINESS", "Readiness", _score(readiness),
          "metrics_snapshot.readiness.score.value")
     for component in (snapshot.get("readiness") or {}).get("components") or []:
         name = component.get("name")
         score = _number((component.get("score") or {}).get("value"))
         if name in {"hrv", "rhr", "sleep", "load"} and score is not None:
             _add(facts, f"READINESS_{name.upper()}_SCORE", f"Readiness {name.upper()} component",
-                 f"{score:.1f}/100", f"metrics_snapshot.readiness.components.{name}.score.value")
+                 _score(score, decimals=1), f"metrics_snapshot.readiness.components.{name}.score.value")
     health = snapshot.get("current_health") or {}
     baselines = {(row.get("field"), row.get("days")): (row.get("mean") or {}).get("value")
                  for row in snapshot.get("baselines") or []}
@@ -299,7 +275,7 @@ def build_facts(activity_id: int, context: Mapping[str, Any]) -> list[Fact]:
         current_value, baseline_value = _number(current), _number(baseline)
         if current_value is not None and baseline_value is not None:
             if key == "hrv" and baseline_value > 0:
-                change = f"{(current_value / baseline_value - 1) * 100:+.1f}%"
+                change = _percent((current_value / baseline_value - 1) * 100, signed=True)
             elif key == "resting_hr":
                 change = f"{round(current_value - baseline_value):+d} bpm"
             elif key == "sleep_duration":
@@ -309,7 +285,7 @@ def build_facts(activity_id: int, context: Mapping[str, Any]) -> list[Fact]:
             _add(facts, f"{prefix}_VS_BASELINE", f"{prefix} versus baseline", change,
                  f"metrics_snapshot.current_health.{key}.value vs metrics_snapshot.baselines.{key}.{days}.mean.value")
     ratio = _number(((snapshot.get("load") or {}).get("ratio") or {}).get("value"))
-    _add(facts, "LOAD_RATIO", "Acute:chronic load ratio", f"{ratio:.2f}" if ratio is not None else None,
+    _add(facts, "LOAD_RATIO", "Acute:chronic load ratio", _ratio(ratio),
          "metrics_snapshot.load.ratio.value")
     if ratio is not None:
         status = "below" if ratio < LOWER_LOAD else "above" if ratio > UPPER_LOAD else "in"

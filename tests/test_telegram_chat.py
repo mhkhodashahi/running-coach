@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+from coach.agent import CoachAnswer
 from services.telegram_chatbot import TelegramTrainingChatBot
 from services.training_chat_service import TrainingChatService
 
@@ -30,61 +31,38 @@ class FakeChat:
         return SimpleNamespace(text=f"answer: {question}")
 
 
-def test_training_chat_service_uses_llm_answer_and_evidence(monkeypatch) -> None:
-    monkeypatch.setattr("services.training_chat_service.init_db", lambda: None)
-    service = TrainingChatService(
-        llm_client=FakeLLM(
-            {
-                "answer": "Keep tomorrow easy because readiness is low.",
-                "evidence": ["Readiness 51", "7-day volume 44 km"],
-                "follow_up": "Check HRV again tomorrow.",
-            }
-        )
-    )
-    monkeypatch.setattr(
-        service,
-        "_build_context",
-        lambda user_id: {
-            "snapshot": {
-                "readiness": {"score": 51, "label": "low"},
-                "weekly_mileage": {"7d": 44},
-            },
-            "recent_activities": [],
-            "recent_health": [],
-        },
-    )
+def test_training_chat_service_uses_agent_reply_and_evidence(monkeypatch) -> None:
+    class FakeAgent:
+        def __init__(self, settings, client, user_id):
+            assert user_id == settings.default_user_id
 
-    reply = service.answer("What should I do tomorrow?")
+        def answer(self, question, activity_id=None, running_memory=""):
+            assert question == "How was my run?"
+            assert activity_id == 3
+            return CoachAnswer("Keep it easy.", ({"id": "PACE", "metric": "Pace", "display": "6:00 /km",
+                                                  "source": "activity"},), (3,), ("Ask about recovery",), (), 1)
 
-    assert reply.used_llm is True
-    assert "Keep tomorrow easy" in reply.text
-    assert "Readiness 51" in reply.text
-    assert "athlete_question" in service.llm_client.prompts[0][1]
+    monkeypatch.setattr("services.training_chat_service.CoachAgent", FakeAgent)
+    monkeypatch.setattr("services.training_chat_service.load_running_memory", lambda: "")
+    reply = TrainingChatService(llm_client=FakeLLM({})).answer("How was my run?", activity_id=3)
+    assert reply.used_llm
+    assert "Pace: 6:00 /km" in reply.text
+    assert reply.follow_ups == ("Ask about recovery",)
 
 
-def test_training_chat_service_falls_back_when_llm_returns_empty(monkeypatch) -> None:
-    monkeypatch.setattr("services.training_chat_service.init_db", lambda: None)
-    service = TrainingChatService(llm_client=FakeLLM({}))
-    monkeypatch.setattr(
-        service,
-        "_build_context",
-        lambda user_id: {
-            "snapshot": {
-                "weekly_mileage": {"7d": 12, "28d": 50},
-                "readiness": {"score": 72, "label": "building"},
-                "fatigue": {"score": 30, "level": "low"},
-                "recovery": {"sleep_score": 82, "hrv": 55, "body_battery": 70},
-                "prediction": {"predicted_minutes": 241, "predicted_pace": 5.71},
-            },
-            "recent_activities": [{"date": "2026-05-02", "type": "running", "distance": 8}],
-        },
-    )
+def test_training_chat_service_reports_limit_clearly(monkeypatch) -> None:
+    class LimitedAgent:
+        def __init__(self, *args):
+            pass
 
-    reply = service.answer("status")
+        def answer(self, *args, **kwargs):
+            raise RuntimeError("Daily coach LLM call limit reached.")
 
-    assert reply.used_llm is False
-    assert "7-day running volume 12 km" in reply.text
-    assert "Latest activity: 2026-05-02 running 8 km" in reply.text
+    monkeypatch.setattr("services.training_chat_service.CoachAgent", LimitedAgent)
+    monkeypatch.setattr("services.training_chat_service.load_running_memory", lambda: "")
+    reply = TrainingChatService(llm_client=FakeLLM({})).answer("Status")
+    assert not reply.used_llm
+    assert "limit reached" in reply.text
 
 
 def test_telegram_chatbot_authorizes_configured_chat_only() -> None:

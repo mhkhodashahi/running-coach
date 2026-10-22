@@ -140,6 +140,8 @@ If the configured model is unavailable, some workflows fall back to deterministi
 
 Local Ollama runs on your machine and needs no remote approval; it is supported but can be slower and weaker than a remote model on detailed session opinions. For OpenAI (including the `chatgpt` provider alias), set both `ALLOW_REMOTE_LLM=true` and `REMOTE_ATHLETE_DATA_APPROVED=true` in your private `.env`. If either is absent, the client refuses before sending data.
 
+`COACH_DAILY_CALL_LIMIT` caps coach chat LLM requests per user and local day, including retries. Leave it empty for the default of 20; set a positive integer to change it.
+
 Per-activity opinions send the rounded facts pack, planned and detected intent, code-generated recording notes, and running memory to the selected provider. Other optional AI coaching and chat flows can send relevant activity, health, goal, and message context. With OpenAI selected, that content goes to OpenAI; with Ollama, it stays on the configured local Ollama server. API keys and Garmin credentials are not included in coaching prompts. OpenAI requests use `store=False`.
 
 ## Telegram Digest
