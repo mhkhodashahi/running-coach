@@ -185,9 +185,11 @@ def test_activity_coaching_prompt_uses_profile_and_required_analysis_categories(
         running_memory="# Coach Running Memory\n- Easy days stay easy.",
     )
 
-    assert "CoachOpinionV2" in system_prompt
-    assert "Fill intent.detected" in system_prompt
-    assert "planned_intent is null" in system_prompt
+    assert "CoachOpinionV21" in system_prompt
+    assert "Detect the session intent" in system_prompt
+    assert "Copy planned_intent exactly" in system_prompt
+    assert "otherwise detected intent" in system_prompt
+    assert "Invented example" in system_prompt
     assert '"age": 35' in user_prompt
     assert '"weight_kg": 75.0' in user_prompt
     assert '"pace": "6:00"' in user_prompt

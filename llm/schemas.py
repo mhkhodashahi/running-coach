@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 Intent = Literal["recovery", "easy", "steady", "tempo", "race"]
 
@@ -77,6 +77,60 @@ class OpenAIOpinionRecommendation(OpinionRecommendation):
 
 class OpenAICoachOpinionV2(CoachOpinionV2):
     recommendations: list[OpenAIOpinionRecommendation] = Field(default_factory=list)
+
+
+class OpinionVerdictV21(OpinionVerdict):
+    aspect: Literal["Pacing", "Intensity vs plan", "Aerobic stimulus", "HR control"]
+
+    @field_validator("word")
+    @classmethod
+    def short_runner_word(cls, value: str) -> str:
+        words = value.split()
+        if not 1 <= len(words) <= 2 or not all(word.isalpha() for word in words):
+            raise ValueError("word must be one or two plain words")
+        return value
+
+    @model_validator(mode="after")
+    def word_matches_rating(self) -> OpinionVerdictV21:
+        positive = {"good", "controlled", "steady", "strong", "efficient", "stable"}
+        negative = {"too hard", "too fast", "too slow", "poor", "missed", "overcooked"}
+        word = self.word.casefold()
+        if (word in positive and self.rating != "good") or (word in negative and self.rating == "good"):
+            raise ValueError("verdict word contradicts quality rating")
+        if word == "moderate" and self.rating != "watch":
+            raise ValueError("Moderate requires a watch rating")
+        return self
+
+
+class EmptyOpinionSession(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class PlannedOpinionSession(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    sport: Literal["running", "volleyball", "football", "gym"]
+    intent: Intent
+    duration_min: int = Field(gt=0)
+    hr_cap_bpm: int = Field(gt=0)
+
+
+class OpinionRecommendationV21(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    text: str
+    action: Literal["add_to_plan", "reminder", "none"] = "none"
+    session: EmptyOpinionSession | PlannedOpinionSession = Field(default_factory=EmptyOpinionSession)
+
+    @model_validator(mode="after")
+    def action_matches_session(self) -> OpinionRecommendationV21:
+        if (self.action == "add_to_plan") != isinstance(self.session, PlannedOpinionSession):
+            raise ValueError("add_to_plan requires a complete session; other actions require {}")
+        return self
+
+
+class CoachOpinionV21(CoachOpinionV2):
+    verdicts: list[OpinionVerdictV21] = Field(default_factory=list)
+    recommendations: list[OpinionRecommendationV21] = Field(default_factory=list)
+    evidence: list[OpinionEvidence] = Field(default_factory=list, min_length=4, max_length=10)
 
 
 class CoachingDecisionSchema(BaseModel):

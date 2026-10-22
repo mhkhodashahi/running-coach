@@ -7,7 +7,7 @@ from openai.lib._pydantic import to_strict_json_schema
 
 from config import get_settings
 from llm.openai_client import OpenAIClient
-from llm.schemas import ActivityCoachInsightSchema, CoachOpinionV2, OpenAICoachOpinionV2
+from llm.schemas import ActivityCoachInsightSchema, CoachOpinionV2, CoachOpinionV21, OpenAICoachOpinionV2
 
 
 def test_openai_parse_uses_v2_schema_and_rejects_empty_result():
@@ -75,3 +75,24 @@ def test_legacy_openai_schema_keeps_json_object_fallback():
     assert client.generate_json("system", "user", response_schema=ActivityCoachInsightSchema) == {"summary": "legacy"}
     assert seen["store"] is False
     assert seen["input"].startswith("Return only JSON.")
+
+
+def test_v21_openai_uses_closed_recommendation_session_schema():
+    seen = {}
+
+    def parse(**kwargs):
+        seen.update(kwargs)
+        return SimpleNamespace(output_parsed=None)
+
+    client = OpenAIClient.__new__(OpenAIClient)
+    client.model = "synthetic"
+    client.client = SimpleNamespace(responses=SimpleNamespace(parse=parse))
+    with pytest.raises(ValueError, match="empty"):
+        client.generate_json("system", "user", response_schema=CoachOpinionV21)
+    assert seen["text_format"] is CoachOpinionV21
+    assert seen["store"] is False
+    schema = to_strict_json_schema(CoachOpinionV21)
+    assert schema["$defs"]["EmptyOpinionSession"]["additionalProperties"] is False
+    planned = schema["$defs"]["PlannedOpinionSession"]
+    assert planned["additionalProperties"] is False
+    assert set(planned["required"]) == {"sport", "intent", "duration_min", "hr_cap_bpm"}

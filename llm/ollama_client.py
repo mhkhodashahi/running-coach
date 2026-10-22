@@ -9,7 +9,7 @@ import requests
 from pydantic import BaseModel
 
 from llm.base import LLMClient, extract_json
-from llm.schemas import CoachOpinionV2
+from llm.schemas import CoachOpinionV2, CoachOpinionV21
 
 OLLAMA_INPUT_TOKEN_LIMIT = 7500
 _TOKEN_PATTERN = re.compile(r"\w+|[^\w\s]", re.UNICODE)
@@ -28,9 +28,10 @@ def estimate_input_tokens(text: str) -> int:
 class OllamaClient(LLMClient):
     """Generate structured coaching with a local Ollama model."""
 
-    def __init__(self, base_url: str, model: str) -> None:
+    def __init__(self, base_url: str, model: str, timeout_seconds: int = 120) -> None:
         self.base_url = base_url.rstrip("/")
         self.model = model
+        self.timeout_seconds = timeout_seconds
 
     def generate_json(
         self,
@@ -50,10 +51,11 @@ class OllamaClient(LLMClient):
                 "model": self.model,
                 "system": system_prompt,
                 "prompt": user_prompt,
-                "format": CoachOpinionV2.model_json_schema() if response_schema is CoachOpinionV2 else "json",
+                "format": response_schema.model_json_schema()
+                if response_schema in (CoachOpinionV2, CoachOpinionV21) else "json",
                 "stream": False,
             },
-            timeout=120,
+            timeout=self.timeout_seconds,
         )
         response.raise_for_status()
         text = response.json().get("response", "").strip()

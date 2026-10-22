@@ -14,10 +14,10 @@ from config import Settings, get_settings
 from db import repository
 from db.session import session_scope
 from llm.factory import get_llm_client
-from llm.schemas import ActivityCoachInsightSchema, CoachOpinionV2
+from llm.schemas import ActivityCoachInsightSchema, CoachOpinionV2, CoachOpinionV21
 from metrics import get_daily_snapshot
-from services.coach_opinion import load_opinion, unsupported_numbers
-from services.coaching_prompts import ACTIVITY_OPINION_V2_SYSTEM_PROMPT
+from services.coach_opinion import load_opinion, opinion_rule_errors, unsupported_evidence, unsupported_numbers
+from services.coaching_prompts import ACTIVITY_OPINION_V21_SYSTEM_PROMPT
 from services.goal_service import GoalService
 from services.running_coach_memory import (
     build_memory_entry_from_activity,
@@ -27,7 +27,7 @@ from services.running_coach_memory import (
 )
 from utils.formatting import format_pace_short
 
-PROMPT_VERSION = "opinion-v2.0"
+PROMPT_VERSION = "opinion-v2.1"
 
 
 @dataclass(frozen=True)
@@ -119,40 +119,40 @@ class ActivityCoachingService:
         )
         return context, str(activity.date), getattr(activity, "activity_name", None)
 
-    def _request_opinion(self, context: dict[str, Any], running_memory: str | None) -> tuple[CoachOpinionV2, str | None]:
+    def _request_opinion(self, context: dict[str, Any], running_memory: str | None) -> tuple[CoachOpinionV21, str | None]:
         system_prompt, user_prompt = build_activity_coaching_prompt(context, running_memory)
         for attempt in range(2):
             try:
-                payload = self.llm_client.generate_json(system_prompt, user_prompt, response_schema=CoachOpinionV2)
+                payload = self.llm_client.generate_json(system_prompt, user_prompt, response_schema=CoachOpinionV21)
             except Exception as exc:
                 raise RuntimeError(f"Activity coaching model unavailable: {exc}") from exc
             try:
-                opinion = CoachOpinionV2.model_validate(payload)
-                if opinion.intent is None:
-                    raise ValueError("intent.detected is required")
-                if opinion.intent.planned != context["planned_intent"]:
-                    raise ValueError("intent.planned must match planned_intent exactly")
+                opinion = CoachOpinionV21.model_validate(payload)
+                rule_errors = opinion_rule_errors(opinion, context)
+                if rule_errors:
+                    raise ValueError("; ".join(rule_errors))
                 break
             except (ValidationError, ValueError) as exc:
                 if attempt:
                     raise RuntimeError(f"Coach opinion validation failed after retry: {exc}") from exc
                 user_prompt += f"\nValidation errors: {exc}. Return corrected v2 JSON only."
-        unsupported = unsupported_numbers(opinion)
-        if unsupported:
-            user_prompt += ("\nUnsupported numbers in worked, fix or sections: " + ", ".join(unsupported)
-                            + ". Add matching evidence values or remove those claims. Return corrected v2 JSON only.")
+        issues = _evidence_issues(opinion, context)
+        if issues:
+            user_prompt += ("\nEvidence errors: " + "; ".join(issues)
+                            + ". Copy evidence values from context paths verbatim or remove unsupported claims."
+                            " Return corrected v2 JSON only.")
             try:
-                retry = CoachOpinionV2.model_validate(
-                    self.llm_client.generate_json(system_prompt, user_prompt, response_schema=CoachOpinionV2))
-                if retry.intent is None or retry.intent.planned != context["planned_intent"]:
-                    raise ValueError("intent does not match the activity plan")
+                retry = CoachOpinionV21.model_validate(
+                    self.llm_client.generate_json(system_prompt, user_prompt, response_schema=CoachOpinionV21))
+                if opinion_rule_errors(retry, context):
+                    raise ValueError("retry violated v2.1 rules")
                 opinion = retry
-                unsupported = unsupported_numbers(opinion)
+                issues = _evidence_issues(opinion, context)
             except Exception:
                 pass
-        if unsupported:
+        if issues:
             opinion = opinion.model_copy(update={"confidence": "low"})
-            return opinion, "Unsupported numbers: " + ", ".join(unsupported)
+            return opinion, "; ".join(issues)
         return opinion, None
 
     def _save(self, session: Any, user_id: int, activity_id: int, opinion: CoachOpinionV2,
@@ -194,7 +194,14 @@ class ActivityCoachingService:
 
 
 def build_activity_coaching_prompt(context: dict[str, Any], running_memory: str | None = None) -> tuple[str, str]:
-    return ACTIVITY_OPINION_V2_SYSTEM_PROMPT, f"{running_memory_block(running_memory)}\n{json.dumps(context, default=_json_default)}"
+    return ACTIVITY_OPINION_V21_SYSTEM_PROMPT, f"{running_memory_block(running_memory)}\n{json.dumps(context, default=_json_default)}"
+
+
+def _evidence_issues(opinion: CoachOpinionV21, context: dict[str, Any]) -> tuple[str, ...]:
+    numbers = unsupported_numbers(opinion)
+    values = unsupported_evidence(opinion, context)
+    return tuple(["Unsupported numbers: " + ", ".join(numbers)] if numbers else []) + tuple(
+        "Unsupported evidence: " + value for value in values)
 
 
 def _opinion_metrics_snapshot(snapshot: Any, activity_id: int) -> dict[str, Any]:
