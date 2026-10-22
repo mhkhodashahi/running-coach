@@ -51,6 +51,7 @@ packages = [
     { include = "analytics" },
     { include = "db" },
     { include = "llm" },
+    { include = "metrics" },
     { include = "services" },
     { include = "scripts" },
     { include = "ui" },

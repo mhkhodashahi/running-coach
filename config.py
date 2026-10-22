@@ -57,6 +57,8 @@ class Settings:
     low_sleep_score_threshold: int
     high_intensity_ratio_threshold: float
     long_run_gap_days: int
+    local_timezone: str = "Europe/Berlin"
+    sleep_goal_hours: float = 7.5
 
     @property
     def db_url(self) -> str:
@@ -102,4 +104,6 @@ def get_settings() -> Settings:
         low_sleep_score_threshold=int(os.getenv("LOW_SLEEP_SCORE_THRESHOLD", "72")),
         high_intensity_ratio_threshold=float(os.getenv("HIGH_INTENSITY_RATIO_THRESHOLD", "0.22")),
         long_run_gap_days=int(os.getenv("LONG_RUN_GAP_DAYS", "14")),
+        local_timezone=os.getenv("LOCAL_TIMEZONE", "Europe/Berlin"),
+        sleep_goal_hours=float(os.getenv("SLEEP_GOAL_HOURS", "7.5")),
     )

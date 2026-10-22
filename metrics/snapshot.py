@@ -1,0 +1,26 @@
+"""Pure orchestration: immutable inputs in, dated metrics out."""
+
+from datetime import date, timedelta
+from zoneinfo import ZoneInfo
+
+from metrics.baselines import FIELDS, current_health, health_baseline
+from metrics.load import daily_sport_loads, load_ratio, session_metrics, weekly_sport_loads
+from metrics.models import DailySnapshot, Inputs
+from metrics.readiness import readiness
+from metrics.sports import SPORT_MAP
+
+
+def build_daily_snapshot(inputs: Inputs, as_of: date, timezone: str, sleep_goal_hours: float) -> DailySnapshot:
+    ZoneInfo(timezone)
+    health = tuple(row for row in inputs.health if row.day <= as_of)
+    activities = tuple(row for row in inputs.activities if row.day <= as_of)
+    baselines = tuple(health_baseline(health, field, days, as_of) for field in FIELDS for days in (7, 28))
+    current = {field: current_health(health, field, as_of) for field in FIELDS}
+    sessions = tuple(session_metrics(row, inputs.profile, health, as_of, timezone)
+                     for row in sorted(activities, key=lambda a: (a.day, a.id)) if row.day >= as_of - timedelta(days=27))
+    daily = daily_sport_loads(sessions, health, as_of)
+    load = load_ratio(daily, as_of)
+    ready = readiness(current, {(b.field, b.days): b.mean for b in baselines}, load.ratio, sleep_goal_hours, as_of)
+    unknown = tuple(sorted({row.type for row in activities if row.type.strip().lower() not in SPORT_MAP}))
+    return DailySnapshot(as_of.isoformat(), timezone, inputs.profile.user_id, baselines, tuple(current.items()),
+                         sessions, (*daily, *weekly_sport_loads(daily, as_of)), load, ready, unknown)
