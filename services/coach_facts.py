@@ -8,6 +8,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, TypedDict
 
+from metrics.readiness import LOWER_LOAD, UPPER_LOAD
 from services.hr_zones import heart_rate_zone_bounds
 
 
@@ -34,6 +35,7 @@ RACE_Z4_PLUS_MIN = 50.0
 FULL_KM_MIN = 0.9
 FULL_KM_MAX = 1.1
 PARTIAL_LAP_MAX_METRES = 100.0
+PARTIAL_LAP_MIN_METRES = 1.0
 CADENCE_STREAM_MAX = 110.0
 CADENCE_LAP_MIN = 140.0
 GPS_TIME_GAP_SECONDS = 30.0
@@ -91,6 +93,14 @@ def _percent(value: Any) -> str | None:
     return f"{number:.1f}%" if number is not None else None
 
 
+def _pace_seconds(value: Any) -> int | None:
+    display = _pace(value)
+    if display is None:
+        return None
+    minutes, seconds = display.split(" /km")[0].split(":")
+    return int(minutes) * 60 + int(seconds)
+
+
 def _add(facts: list[Fact], fact_id: str, metric: str, display: str | None, source: str) -> None:
     if display is not None:
         facts.append({"id": fact_id, "metric": metric, "display": display, "source": source})
@@ -109,14 +119,26 @@ def _partial_lap_metres(laps: list[dict[str, Any]], total_km: float | None) -> t
         if distance is None or distance <= 0:
             continue
         if distance < PARTIAL_LAP_MAX_METRES / 1000:
-            return index, distance * 1000
+            if distance * 1000 >= PARTIAL_LAP_MIN_METRES:
+                return index, distance * 1000
+            continue
         duration = _number(lap.get("duration"))
         if (total_km is not None and completed_km >= total_km - 0.1
                 and distance < PARTIAL_LAP_MAX_METRES and duration is not None and duration < 1):
-            return index, distance
+            if distance >= PARTIAL_LAP_MIN_METRES:
+                return index, distance
+            continue
         if FULL_KM_MIN <= distance <= FULL_KM_MAX:
             completed_km += distance
     return None
+
+
+def _cadence_multiplier(stream_mean: Any, laps: list[dict[str, Any]]) -> int:
+    mean = _number(stream_mean)
+    lap_values = [_number(lap.get("avg_cadence")) for lap in laps]
+    valid_laps = [value for value in lap_values if value is not None and value > 0]
+    return 2 if (mean is not None and 0 < mean < CADENCE_STREAM_MAX
+                 and valid_laps and min(valid_laps) > CADENCE_LAP_MIN) else 1
 
 
 def build_facts(activity_id: int, context: Mapping[str, Any]) -> list[Fact]:
@@ -152,12 +174,25 @@ def build_facts(activity_id: int, context: Mapping[str, Any]) -> list[Fact]:
     _add(facts, "PLAN_INTENT", "Planned intent", str(planned) if planned else None, "planned_intent")
 
     stream = context.get("stream_analysis") or {}
+    laps = list((context.get("lap_analysis") or {}).get("laps") or [])
+    cadence = stream.get("cadence_spm") or {}
+    cadence_multiplier = _cadence_multiplier(cadence.get("avg"), laps)
+    for key in ("avg", "min", "max"):
+        value = _number(cadence.get(key))
+        _add(facts, f"STREAM_CADENCE_{key.upper()}", f"Stream cadence {key}",
+             f"{round(value * cadence_multiplier)} spm" if value is not None and value > 0 else None,
+             f"stream_analysis.cadence_spm.{key}" + (" (doubled per-foot scale)" if cadence_multiplier == 2 else ""))
     for half, label in (("first_half", "FIRST_HALF"), ("second_half", "SECOND_HALF")):
         data = stream.get(half) or {}
         _add(facts, f"{label}_PACE", f"{half.replace('_', ' ').title()} pace", _pace(data.get("avg_pace")),
              f"stream_analysis.{half}.avg_pace")
         _add(facts, f"{label}_HR", f"{half.replace('_', ' ').title()} heart rate", _hr(data.get("avg_hr")),
              f"stream_analysis.{half}.avg_hr")
+        half_cadence = _number(data.get("avg_cadence"))
+        _add(facts, f"{label}_CADENCE", f"{half.replace('_', ' ').title()} cadence",
+             f"{round(half_cadence * cadence_multiplier)} spm"
+             if half_cadence is not None and half_cadence > 0 else None,
+             f"stream_analysis.{half}.avg_cadence" + (" (doubled per-foot scale)" if cadence_multiplier == 2 else ""))
     first = _pace((stream.get("first_half") or {}).get("avg_pace"))
     second = _pace((stream.get("second_half") or {}).get("avg_pace"))
     if first and second:
@@ -167,7 +202,6 @@ def build_facts(activity_id: int, context: Mapping[str, Any]) -> list[Fact]:
         _add(facts, "SPLIT_PATTERN", "Pacing split", pattern,
              "stream_analysis.first_half.avg_pace + stream_analysis.second_half.avg_pace")
 
-    laps = list((context.get("lap_analysis") or {}).get("laps") or [])
     full = _full_km_laps(laps)
     for km, (index, lap) in enumerate(full, start=1):
         _add(facts, f"KM{km}_PACE", f"Km {km} pace", _pace(lap.get("pace")), f"lap_analysis.laps[{index}].pace")
@@ -186,6 +220,14 @@ def build_facts(activity_id: int, context: Mapping[str, Any]) -> list[Fact]:
              f"lap_analysis.laps[{last_index}].pace")
         _add(facts, "LAST_FULL_KM_HR", "Last full kilometre heart rate", _hr(last_lap.get("avg_hr")),
              f"lap_analysis.laps[{last_index}].avg_hr")
+        first_pace = _pace_seconds(first_lap.get("pace"))
+        average_pace = _pace_seconds(selected.get("pace"))
+        first_hr = _number(first_lap.get("avg_hr"))
+        average_hr = _number(selected.get("avg_hr"))
+        if (first_pace is not None and average_pace is not None and first_hr is not None
+                and average_hr is not None and first_pace > average_pace and first_hr < average_hr):
+            _add(facts, "CONSERVATIVE_START", "Conservative first kilometre", "yes",
+                 f"lap_analysis.laps[{first_index}].pace + avg_hr vs selected_activity.pace + avg_hr")
         cadences = [_number(lap.get("avg_cadence")) for _, lap in full]
         cadence_values = [value for value in cadences if value is not None]
         if cadence_values:
@@ -218,6 +260,13 @@ def build_facts(activity_id: int, context: Mapping[str, Any]) -> list[Fact]:
     hrmax = _number((session.get("hrmax") or {}).get("value"))
     if hrmax is not None and hrmax > 0:
         bounds = heart_rate_zone_bounds(round(hrmax))
+        for zone_name, lower, upper in bounds:
+            zone_id = zone_name.split()[0]
+            _add(facts, f"ZONE_{zone_id}_LOWER_BPM", f"{zone_id} lower heart rate", _hr(math.ceil(lower)),
+                 "services.hr_zones.heart_rate_zone_bounds + metrics_snapshot.activity_session.hrmax.value")
+            upper_display = "no upper bpm limit" if math.isinf(upper) else _hr(math.ceil(upper) - 1)
+            _add(facts, f"ZONE_{zone_id}_UPPER_BPM", f"{zone_id} upper heart rate", upper_display,
+                 "services.hr_zones.heart_rate_zone_bounds + metrics_snapshot.activity_session.hrmax.value")
         z2 = bounds[1]
         _add(facts, "Z2_LOWER_HALF_CAP", "Z2 lower-half ceiling",
              _hr(z2[1] + RECOVERY_Z2_FRACTION * (z2[2] - z2[1])),
@@ -229,6 +278,12 @@ def build_facts(activity_id: int, context: Mapping[str, Any]) -> list[Fact]:
     readiness = _number(readiness_field.get("value") if isinstance(readiness_field, dict) else readiness_field)
     _add(facts, "READINESS", "Readiness", f"{round(readiness)}/100" if readiness is not None else None,
          "metrics_snapshot.readiness.score.value")
+    for component in (snapshot.get("readiness") or {}).get("components") or []:
+        name = component.get("name")
+        score = _number((component.get("score") or {}).get("value"))
+        if name in {"hrv", "rhr", "sleep", "load"} and score is not None:
+            _add(facts, f"READINESS_{name.upper()}_SCORE", f"Readiness {name.upper()} component",
+                 f"{score:.1f}/100", f"metrics_snapshot.readiness.components.{name}.score.value")
     health = snapshot.get("current_health") or {}
     baselines = {(row.get("field"), row.get("days")): (row.get("mean") or {}).get("value")
                  for row in snapshot.get("baselines") or []}
@@ -256,6 +311,11 @@ def build_facts(activity_id: int, context: Mapping[str, Any]) -> list[Fact]:
     ratio = _number(((snapshot.get("load") or {}).get("ratio") or {}).get("value"))
     _add(facts, "LOAD_RATIO", "Acute:chronic load ratio", f"{ratio:.2f}" if ratio is not None else None,
          "metrics_snapshot.load.ratio.value")
+    if ratio is not None:
+        status = "below" if ratio < LOWER_LOAD else "above" if ratio > UPPER_LOAD else "in"
+        _add(facts, "LOAD_RATIO_STATUS", "Load ratio status",
+             f"{status} safe range {LOWER_LOAD:.1f}–{UPPER_LOAD:.1f}",
+             "metrics_snapshot.load.ratio.value + metrics.readiness.LOWER_LOAD/UPPER_LOAD")
     return facts
 
 
@@ -299,12 +359,6 @@ def build_data_notes(laps: list[dict[str, Any]], track_points: list[dict[str, An
     partial = _partial_lap_metres(laps, _number(activity_distance_km))
     if partial:
         notes.append(f"Partial lap: {partial[1]:.2f} m. Excluded from full-km analysis.")
-    stream_cadences = [_number(row.get("cadence")) for row in track_points]
-    stream_values = [value for value in stream_cadences if value is not None and value > 0]
-    lap_values = [_number(row.get("avg_cadence")) for row in laps]
-    valid_laps = [value for value in lap_values if value is not None and value > 0]
-    if stream_values and valid_laps and sum(stream_values) / len(stream_values) < CADENCE_STREAM_MAX and min(valid_laps) > CADENCE_LAP_MIN:
-        notes.append("Cadence stream uses a per-foot scale; lap cadence values used.")
     points = sorted(track_points, key=lambda row: row.get("point_index") or 0)
     for before, after in zip(points, points[1:], strict=False):
         t0, t1 = _number(before.get("elapsed_seconds")), _number(after.get("elapsed_seconds"))
@@ -316,10 +370,21 @@ def build_data_notes(laps: list[dict[str, Any]], track_points: list[dict[str, An
     return notes
 
 
+def match_text_facts(text: str, facts: list[Fact], preferred_ids: tuple[str, ...] = ()) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Match display values in text and return their IDs plus unsupported numbers."""
+    compact = re.sub(r"\s+", "", text.casefold())
+    preferred = set(preferred_ids)
+    ordered = sorted(facts, key=lambda fact: (fact["id"] not in preferred, -len(fact["display"])))
+    matched: list[str] = []
+    for fact in ordered:
+        display = re.sub(r"\s+", "", fact["display"].casefold())
+        if display and re.search(r"\d", display) and display in compact:
+            compact = compact.replace(display, " ")
+            matched.append(fact["id"])
+    compact = re.sub(r"z[1-5]\+?", " ", compact)
+    return tuple(matched), tuple(sorted(set(re.findall(r"\d+(?:[:.]\d+)*", compact))))
+
+
 def unsupported_text_numbers(text: str, facts: list[Fact]) -> tuple[str, ...]:
     """Return numeric claims not covered by a fact display after spacing normalization."""
-    compact = re.sub(r"\s+", "", text.casefold())
-    for display in sorted((re.sub(r"\s+", "", fact["display"].casefold()) for fact in facts), key=len, reverse=True):
-        compact = compact.replace(display, " ")
-    compact = re.sub(r"z[1-5]\+?", " ", compact)
-    return tuple(sorted(set(re.findall(r"\d+(?:[:.]\d+)*", compact))))
+    return match_text_facts(text, facts)[1]

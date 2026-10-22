@@ -13,13 +13,14 @@ from llm.schemas import (
     CoachOpinionV21,
     OpenAICoachOpinionV2,
     OpinionDraftV22,
+    OpinionDraftV23,
 )
 
 
 @pytest.fixture(autouse=True)
 def approve_remote_only_for_mocked_sdk(monkeypatch):
     monkeypatch.setattr("llm.openai_client.get_settings",
-                        lambda: SimpleNamespace(remote_athlete_data_approved=True))
+                        lambda: SimpleNamespace(allow_remote_llm=True, remote_athlete_data_approved=True))
 
 
 def test_openai_parse_uses_v2_schema_and_rejects_empty_result():
@@ -62,12 +63,16 @@ def test_openai_default_is_gpt_6_luna(monkeypatch):
 
 def test_remote_athlete_data_approval_is_explicit(monkeypatch):
     monkeypatch.setenv("REMOTE_ATHLETE_DATA_APPROVED", "false")
+    monkeypatch.setenv("ALLOW_REMOTE_LLM", "false")
     get_settings.cache_clear()
     try:
         assert get_settings().remote_athlete_data_approved is False
+        assert get_settings().allow_remote_llm is False
         monkeypatch.setenv("REMOTE_ATHLETE_DATA_APPROVED", "true")
+        monkeypatch.setenv("ALLOW_REMOTE_LLM", "true")
         get_settings.cache_clear()
         assert get_settings().remote_athlete_data_approved is True
+        assert get_settings().allow_remote_llm is True
     finally:
         get_settings.cache_clear()
 
@@ -142,10 +147,30 @@ def test_v22_openai_uses_draft_schema_without_code_owned_fields():
     assert schema["$defs"]["PlannedOpinionSession"]["additionalProperties"] is False
 
 
-def test_openai_refuses_remote_call_without_config_approval(monkeypatch):
+def test_v23_openai_uses_closed_recommendation_with_fact_ids():
+    seen = {}
+
+    def parse(**kwargs):
+        seen.update(kwargs)
+        return SimpleNamespace(output_parsed=None)
+
+    client = OpenAIClient.__new__(OpenAIClient)
+    client.model = "synthetic"
+    client.client = SimpleNamespace(responses=SimpleNamespace(parse=parse))
+    with pytest.raises(ValueError, match="empty"):
+        client.generate_json("system", "user", response_schema=OpinionDraftV23)
+    assert seen["text_format"] is OpinionDraftV23
+    schema = to_strict_json_schema(OpinionDraftV23)
+    assert "evidence_ids" in schema["$defs"]["OpinionDraftRecommendationV23"]["properties"]
+    assert schema["$defs"]["OpinionDraftRecommendationV23"]["additionalProperties"] is False
+    assert schema["$defs"]["PlannedOpinionSession"]["additionalProperties"] is False
+
+
+@pytest.mark.parametrize("allow,approved", [(False, False), (False, True), (True, False)])
+def test_openai_refuses_remote_call_without_both_config_flags(monkeypatch, allow, approved):
     monkeypatch.setattr("llm.openai_client.get_settings",
-                        lambda: SimpleNamespace(remote_athlete_data_approved=False))
+                        lambda: SimpleNamespace(allow_remote_llm=allow, remote_athlete_data_approved=approved))
     client = OpenAIClient.__new__(OpenAIClient)
     client.client = SimpleNamespace(responses=SimpleNamespace(parse=lambda **kwargs: pytest.fail("sent data")))
-    with pytest.raises(PermissionError, match="REMOTE_ATHLETE_DATA_APPROVED"):
-        client.generate_json("system", "athlete context", response_schema=OpinionDraftV22)
+    with pytest.raises(PermissionError, match="ALLOW_REMOTE_LLM"):
+        client.generate_json("system", "athlete context", response_schema=OpinionDraftV23)

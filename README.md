@@ -50,6 +50,8 @@ OLLAMA_MODEL=qwen3:14b
 # OpenAI
 OPENAI_API_KEY=
 OPENAI_MODEL=gpt-6-luna
+ALLOW_REMOTE_LLM=
+REMOTE_ATHLETE_DATA_APPROVED=
 
 # Garmin Connect sync
 GARMIN_EMAIL=
@@ -116,6 +118,8 @@ OpenAI:
 LLM_PROVIDER=openai
 OPENAI_API_KEY=your_openai_api_key
 OPENAI_MODEL=gpt-6-luna
+ALLOW_REMOTE_LLM=true
+REMOTE_ATHLETE_DATA_APPROVED=true
 ```
 
 OpenAI uses the Responses API with response storage disabled. Set `LLM_PROVIDER=openai`
@@ -131,6 +135,12 @@ OLLAMA_MODEL=qwen3:14b
 ```
 
 If the configured model is unavailable, some workflows fall back to deterministic rule-based coaching. Ollama prompts are guarded by a local input-size estimate to avoid sending oversized requests.
+
+## Privacy and AI Providers
+
+Local Ollama runs on your machine and needs no remote approval; it is supported but can be slower and weaker than a remote model on detailed session opinions. For OpenAI (including the `chatgpt` provider alias), set both `ALLOW_REMOTE_LLM=true` and `REMOTE_ATHLETE_DATA_APPROVED=true` in your private `.env`. If either is absent, the client refuses before sending data.
+
+Per-activity opinions send the rounded facts pack, planned and detected intent, code-generated recording notes, and running memory to the selected provider. Other optional AI coaching and chat flows can send relevant activity, health, goal, and message context. With OpenAI selected, that content goes to OpenAI; with Ollama, it stays on the configured local Ollama server. API keys and Garmin credentials are not included in coaching prompts. OpenAI requests use `store=False`.
 
 ## Telegram Digest
 

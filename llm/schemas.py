@@ -164,6 +164,18 @@ class CoachOpinionV22(CoachOpinionV2):
     evidence: list[OpinionEvidence] = Field(default_factory=list, min_length=4, max_length=10)
 
 
+class OpinionDraftRecommendationV23(OpinionRecommendationV21):
+    evidence_ids: list[str] = Field(min_length=1)
+
+
+class OpinionDraftV23(OpinionDraftV22):
+    recommendations: list[OpinionDraftRecommendationV23] = Field(default_factory=list)
+
+
+class CoachOpinionV23(CoachOpinionV22):
+    evidence: list[OpinionEvidence] = Field(default_factory=list, min_length=4)
+
+
 class CoachingDecisionSchema(BaseModel):
     summary: str = Field(default="")
     yesterday_assessment: str = Field(default="")

@@ -7,8 +7,16 @@ import re
 from decimal import Decimal
 from typing import Any
 
-from llm.schemas import CoachOpinionV2, CoachOpinionV21, CoachOpinionV22, OpinionDraftV22, OpinionIntent
-from services.coach_facts import Fact, IntentDecision, unsupported_text_numbers
+from llm.schemas import (
+    CoachOpinionV2,
+    CoachOpinionV21,
+    CoachOpinionV22,
+    CoachOpinionV23,
+    OpinionDraftV22,
+    OpinionDraftV23,
+    OpinionIntent,
+)
+from services.coach_facts import Fact, IntentDecision, match_text_facts, unsupported_text_numbers
 
 NUMBER = re.compile(r"(?<![\w])(?:\d{1,2}:\d{2}|\d+h\s*\d+m|\d+(?:\.\d+)?)(?![\d.:])", re.IGNORECASE)
 
@@ -103,7 +111,7 @@ def unsupported_evidence(opinion: CoachOpinionV21, context: dict[str, Any]) -> t
 
 
 def opinion_rule_errors(opinion: CoachOpinionV2, context: dict[str, Any]) -> tuple[str, ...]:
-    """Check v2.1 rules that depend on the selected activity's evidence."""
+    """Check versioned opinion rules that depend on the activity context."""
     errors: list[str] = []
     if opinion.intent is None or opinion.intent.planned != context.get("planned_intent"):
         errors.append("intent.planned must match planned_intent")
@@ -143,6 +151,36 @@ def opinion_rule_errors(opinion: CoachOpinionV2, context: dict[str, Any]) -> tup
                           *(item.aspect + " " + item.word for item in opinion.verdicts)]).casefold()
     if any(term and term in judgement for term in goal_terms):
         errors.append("long-term goal belongs only in recommendations")
+    if isinstance(opinion, CoachOpinionV23):
+        facts = {fact["id"]: fact["display"] for fact in context.get("facts_pack") or []}
+        if laps.get("available") or stream.get("available"):
+            if not 2 <= len(opinion.worked) <= 4:
+                errors.append("worked needs 2–4 items when laps or streams exist")
+            if not 1 <= len(opinion.fix) <= 3:
+                errors.append("fix needs 1–3 items when laps or streams exist")
+        if any(fact_id == "READINESS" or fact_id.startswith(("HRV_", "RHR_", "SLEEP_", "LOAD_"))
+               for fact_id in facts) and not opinion.sections.recovery.strip():
+            errors.append("recovery section is required when recovery or load facts exist")
+        status = facts.get("LOAD_RATIO_STATUS", "")
+        if status.startswith(("below", "above")) and re.sub(r"\s+", "", status.casefold()) not in re.sub(
+                r"\s+", "", opinion.sections.recovery.casefold()):
+            errors.append("recovery section must state the out-of-range load ratio status")
+        if "CONSERVATIVE_START" in facts:
+            pacing_text = " ".join((opinion.assessment, opinion.sections.pacing,
+                                    *(item.lead + " " + item.detail for item in opinion.worked)))
+            compact = re.sub(r"\s+", "", pacing_text.casefold())
+            first_pace = re.sub(r"\s+", "", facts.get("FIRST_FULL_KM_PACE", "").casefold())
+            if "conservative" not in pacing_text.casefold() or not first_pace or first_pace not in compact:
+                errors.append("mention the conservative first kilometre with its pace")
+        if opinion.intent and opinion.intent.planned is None and opinion.intent.detected not in {"easy", "recovery"}:
+            cap = facts.get("ZONE_Z2_UPPER_BPM")
+            if cap is None or not any(
+                "if this was meant as an easy run," in (item.lead + " " + item.detail).casefold()
+                and re.sub(r"\s+", "", cap.casefold()) in re.sub(
+                    r"\s+", "", (item.lead + " " + item.detail).casefold())
+                for item in opinion.fix
+            ):
+                errors.append("fix needs the conditional easy-run line with the Z2 upper bpm fact")
     return tuple(errors)
 
 
@@ -189,3 +227,78 @@ def assemble_opinion(draft: OpinionDraftV22, facts: list[Fact], decision: Intent
                       "source": by_id[fact_id]["source"]} for fact_id in draft.evidence_ids],
     })
     return CoachOpinionV22.model_validate(payload)
+
+
+def collect_v23_evidence_ids(draft: OpinionDraftV23, facts: list[Fact]) -> list[str]:
+    """Resolve numeric claims and per-recommendation targets to known fact IDs."""
+    by_id = {fact["id"]: fact for fact in facts}
+    ids = list(draft.evidence_ids)
+    errors = [f"Unknown evidence ID: {fact_id}" for fact_id in ids if fact_id not in by_id]
+    if len(ids) != len(set(ids)):
+        errors.append("Duplicate evidence IDs")
+    texts = [draft.headline, draft.conclusion, draft.assessment,
+             *(item.word for item in draft.verdicts),
+             *(item.lead + " " + item.detail for item in (*draft.worked, *draft.fix)),
+             *draft.sections.model_dump().values()]
+    for recommendation in draft.recommendations:
+        rec_ids = recommendation.evidence_ids
+        errors.extend(f"Unknown recommendation evidence ID: {fact_id}" for fact_id in rec_ids
+                      if fact_id not in by_id)
+        if len(rec_ids) != len(set(rec_ids)):
+            errors.append("Duplicate recommendation evidence IDs")
+        target_ids = [fact_id for fact_id in rec_ids if fact_id in by_id and (
+            "PACE" in fact_id or "DURATION" in fact_id or fact_id.endswith("UPPER_BPM")
+            or fact_id == "Z2_LOWER_HALF_CAP")]
+        compact_text = re.sub(r"\s+", "", recommendation.text.casefold())
+        if not any(re.sub(r"\s+", "", by_id[fact_id]["display"].casefold()) in compact_text
+                   for fact_id in target_ids):
+            errors.append("recommendation needs a cited pace, duration or HR-cap target in its text")
+        if re.search(r"\bnext (?:easy |steady |tempo |recovery )?(?:run|session)\b", recommendation.text,
+                     re.IGNORECASE) and recommendation.action != "add_to_plan":
+            errors.append("a next session requires add_to_plan")
+        if recommendation.action == "add_to_plan":
+            session = recommendation.session
+            duration = f"{session.duration_min} min"
+            hr_cap = f"{session.hr_cap_bpm} bpm"
+            for value in (duration, hr_cap):
+                if not any(fact["display"] == value for fact in facts):
+                    errors.append(f"Unsupported session target: {value}")
+            texts.append(f"{duration}; {hr_cap}")
+        texts.append(recommendation.text)
+        ids.extend(fact_id for fact_id in rec_ids if fact_id not in ids)
+    for item in texts:
+        matched, unsupported = match_text_facts(item, facts, tuple(ids))
+        ids.extend(fact_id for fact_id in matched if fact_id not in ids)
+        if unsupported:
+            errors.append("Unsupported numbers: " + ", ".join(unsupported))
+    z2_cap = by_id.get("ZONE_Z2_UPPER_BPM")
+    if z2_cap is not None:
+        cap_display = re.sub(r"\s+", "", z2_cap["display"].casefold())
+        for item in draft.fix:
+            line = (item.lead + " " + item.detail).casefold()
+            if ("if this was meant as an easy run," in line
+                    and cap_display in re.sub(r"\s+", "", line)
+                    and "ZONE_Z2_UPPER_BPM" not in ids):
+                ids.append("ZONE_Z2_UPPER_BPM")
+    if errors:
+        raise ValueError("; ".join(errors))
+    return ids
+
+
+def assemble_opinion_v23(draft: OpinionDraftV23, facts: list[Fact], decision: IntentDecision,
+                         planned_intent: str | None, data_notes: list[str]) -> CoachOpinionV23:
+    """Assemble the stored v2 contract from a validated v2.3 draft."""
+    ids = collect_v23_evidence_ids(draft, facts)
+    by_id = {fact["id"]: fact for fact in facts}
+    payload = draft.model_dump(exclude={"evidence_ids", "recommendations"})
+    payload.update({
+        "schema_version": 2,
+        "confidence": "medium",
+        "intent": {"planned": planned_intent, "detected": decision.intent},
+        "data_notes": list(data_notes),
+        "recommendations": [{"text": item.text, "action": item.action, "session": item.session.model_dump()}
+                            for item in draft.recommendations],
+        "evidence": [{"metric": by_id[fact_id]["metric"], "value": by_id[fact_id]["display"],
+                      "source": by_id[fact_id]["source"]} for fact_id in ids],
+    })
+    return CoachOpinionV23.model_validate(payload)

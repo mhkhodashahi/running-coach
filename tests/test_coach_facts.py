@@ -8,6 +8,7 @@ from services.coach_facts import (
     build_data_notes,
     build_facts,
     detect_intent,
+    match_text_facts,
     unsupported_text_numbers,
 )
 
@@ -38,7 +39,12 @@ def context() -> dict:
         },
         "metrics_snapshot": {
             "activity_session": {"hr_zones": zones, "hrmax": {"value": 200}},
-            "readiness": {"score": {"value": 72.4}},
+            "readiness": {
+                "score": {"value": 72.4},
+                "components": [{"name": name, "score": {"value": score}}
+                               for name, score in (("hrv", 60.2), ("rhr", 70.4),
+                                                   ("sleep", 90.0), ("load", 80.5))],
+            },
             "current_health": {
                 "hrv": {"value": 60}, "resting_hr": {"value": 48},
                 "sleep_duration": {"value": 7.5},
@@ -76,6 +82,7 @@ def test_build_facts_formats_session_zones_kilometres_and_snapshot():
     assert facts["KM5_AVG_HR"]["display"] == "150 bpm"
     assert facts["FIRST_FULL_KM"]["display"] == "km 1"
     assert facts["LAST_FULL_KM"]["display"] == "km 5"
+    assert facts["CONSERVATIVE_START"]["display"] == "yes"
     assert facts["LAP_CADENCE_RANGE"]["display"] == "160–168 spm"
     assert facts["PARTIAL_LAP_DISTANCE"]["display"] == "3.20 m"
     assert facts["RECENT_MEDIAN_PACE"]["display"] == "6:35 /km"
@@ -88,6 +95,31 @@ def test_build_facts_formats_session_zones_kilometres_and_snapshot():
     assert facts["SLEEP_CURRENT"]["display"] == "7:30 h"
     assert facts["SLEEP_VS_BASELINE"]["display"] == "+0:30 h"
     assert facts["LOAD_RATIO"]["display"] == "1.16"
+    assert facts["LOAD_RATIO_STATUS"]["display"] == "in safe range 0.8–1.3"
+    assert [facts[f"READINESS_{name}_SCORE"]["display"] for name in ("HRV", "RHR", "SLEEP", "LOAD")] == [
+        "60.2/100", "70.4/100", "90.0/100", "80.5/100",
+    ]
+    for zone, lower, upper in (("Z1", "100 bpm", "119 bpm"), ("Z2", "120 bpm", "139 bpm"),
+                               ("Z3", "140 bpm", "159 bpm"), ("Z4", "160 bpm", "179 bpm"),
+                               ("Z5", "180 bpm", "no upper bpm limit")):
+        assert facts[f"ZONE_{zone}_LOWER_BPM"]["display"] == lower
+        assert facts[f"ZONE_{zone}_UPPER_BPM"]["display"] == upper
+
+
+@pytest.mark.parametrize("ratio,status", [(0.79, "below"), (0.8, "in"), (1.3, "in"), (1.31, "above")])
+def test_load_status_uses_readiness_safe_range(ratio, status):
+    data = context()
+    data["metrics_snapshot"]["load"]["ratio"]["value"] = ratio
+    assert as_map(build_facts(10, data))["LOAD_RATIO_STATUS"]["display"] == f"{status} safe range 0.8–1.3"
+
+
+def test_conservative_start_requires_slower_first_km_and_lower_hr():
+    data = context()
+    data["lap_analysis"]["laps"][0]["avg_hr"] = 140
+    assert "CONSERVATIVE_START" not in as_map(build_facts(10, data))
+    data["lap_analysis"]["laps"][0]["avg_hr"] = 125
+    data["lap_analysis"]["laps"][0]["pace"] = 6.1
+    assert "CONSERVATIVE_START" not in as_map(build_facts(10, data))
 
 
 def test_build_facts_rejects_wrong_activity_and_omits_missing_values():
@@ -97,7 +129,7 @@ def test_build_facts_rejects_wrong_activity_and_omits_missing_values():
     data["selected_activity"]["max_hr"] = None
     data["metrics_snapshot"]["load"]["ratio"]["value"] = None
     facts = as_map(build_facts(10, data))
-    assert "MAX_HR" not in facts and "LOAD_RATIO" not in facts
+    assert "MAX_HR" not in facts and "LOAD_RATIO" not in facts and "LOAD_RATIO_STATUS" not in facts
 
 
 @pytest.mark.parametrize("zones,avg_hr,last_km_hr,planned,expected", [
@@ -164,6 +196,13 @@ def test_numeric_claims_need_display_value_with_spacing_normalized():
     assert unsupported_text_numbers("Z3+ was 45.0 % and pace was 6:30/km.", facts) == ()
     assert unsupported_text_numbers("Heart rate reached 149 bpm.", facts) == ("149",)
     assert unsupported_text_numbers("I ran 135 without units.", facts) == ("135",)
+
+
+def test_match_text_facts_finds_uncited_display_and_rejects_new_number():
+    facts = build_facts(10, context())
+    matched, unsupported = match_text_facts("HR stayed under 139bpm; load is 1.88.", facts)
+    assert "ZONE_Z2_UPPER_BPM" in matched
+    assert unsupported == ("1.88",)
 
 
 def test_facts_are_pure_and_do_not_mutate_context():

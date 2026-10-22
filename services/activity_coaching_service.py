@@ -14,11 +14,11 @@ from config import Settings, get_settings
 from db import repository
 from db.session import session_scope
 from llm.factory import get_llm_client
-from llm.schemas import ActivityCoachInsightSchema, CoachOpinionV2, CoachOpinionV22, OpinionDraftV22
+from llm.schemas import ActivityCoachInsightSchema, CoachOpinionV2, CoachOpinionV23, OpinionDraftV23
 from metrics import get_daily_snapshot
 from services.coach_facts import IntentDecision, build_data_notes, build_facts, detect_intent
-from services.coach_opinion import assemble_opinion, load_opinion, opinion_rule_errors
-from services.coaching_prompts import ACTIVITY_OPINION_V22_SYSTEM_PROMPT
+from services.coach_opinion import assemble_opinion_v23, load_opinion, opinion_rule_errors
+from services.coaching_prompts import ACTIVITY_OPINION_V23_SYSTEM_PROMPT
 from services.goal_service import GoalService
 from services.running_coach_memory import (
     build_memory_entry_from_activity,
@@ -28,7 +28,7 @@ from services.running_coach_memory import (
 )
 from utils.formatting import format_pace_short
 
-PROMPT_VERSION = "opinion-v2.2"
+PROMPT_VERSION = "opinion-v2.3"
 
 
 @dataclass(frozen=True)
@@ -129,18 +129,18 @@ class ActivityCoachingService:
                                                  track_points.to_dict(orient="records"), activity.distance)
         return context, str(activity.date), getattr(activity, "activity_name", None)
 
-    def _request_opinion(self, context: dict[str, Any], running_memory: str | None) -> tuple[CoachOpinionV22, str | None]:
+    def _request_opinion(self, context: dict[str, Any], running_memory: str | None) -> tuple[CoachOpinionV23, str | None]:
         system_prompt, user_prompt = build_activity_coaching_prompt(context, running_memory)
         facts = context["facts_pack"]
         decision = IntentDecision(context["detected_intent"], tuple(context["intent_fact_ids"]))
         for attempt in range(2):
             try:
-                payload = self.llm_client.generate_json(system_prompt, user_prompt, response_schema=OpinionDraftV22)
+                payload = self.llm_client.generate_json(system_prompt, user_prompt, response_schema=OpinionDraftV23)
             except Exception as exc:
                 raise RuntimeError(f"Activity coaching model unavailable: {exc}") from exc
             try:
-                draft = OpinionDraftV22.model_validate(payload)
-                opinion = assemble_opinion(draft, facts, decision, context["planned_intent"], context["data_notes"])
+                draft = OpinionDraftV23.model_validate(payload)
+                opinion = assemble_opinion_v23(draft, facts, decision, context["planned_intent"], context["data_notes"])
                 rule_errors = opinion_rule_errors(opinion, context)
                 if rule_errors:
                     raise ValueError("; ".join(rule_errors))
@@ -202,7 +202,7 @@ def build_activity_coaching_prompt(context: dict[str, Any], running_memory: str 
         "intent_fact_ids": context.get("intent_fact_ids", []),
         "data_notes_from_code": context.get("data_notes", []),
     }
-    return ACTIVITY_OPINION_V22_SYSTEM_PROMPT, f"{running_memory_block(running_memory)}\n{json.dumps(prompt_input, default=_json_default)}"
+    return ACTIVITY_OPINION_V23_SYSTEM_PROMPT, f"{running_memory_block(running_memory)}\n{json.dumps(prompt_input, default=_json_default)}"
 
 
 def _opinion_metrics_snapshot(snapshot: Any, activity_id: int) -> dict[str, Any]:

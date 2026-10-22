@@ -13,11 +13,20 @@ from sqlalchemy.orm import sessionmaker
 from config import get_settings
 from db import repository
 from db.models import ActivityCoachingOpinionHistory, Base
-from llm.schemas import CoachOpinionV2, CoachOpinionV21, CoachOpinionV22, OpinionDraftV22
+from llm.schemas import (
+    CoachOpinionV2,
+    CoachOpinionV21,
+    CoachOpinionV22,
+    CoachOpinionV23,
+    OpinionDraftV22,
+    OpinionDraftV23,
+)
 from services.activity_coaching_service import ActivityCoachingService, _update_activity_memory
 from services.coach_facts import IntentDecision
 from services.coach_opinion import (
     assemble_opinion,
+    assemble_opinion_v23,
+    collect_v23_evidence_ids,
     draft_validation_errors,
     load_opinion,
     opinion_rule_errors,
@@ -179,13 +188,22 @@ def draft_payload(*, worked=None, evidence_ids=None):
     }
 
 
+def draft_payload_v23(**changes):
+    payload = draft_payload()
+    payload["worked"] = [
+        {"lead": "You kept the effort controlled.", "detail": ""},
+        {"lead": "You stayed patient.", "detail": ""},
+    ]
+    return payload | changes
+
+
 def service_for(opinion_db, llm):
     return ActivityCoachingService(settings=replace(get_settings(), db_path=opinion_db[1]), llm_client=llm)
 
 
-def test_valid_v22_saved_and_plan_passed_to_prompt(opinion_db):
+def test_valid_v23_saved_and_plan_passed_to_prompt(opinion_db):
     factory, _, activity_id = opinion_db
-    llm = MockLLM(draft_payload())
+    llm = MockLLM(draft_payload_v23())
     service = service_for(opinion_db, llm)
     with factory.begin() as session:
         repository.set_activity_planned_intent(session, activity_id=activity_id, user_id=1, planned_intent="easy")
@@ -195,10 +213,10 @@ def test_valid_v22_saved_and_plan_passed_to_prompt(opinion_db):
     assert result["schema_version"] == 2
     assert '"planned_intent": "easy"' in llm.prompts[0][1]
     assert "<running_memory>" in llm.prompts[0][1]
-    assert llm.prompts[0][2] is OpinionDraftV22
+    assert llm.prompts[0][2] is OpinionDraftV23
     with factory() as session:
         row = repository.get_activity_coaching_insight(session, activity_id, 1)
-        assert row.schema_version == "2" and row.prompt_version == "opinion-v2.2"
+        assert row.schema_version == "2" and row.prompt_version == "opinion-v2.3"
         assert row.validation_notes is None
         assert json.loads(row.payload_json)["intent"]["planned"] == "easy"
         assert json.loads(row.payload_json)["intent"]["detected"] == "recovery"
@@ -268,7 +286,7 @@ def test_regeneration_archives_legacy_payload_in_same_transaction(opinion_db):
                                                    prompt_context_json=context, model_provider="old", model_name="old")
     with factory.begin() as session:
         user = repository.get_or_create_default_user(session, 1)
-        service_for(opinion_db, MockLLM(draft_payload())).generate(session, user=user,
+        service_for(opinion_db, MockLLM(draft_payload_v23())).generate(session, user=user,
                                                                  activity_id=activity_id, regenerate=True)
     with factory() as session:
         history = session.scalars(select(ActivityCoachingOpinionHistory)).one()
@@ -373,9 +391,9 @@ def test_v21_closed_plan_session_and_verbatim_evidence():
         "wrong.path=6:00 /km",)
 
 
-def test_v22_unknown_fact_id_retry_rejects_without_saving(opinion_db):
+def test_v23_unknown_fact_id_retry_rejects_without_saving(opinion_db):
     factory, _, activity_id = opinion_db
-    bad = draft_payload(evidence_ids=["DISTANCE", "DURATION", "AVG_PACE", "NOT_A_FACT"])
+    bad = draft_payload_v23(evidence_ids=["DISTANCE", "DURATION", "AVG_PACE", "NOT_A_FACT"])
     llm = MockLLM(bad, bad)
     with factory.begin() as session:
         user = repository.get_or_create_default_user(session, 1)
@@ -395,9 +413,9 @@ def test_v22_unknown_fact_id_retry_rejects_without_saving(opinion_db):
     {"evidence_ids": []},
     {"recommendations": [{"text": "Rest", "action": "none", "session": {"sport": "running"}}]},
 ])
-def test_v22_mocked_generation_retries_invalid_rules(opinion_db, change):
+def test_v23_mocked_generation_retries_invalid_rules(opinion_db, change):
     factory, _, activity_id = opinion_db
-    bad = draft_payload() | change
+    bad = draft_payload_v23() | change
     llm = MockLLM(bad, bad)
     service = service_for(opinion_db, llm)
     with factory.begin() as session:
@@ -470,6 +488,106 @@ def test_v22_rejects_unknown_ids_duplicate_ids_and_uncited_numbers():
     assert "Unsupported numbers: 40.0" in draft_validation_errors(draft, facts)
     numeric["evidence_ids"].append("Z3_PLUS_SHARE")
     assert draft_validation_errors(OpinionDraftV22.model_validate(numeric), facts) == ()
+
+
+def test_v23_attaches_uncited_numeric_fact_and_strips_internal_recommendation_ids():
+    facts = invented_draft_facts()
+    payload = draft_payload_v23()
+    payload["assessment"] = "I saw 40.0% in Z3+."
+    payload["recommendations"] = [{"text": "Hold 6:00 /km on a similar session.", "action": "none",
+                                   "session": {}, "evidence_ids": ["AVG_PACE"]}]
+    draft = OpinionDraftV23.model_validate(payload)
+    ids = collect_v23_evidence_ids(draft, facts)
+    assert "Z3_PLUS_SHARE" in ids
+    opinion = assemble_opinion_v23(draft, facts, IntentDecision("steady", ("Z3_PLUS_SHARE",)), None, [])
+    assert isinstance(opinion, CoachOpinionV23)
+    assert any(item.value == "40.0%" for item in opinion.evidence)
+    assert opinion.recommendations[0].model_dump() == {
+        "text": "Hold 6:00 /km on a similar session.", "action": "none", "session": {},
+    }
+
+
+def test_v23_conditional_easy_cap_cites_zone_bound_even_when_lap_hr_matches():
+    facts = invented_draft_facts() + [
+        {"id": "KM1_AVG_HR", "metric": "Lap HR", "display": "139 bpm", "source": "lap"},
+        {"id": "ZONE_Z2_UPPER_BPM", "metric": "Z2 upper cap", "display": "139 bpm", "source": "zones"},
+    ]
+    draft = OpinionDraftV23.model_validate(draft_payload_v23(fix=[
+        {"lead": "If this was meant as an easy run, cap HR at 139 bpm.", "detail": ""},
+    ]))
+    assert "ZONE_Z2_UPPER_BPM" in collect_v23_evidence_ids(draft, facts)
+
+
+@pytest.mark.parametrize("change,expected", [
+    ({"assessment": "I saw 41.0% in Z3+."}, "Unsupported numbers"),
+    ({"recommendations": [{"text": "Hold 6:00 /km.", "action": "none", "session": {},
+                           "evidence_ids": ["MISSING"]}]}, "Unknown recommendation evidence ID"),
+    ({"recommendations": [{"text": "Be patient.", "action": "none", "session": {},
+                           "evidence_ids": ["AVG_PACE"]}]}, "cited pace, duration or HR-cap target"),
+    ({"recommendations": [{"text": "For the next run, hold 6:00 /km.", "action": "none",
+                           "session": {}, "evidence_ids": ["AVG_PACE"]}]}, "next session requires add_to_plan"),
+])
+def test_v23_rejects_unsupported_numbers_and_bad_recommendations(change, expected):
+    draft = OpinionDraftV23.model_validate(draft_payload_v23(**change))
+    with pytest.raises(ValueError, match=expected):
+        collect_v23_evidence_ids(draft, invented_draft_facts())
+
+
+def test_v23_add_to_plan_requires_closed_session_targets_from_facts():
+    facts = invented_draft_facts() + [
+        {"id": "PLAN_DURATION_MIN", "metric": "Plan duration", "display": "30 min", "source": "activity"},
+        {"id": "ZONE_Z2_UPPER_BPM", "metric": "Z2 cap", "display": "139 bpm", "source": "zones"},
+    ]
+    recommendation = {"text": "For the next easy run, cap at 139 bpm for 30 min.",
+                      "action": "add_to_plan", "session": {"sport": "running", "intent": "easy",
+                      "duration_min": 30, "hr_cap_bpm": 139},
+                      "evidence_ids": ["ZONE_Z2_UPPER_BPM", "PLAN_DURATION_MIN"]}
+    draft = OpinionDraftV23.model_validate(draft_payload_v23(recommendations=[recommendation]))
+    assert {"ZONE_Z2_UPPER_BPM", "PLAN_DURATION_MIN"} <= set(collect_v23_evidence_ids(draft, facts))
+    with pytest.raises(ValidationError):
+        OpinionDraftV23.model_validate(draft_payload_v23(recommendations=[
+            recommendation | {"session": recommendation["session"] | {"extra": 1}},
+        ]))
+    with pytest.raises(ValueError, match="Unsupported session target"):
+        collect_v23_evidence_ids(draft, invented_draft_facts())
+
+
+def invented_v23_opinion_and_context():
+    payload = v2_payload(planned=None, worked=[
+        {"lead": "You started conservatively at 6:25 /km.", "detail": ""},
+        {"lead": "You finished steadily.", "detail": ""},
+    ])
+    payload["intent"] = {"planned": None, "detected": "steady"}
+    payload["fix"] = [{"lead": "If this was meant as an easy run, cap HR at 139 bpm.", "detail": ""}]
+    payload["sections"] = {"recovery": "Load ratio is above safe range 0.8–1.3; keep tomorrow light."}
+    context = invented_v21_context()
+    context["planned_intent"] = None
+    context["facts_pack"] = [
+        {"id": "CONSERVATIVE_START", "display": "yes"},
+        {"id": "FIRST_FULL_KM_PACE", "display": "6:25 /km"},
+        {"id": "ZONE_Z2_UPPER_BPM", "display": "139 bpm"},
+        {"id": "LOAD_RATIO_STATUS", "display": "above safe range 0.8–1.3"},
+        {"id": "READINESS", "display": "70/100"},
+    ]
+    return CoachOpinionV23.model_validate(payload), context
+
+
+def test_v23_context_rules_accept_required_recovery_easy_condition_and_start():
+    opinion, context = invented_v23_opinion_and_context()
+    assert opinion_rule_errors(opinion, context) == ()
+
+
+@pytest.mark.parametrize("field,value,expected", [
+    ("worked", [{"lead": "You started conservatively at 6:25 /km.", "detail": ""}], "worked needs"),
+    ("fix", [{"lead": "Ease off next time.", "detail": ""}], "conditional easy-run"),
+    ("sections", {"recovery": ""}, "recovery section is required"),
+    ("sections", {"recovery": "Recovery looks fine."}, "out-of-range load ratio status"),
+])
+def test_v23_context_rules_reject_missing_contract_parts(field, value, expected):
+    opinion, context = invented_v23_opinion_and_context()
+    changed = opinion.model_dump()
+    changed[field] = value
+    assert expected in " ".join(opinion_rule_errors(CoachOpinionV23.model_validate(changed), context))
 
 
 def test_v21_saved_row_still_reads_without_revalidation_or_rewrite():

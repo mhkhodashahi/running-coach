@@ -185,9 +185,9 @@ def test_activity_coaching_prompt_uses_profile_and_required_analysis_categories(
         running_memory="# Coach Running Memory\n- Easy days stay easy.",
     )
 
-    assert "OpinionDraftV22" in system_prompt
-    assert "Code has already determined detected_intent" in system_prompt
-    assert "Do not return schema_version" in system_prompt
+    assert "OpinionDraftV23" in system_prompt
+    assert "Code supplies detected_intent" in system_prompt
+    assert "Do not return those fields" in system_prompt
     assert "Invented example" in system_prompt
     assert '"display": "6:00 /km"' in user_prompt
     assert '"display": "6:12 /km"' in user_prompt

@@ -52,6 +52,15 @@ Goals/races ┘   (scheduler)                                (tools over the DB)
 - **Coach agent**: an LLM with tools `get_daily_snapshot(date)`, `get_activity(id)` (summary, laps, samples downsampled to 10 s), `compare_sessions(id)` (same sport, distance ±15%, same route if known), `plan_week(start_date)`. Output is validated JSON (below), stored in SQLite, and only regenerated on request.
 - **Guardrails** (plain code, run after the LLM): force "rest" when illness signals stack up (RHR ≥ +7 bpm vs 7-day average AND HRV ≤ −15% vs baseline); cap weekly load increase at 10%; strip any diagnosis-like wording; when in doubt, suggest seeing a doctor.
 
+## Coach changes and approvals
+
+- **The coach proposes, the athlete decides.** The coach never changes the plan, goals or settings by itself. Every change is a proposal: a list of changes, each with its reason and cited fact IDs, each accepted or rejected on its own. The athlete can ask for a revision in plain words.
+- **Undo is always possible.** Accepting a proposal stores a snapshot of the affected plan first; "Undo last coach changes" restores it. Logged activities are never changed.
+- **Stale proposals cannot overwrite.** If the plan changed after a proposal was created, the proposal is marked stale and cannot be applied; the athlete requests a fresh one.
+- **Scheduled reviews only suggest.** The morning check, the 17:00 day review and the weekly review never apply anything; they end with a proposal to accept or ignore.
+- **What the coach can see** is a fixed, documented list: activities, laps, samples, health metrics, the metrics snapshot, goals, planned intents, the plan, effort ratings and the running memory. Never: credentials, tokens, other users' data, raw device IDs.
+- **Limits:** one coach job per user at a time, and a daily cap on LLM calls per user (config `COACH_DAILY_CALL_LIMIT`).
+
 ## Coach opinion JSON (per activity)
 
 ```json
