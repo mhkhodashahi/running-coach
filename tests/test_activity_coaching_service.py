@@ -185,19 +185,16 @@ def test_activity_coaching_prompt_uses_profile_and_required_analysis_categories(
         running_memory="# Coach Running Memory\n- Easy days stay easy.",
     )
 
-    assert "CoachOpinionV21" in system_prompt
-    assert "Detect the session intent" in system_prompt
-    assert "Copy planned_intent exactly" in system_prompt
-    assert "otherwise detected intent" in system_prompt
+    assert "OpinionDraftV22" in system_prompt
+    assert "Code has already determined detected_intent" in system_prompt
+    assert "Do not return schema_version" in system_prompt
     assert "Invented example" in system_prompt
-    assert '"age": 35' in user_prompt
-    assert '"weight_kg": 75.0' in user_prompt
-    assert '"pace": "6:00"' in user_prompt
-    assert '"recent_median_pace": "6:12"' in user_prompt
-    assert "pace_min_per_km" not in user_prompt
+    assert '"display": "6:00 /km"' in user_prompt
+    assert '"display": "6:12 /km"' in user_prompt
+    assert '"athlete_profile"' not in user_prompt
+    assert '"selected_activity"' not in user_prompt
     assert '"planned_intent": null' in user_prompt
-    assert "Invented Easy" in user_prompt
-    assert "custom_zone_distribution" in user_prompt
+    assert "Invented Easy" not in user_prompt
     assert "<running_memory>" in user_prompt
     assert "Easy days stay easy." in user_prompt
 

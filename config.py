@@ -39,6 +39,7 @@ class Settings:
     llm_provider: str
     openai_api_key: str
     openai_model: str
+    remote_athlete_data_approved: bool
     ollama_base_url: str
     ollama_model: str
     default_user_id: int
@@ -87,6 +88,7 @@ def get_settings() -> Settings:
         llm_provider=os.getenv("LLM_PROVIDER", "ollama").strip().lower(),
         openai_api_key=os.getenv("OPENAI_API_KEY", "").strip(),
         openai_model=os.getenv("OPENAI_MODEL", "gpt-6-luna").strip(),
+        remote_athlete_data_approved=os.getenv("REMOTE_ATHLETE_DATA_APPROVED", "").strip().lower() == "true",
         ollama_base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434").strip(),
         ollama_model=os.getenv("OLLAMA_MODEL", "qwen3:14b").strip(),
         default_user_id=int(os.getenv("DEFAULT_USER_ID", "1")),

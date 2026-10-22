@@ -36,6 +36,8 @@ Read this file before every task. If a task conflicts with it, stop and say so.
 - **FIT import:** status pending. The owner believes it exists; the audit found none.
 - **Sports:** `metrics/sports.py` maps `activities.type` to running | volleyball | football | gym | other | excluded. Meditation is excluded (no load, not a session). Walking is "other": it counts toward load but is never recommended. Only running, volleyball, football and gym are recommendable.
 - **Readiness v1** constants live in `metrics/readiness.py` and are tuned by the owner; do not change them unasked.
+- **Facts before words:** code, not the LLM, builds a facts pack for each session: rounded display values with IDs, the detected intent (from HR-zone distribution), and data-quality notes. The LLM judges and writes, and cites fact IDs; code turns those IDs into the stored `evidence`. The LLM never writes `data_notes`, never sets `intent.detected`, and never introduces a number that is not in the facts pack.
+- **LLM provider:** the owner chooses per install (local Ollama or a remote API). Never send athlete data to a remote provider without the owner's explicit approval in config.
 
 ## Target architecture
 

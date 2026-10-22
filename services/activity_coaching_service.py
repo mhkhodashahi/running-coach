@@ -14,10 +14,11 @@ from config import Settings, get_settings
 from db import repository
 from db.session import session_scope
 from llm.factory import get_llm_client
-from llm.schemas import ActivityCoachInsightSchema, CoachOpinionV2, CoachOpinionV21
+from llm.schemas import ActivityCoachInsightSchema, CoachOpinionV2, CoachOpinionV22, OpinionDraftV22
 from metrics import get_daily_snapshot
-from services.coach_opinion import load_opinion, opinion_rule_errors, unsupported_evidence, unsupported_numbers
-from services.coaching_prompts import ACTIVITY_OPINION_V21_SYSTEM_PROMPT
+from services.coach_facts import IntentDecision, build_data_notes, build_facts, detect_intent
+from services.coach_opinion import assemble_opinion, load_opinion, opinion_rule_errors
+from services.coaching_prompts import ACTIVITY_OPINION_V22_SYSTEM_PROMPT
 from services.goal_service import GoalService
 from services.running_coach_memory import (
     build_memory_entry_from_activity,
@@ -27,7 +28,7 @@ from services.running_coach_memory import (
 )
 from utils.formatting import format_pace_short
 
-PROMPT_VERSION = "opinion-v2.1"
+PROMPT_VERSION = "opinion-v2.2"
 
 
 @dataclass(frozen=True)
@@ -117,43 +118,38 @@ class ActivityCoachingService:
             activities_df=activities, health_df=health, track_points=track_points, laps=laps,
             snapshot=compact, hr_zones=self.settings.hr_zones,
         )
+        facts = build_facts(activity.id, context)
+        decision = detect_intent(facts, context["planned_intent"])
+        if decision is None:
+            raise ValueError("Cannot detect session intent without enough HR-zone evidence; sync activity detail first.")
+        context["facts_pack"] = facts
+        context["detected_intent"] = decision.intent
+        context["intent_fact_ids"] = list(decision.fact_ids)
+        context["data_notes"] = build_data_notes(laps.to_dict(orient="records"),
+                                                 track_points.to_dict(orient="records"), activity.distance)
         return context, str(activity.date), getattr(activity, "activity_name", None)
 
-    def _request_opinion(self, context: dict[str, Any], running_memory: str | None) -> tuple[CoachOpinionV21, str | None]:
+    def _request_opinion(self, context: dict[str, Any], running_memory: str | None) -> tuple[CoachOpinionV22, str | None]:
         system_prompt, user_prompt = build_activity_coaching_prompt(context, running_memory)
+        facts = context["facts_pack"]
+        decision = IntentDecision(context["detected_intent"], tuple(context["intent_fact_ids"]))
         for attempt in range(2):
             try:
-                payload = self.llm_client.generate_json(system_prompt, user_prompt, response_schema=CoachOpinionV21)
+                payload = self.llm_client.generate_json(system_prompt, user_prompt, response_schema=OpinionDraftV22)
             except Exception as exc:
                 raise RuntimeError(f"Activity coaching model unavailable: {exc}") from exc
             try:
-                opinion = CoachOpinionV21.model_validate(payload)
+                draft = OpinionDraftV22.model_validate(payload)
+                opinion = assemble_opinion(draft, facts, decision, context["planned_intent"], context["data_notes"])
                 rule_errors = opinion_rule_errors(opinion, context)
                 if rule_errors:
                     raise ValueError("; ".join(rule_errors))
-                break
+                return opinion, None
             except (ValidationError, ValueError) as exc:
                 if attempt:
                     raise RuntimeError(f"Coach opinion validation failed after retry: {exc}") from exc
-                user_prompt += f"\nValidation errors: {exc}. Return corrected v2 JSON only."
-        issues = _evidence_issues(opinion, context)
-        if issues:
-            user_prompt += ("\nEvidence errors: " + "; ".join(issues)
-                            + ". Copy evidence values from context paths verbatim or remove unsupported claims."
-                            " Return corrected v2 JSON only.")
-            try:
-                retry = CoachOpinionV21.model_validate(
-                    self.llm_client.generate_json(system_prompt, user_prompt, response_schema=CoachOpinionV21))
-                if opinion_rule_errors(retry, context):
-                    raise ValueError("retry violated v2.1 rules")
-                opinion = retry
-                issues = _evidence_issues(opinion, context)
-            except Exception:
-                pass
-        if issues:
-            opinion = opinion.model_copy(update={"confidence": "low"})
-            return opinion, "; ".join(issues)
-        return opinion, None
+                user_prompt += f"\nValidation errors: {exc}. Correct the cited facts and return the draft JSON only."
+        raise RuntimeError("Coach opinion validation failed after retry")
 
     def _save(self, session: Any, user_id: int, activity_id: int, opinion: CoachOpinionV2,
               context: dict[str, Any], notes: str | None, regenerate: bool) -> None:
@@ -194,14 +190,19 @@ class ActivityCoachingService:
 
 
 def build_activity_coaching_prompt(context: dict[str, Any], running_memory: str | None = None) -> tuple[str, str]:
-    return ACTIVITY_OPINION_V21_SYSTEM_PROMPT, f"{running_memory_block(running_memory)}\n{json.dumps(context, default=_json_default)}"
-
-
-def _evidence_issues(opinion: CoachOpinionV21, context: dict[str, Any]) -> tuple[str, ...]:
-    numbers = unsupported_numbers(opinion)
-    values = unsupported_evidence(opinion, context)
-    return tuple(["Unsupported numbers: " + ", ".join(numbers)] if numbers else []) + tuple(
-        "Unsupported evidence: " + value for value in values)
+    facts = context.get("facts_pack") or build_facts(context.get("selected_activity", {}).get("id", 0), context)
+    decision = context.get("detected_intent")
+    if decision is None:
+        detected = detect_intent(facts, context.get("planned_intent"))
+        decision = detected.intent if detected else None
+    prompt_input = {
+        "facts": facts,
+        "planned_intent": context.get("planned_intent"),
+        "detected_intent": decision,
+        "intent_fact_ids": context.get("intent_fact_ids", []),
+        "data_notes_from_code": context.get("data_notes", []),
+    }
+    return ACTIVITY_OPINION_V22_SYSTEM_PROMPT, f"{running_memory_block(running_memory)}\n{json.dumps(prompt_input, default=_json_default)}"
 
 
 def _opinion_metrics_snapshot(snapshot: Any, activity_id: int) -> dict[str, Any]:
@@ -213,6 +214,7 @@ def _opinion_metrics_snapshot(snapshot: Any, activity_id: int) -> dict[str, Any]
             "activity_id": session.activity_id,
             "sport": session.sport,
             "load": asdict(session.load),
+            "hrmax": asdict(session.hrmax),
             "hr_zones": [{"zone": zone.name, "seconds": zone.seconds.value,
                           "percent": zone.percent.value} for zone in session.zones],
             "hr_zone_source": "metrics.session_metrics / activity_track_points.heart_rate",

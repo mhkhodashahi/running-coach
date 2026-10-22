@@ -133,6 +133,37 @@ class CoachOpinionV21(CoachOpinionV2):
     evidence: list[OpinionEvidence] = Field(default_factory=list, min_length=4, max_length=10)
 
 
+class OpinionVerdictV22(OpinionVerdict):
+    aspect: Literal["Pacing", "Intensity vs plan", "Aerobic stimulus", "HR control"]
+
+    @field_validator("word")
+    @classmethod
+    def runner_word(cls, value: str) -> str:
+        words = value.split()
+        if not 1 <= len(words) <= 3 or not all(word.isalpha() for word in words):
+            raise ValueError("word must be one to three plain words")
+        return value
+
+
+class OpinionDraftV22(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    headline: str
+    conclusion: str = ""
+    assessment: str
+    verdicts: list[OpinionVerdictV22] = Field(default_factory=list)
+    worked: list[OpinionPoint] = Field(default_factory=list)
+    fix: list[OpinionPoint] = Field(default_factory=list)
+    sections: OpinionSections = Field(default_factory=OpinionSections)
+    recommendations: list[OpinionRecommendationV21] = Field(default_factory=list)
+    evidence_ids: list[str] = Field(min_length=4, max_length=10)
+
+
+class CoachOpinionV22(CoachOpinionV2):
+    verdicts: list[OpinionVerdictV22] = Field(default_factory=list)
+    recommendations: list[OpinionRecommendationV21] = Field(default_factory=list)
+    evidence: list[OpinionEvidence] = Field(default_factory=list, min_length=4, max_length=10)
+
+
 class CoachingDecisionSchema(BaseModel):
     summary: str = Field(default="")
     yesterday_assessment: str = Field(default="")

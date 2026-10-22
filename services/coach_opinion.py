@@ -7,7 +7,8 @@ import re
 from decimal import Decimal
 from typing import Any
 
-from llm.schemas import CoachOpinionV2, CoachOpinionV21, OpinionIntent
+from llm.schemas import CoachOpinionV2, CoachOpinionV21, CoachOpinionV22, OpinionDraftV22, OpinionIntent
+from services.coach_facts import Fact, IntentDecision, unsupported_text_numbers
 
 NUMBER = re.compile(r"(?<![\w])(?:\d{1,2}:\d{2}|\d+h\s*\d+m|\d+(?:\.\d+)?)(?![\d.:])", re.IGNORECASE)
 
@@ -101,7 +102,7 @@ def unsupported_evidence(opinion: CoachOpinionV21, context: dict[str, Any]) -> t
                  if scalars.get(item.source) != item.value)
 
 
-def opinion_rule_errors(opinion: CoachOpinionV21, context: dict[str, Any]) -> tuple[str, ...]:
+def opinion_rule_errors(opinion: CoachOpinionV2, context: dict[str, Any]) -> tuple[str, ...]:
     """Check v2.1 rules that depend on the selected activity's evidence."""
     errors: list[str] = []
     if opinion.intent is None or opinion.intent.planned != context.get("planned_intent"):
@@ -113,7 +114,9 @@ def opinion_rule_errors(opinion: CoachOpinionV21, context: dict[str, Any]) -> tu
     available = {
         "Pacing": bool(selected.get("pace") or laps.get("available") or stream.get("pace")),
         "Intensity vs plan": bool(selected.get("avg_hr") or selected.get("training_effect") or stream.get("heart_rate")),
-        "Aerobic stimulus": bool(selected.get("aerobic_effect") or session.get("load") or session.get("hr_zones")),
+        "Aerobic stimulus": bool(selected.get("aerobic_effect")
+                                 or (session.get("load") or {}).get("value") is not None
+                                 or any(zone.get("percent") is not None for zone in session.get("hr_zones") or [])),
         "HR control": bool(selected.get("avg_hr") or stream.get("heart_rate")),
     }
     expected = [aspect for aspect, exists in available.items() if exists]
@@ -141,3 +144,48 @@ def opinion_rule_errors(opinion: CoachOpinionV21, context: dict[str, Any]) -> tu
     if any(term and term in judgement for term in goal_terms):
         errors.append("long-term goal belongs only in recommendations")
     return tuple(errors)
+
+
+def draft_validation_errors(draft: OpinionDraftV22, facts: list[Fact]) -> tuple[str, ...]:
+    """Reject unknown citations and any model-written number absent from facts."""
+    known = {fact["id"] for fact in facts}
+    errors = [f"Unknown evidence ID: {fact_id}" for fact_id in draft.evidence_ids if fact_id not in known]
+    if len(set(draft.evidence_ids)) != len(draft.evidence_ids):
+        errors.append("Duplicate evidence IDs")
+    cited = [fact for fact in facts if fact["id"] in draft.evidence_ids]
+    texts = [draft.headline, draft.conclusion, draft.assessment,
+             *(item.word for item in draft.verdicts),
+             *(item.lead + " " + item.detail for item in (*draft.worked, *draft.fix)),
+             *draft.sections.model_dump().values(),
+             *(item.text for item in draft.recommendations)]
+    for text in texts:
+        unsupported = unsupported_text_numbers(text, cited)
+        if unsupported:
+            errors.append("Unsupported numbers: " + ", ".join(unsupported))
+    for item in draft.recommendations:
+        if item.action == "add_to_plan":
+            duration = item.session.duration_min
+            hr_cap = item.session.hr_cap_bpm
+            unsupported = unsupported_text_numbers(f"{duration} min; {hr_cap} bpm", cited)
+            if unsupported:
+                errors.append("Unsupported session numbers: " + ", ".join(unsupported))
+    return tuple(errors)
+
+
+def assemble_opinion(draft: OpinionDraftV22, facts: list[Fact], decision: IntentDecision,
+                     planned_intent: str | None, data_notes: list[str]) -> CoachOpinionV22:
+    """Convert cited fact IDs to immutable stored evidence, intent and notes."""
+    errors = draft_validation_errors(draft, facts)
+    if errors:
+        raise ValueError("; ".join(errors))
+    by_id = {fact["id"]: fact for fact in facts}
+    payload = draft.model_dump(exclude={"evidence_ids"})
+    payload.update({
+        "schema_version": 2,
+        "confidence": "medium",
+        "intent": {"planned": planned_intent, "detected": decision.intent},
+        "data_notes": list(data_notes),
+        "evidence": [{"metric": by_id[fact_id]["metric"], "value": by_id[fact_id]["display"],
+                      "source": by_id[fact_id]["source"]} for fact_id in draft.evidence_ids],
+    })
+    return CoachOpinionV22.model_validate(payload)

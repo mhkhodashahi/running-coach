@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from llm.ollama_client import OLLAMA_INPUT_TOKEN_LIMIT, OllamaClient, estimate_input_tokens
-from llm.schemas import CoachOpinionV2, CoachOpinionV21
+from llm.schemas import CoachOpinionV2, CoachOpinionV21, OpinionDraftV22
 
 
 def test_ollama_client_rejects_prompts_at_token_limit(monkeypatch) -> None:
@@ -62,3 +62,25 @@ def test_ollama_v21_uses_closed_schema_and_configured_timeout(monkeypatch) -> No
     schema = seen["json"]["format"]
     assert schema["$defs"]["EmptyOpinionSession"]["additionalProperties"] is False
     assert schema["$defs"]["PlannedOpinionSession"]["additionalProperties"] is False
+
+
+def test_ollama_v22_sends_draft_only_schema(monkeypatch) -> None:
+    seen = {}
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"response": '{"headline":"Invented"}'}
+
+    def post(*args, **kwargs):
+        seen.update(kwargs["json"])
+        return Response()
+
+    monkeypatch.setattr("llm.ollama_client.requests.post", post)
+    OllamaClient(base_url="http://localhost:11434", model="synthetic").generate_json(
+        "system", "prompt", response_schema=OpinionDraftV22)
+    assert "evidence_ids" in seen["format"]["properties"]
+    assert "data_notes" not in seen["format"]["properties"]
+    assert "intent" not in seen["format"]["properties"]
