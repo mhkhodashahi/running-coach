@@ -38,9 +38,13 @@ def compare_legacy(database: Path, user_id: int, as_of: date, timezone: str, sle
         old_acute = float(old_load[old_load.date >= pd.Timestamp(day - timedelta(days=6))].training_load.sum())
         new = get_daily_snapshot(day, database=database, user_id=user_id, timezone=timezone, sleep_goal_hours=sleep_goal_hours)
         old_readiness = readiness_score(runs, recovery, profile[0])["score"]
+        components = {component.name: component.score.value for component in new.readiness.components}
         rows.append({"date": day.isoformat(), "old_readiness": old_readiness if isfinite(old_readiness) else None,
                      "new_readiness": new.readiness.score.value, "old_7d_load_arbitrary_units": old_acute,
                      "new_7d_load_trimp": new.load.acute.value, "new_load_ratio": new.load.ratio.value,
+                     "new_hrv_score": components["hrv"], "new_rhr_score": components["rhr"],
+                     "new_sleep_score": components["sleep"], "new_load_score": components["load"],
+                     "new_illness_flag": new.readiness.illness_flag.value,
                      "acute_observed_days": new.load.acute.provenance.n_days,
                      "chronic_observed_days": new.load.chronic.provenance.n_days})
     return rows

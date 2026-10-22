@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from llm.ollama_client import OLLAMA_INPUT_TOKEN_LIMIT, OllamaClient, estimate_input_tokens
+from llm.schemas import CoachOpinionV2
 
 
 def test_ollama_client_rejects_prompts_at_token_limit(monkeypatch) -> None:
@@ -18,3 +19,23 @@ def test_ollama_client_rejects_prompts_at_token_limit(monkeypatch) -> None:
 
 def test_ollama_token_estimate_counts_words_and_punctuation() -> None:
     assert estimate_input_tokens("Run easy, then stop.") == 6
+
+
+def test_ollama_sends_json_schema_as_format(monkeypatch) -> None:
+    sent = {}
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"response": '{"headline":"Test"}'}
+
+    def post(*args, **kwargs):
+        sent.update(kwargs["json"])
+        return Response()
+
+    monkeypatch.setattr("llm.ollama_client.requests.post", post)
+    client = OllamaClient(base_url="http://localhost:11434", model="synthetic")
+    client.generate_json("system", "prompt", response_schema=CoachOpinionV2)
+    assert sent["format"]["properties"]["schema_version"]["const"] == 2

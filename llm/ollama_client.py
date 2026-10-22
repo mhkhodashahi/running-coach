@@ -9,6 +9,7 @@ import requests
 from pydantic import BaseModel
 
 from llm.base import LLMClient, extract_json
+from llm.schemas import CoachOpinionV2
 
 OLLAMA_INPUT_TOKEN_LIMIT = 7500
 _TOKEN_PATTERN = re.compile(r"\w+|[^\w\s]", re.UNICODE)
@@ -49,7 +50,7 @@ class OllamaClient(LLMClient):
                 "model": self.model,
                 "system": system_prompt,
                 "prompt": user_prompt,
-                "format": "json",
+                "format": CoachOpinionV2.model_json_schema() if response_schema is CoachOpinionV2 else "json",
                 "stream": False,
             },
             timeout=120,

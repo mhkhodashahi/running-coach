@@ -7,6 +7,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from llm.base import LLMClient, extract_json
+from llm.schemas import CoachOpinionV2, OpenAICoachOpinionV2
 
 
 class OpenAIClient(LLMClient):
@@ -26,23 +27,27 @@ class OpenAIClient(LLMClient):
     ) -> dict[str, Any]:
         if response_schema is not None:
             try:
+                output_schema = OpenAICoachOpinionV2 if response_schema is CoachOpinionV2 else response_schema
                 response = self.client.responses.parse(
                     model=self.model,
                     instructions=system_prompt,
                     input=user_prompt,
-                    text_format=response_schema,
+                    text_format=output_schema,
+                    store=False,
                 )
-                parsed = response.output_parsed
-                if parsed is not None:
-                    return parsed.model_dump()
+                if response.output_parsed is None:
+                    raise ValueError("Structured model response was empty")
+                return response.output_parsed.model_dump()
             except Exception:
-                pass
+                if response_schema is CoachOpinionV2:
+                    raise
 
         response = self.client.responses.create(
             model=self.model,
             instructions=system_prompt,
-            input=user_prompt,
+            input=f"Return only JSON.\n\n{user_prompt}",
             text={"format": {"type": "json_object"}},
+            store=False,
         )
         text = response.output_text
         payload = extract_json(text)

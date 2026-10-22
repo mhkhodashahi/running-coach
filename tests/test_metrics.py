@@ -26,7 +26,7 @@ from metrics.reader import get_daily_snapshot, local_day, read_inputs
 from metrics.readiness import load_score, readiness
 from metrics.report import compare_legacy
 from metrics.snapshot import build_daily_snapshot
-from metrics.sports import sport_category
+from metrics.sports import RECOMMENDABLE_SPORTS, sport_category
 
 DAY = date(2026, 5, 29)
 ZONE = "Europe/Berlin"
@@ -126,10 +126,41 @@ def test_timezone_and_future_track_point_cutoff():
 
 def test_sport_mapping_and_unknowns():
     for raw, expected in ((" RUNNING ", "running"), ("soccer", "football"), ("volleyball", "volleyball"),
-                          ("strength_training", "gym"), ("walking", "other"), ("new sport", "other")):
+                          ("strength_training", "gym"), ("walking", "other"), ("new sport", "other"),
+                          ("meditation", "excluded"), ("breathwork", "excluded"),
+                          ("yoga_nidra", "excluded")):
         assert sport_category(raw, DAY) == expected
+    assert RECOMMENDABLE_SPORTS == ("running", "volleyball", "football", "gym")
+    assert "other" not in RECOMMENDABLE_SPORTS
+    assert "excluded" not in RECOMMENDABLE_SPORTS
     snapshot = build_daily_snapshot(Inputs(PROFILE, (), (activity(kind="new sport"),)), DAY, ZONE, 7.5)
     assert snapshot.unknown_types == ("new sport",)
+
+
+@pytest.mark.parametrize("kind", ("meditation", "breathwork", "yoga_nidra"))
+def test_excluded_activity_has_no_session_or_load(kind):
+    excluded = activity(kind=kind)
+    assert session_metrics(excluded, PROFILE, health_history(), DAY, ZONE) is None
+    snapshot = build_daily_snapshot(Inputs(PROFILE, (), (excluded,)), DAY, ZONE, 7.5)
+    assert snapshot.sessions == ()
+    assert snapshot.unknown_types == ()
+    today = [row for row in snapshot.sport_loads if row.period == "daily" and row.load.provenance.window_end == DAY.isoformat()]
+    assert {row.sport for row in today} == {*RECOMMENDABLE_SPORTS, "other"}
+    assert all(row.load.value == 0 for row in today)
+    assert snapshot.load.acute.value == 0
+
+
+def test_walking_contributes_to_other_load_without_being_recommendable():
+    snapshot = build_daily_snapshot(Inputs(PROFILE, health_history(),
+                                           (activity(kind="walking"), activity(2, kind="meditation"))), DAY, ZONE, 7.5)
+    assert len(snapshot.sessions) == 1
+    assert snapshot.sessions[0].sport == "other"
+    assert snapshot.sessions[0].load.value is not None
+    assert snapshot.sessions[0].load.value > 0
+    assert "other" not in RECOMMENDABLE_SPORTS
+    other_today = next(row for row in snapshot.sport_loads if row.period == "daily" and row.sport == "other"
+                       and row.load.provenance.window_end == DAY.isoformat())
+    assert other_today.load.value == pytest.approx(snapshot.sessions[0].load.value)
 
 
 def test_acute_chronic_ratio_and_sport_sums():
@@ -250,4 +281,10 @@ def test_reader_local_dates_future_and_legacy_comparison(database):
     assert len(rows) == 7
     assert rows[-1]["old_7d_load_arbitrary_units"] == 9
     assert rows[-1]["new_7d_load_trimp"] == pytest.approx(10 * 0.5 * 0.64 * math.exp(.96))
+    assert {"new_hrv_score", "new_rhr_score", "new_sleep_score", "new_load_score",
+            "new_load_ratio", "new_illness_flag"} <= rows[-1].keys()
+    snapshot = get_daily_snapshot(DAY, database=database, user_id=1, timezone=ZONE)
+    assert rows[-1]["new_hrv_score"] == next(c.score.value for c in snapshot.readiness.components if c.name == "hrv")
+    assert rows[-1]["new_load_ratio"] == snapshot.load.ratio.value
+    assert rows[-1]["new_illness_flag"] == snapshot.readiness.illness_flag.value
     assert database.read_bytes() == before

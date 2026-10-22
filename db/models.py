@@ -4,7 +4,18 @@ from __future__ import annotations
 
 from datetime import UTC, date, datetime
 
-from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    Date,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -60,7 +71,10 @@ class Activity(Base):
     """Training activity imported from Garmin or CSV."""
 
     __tablename__ = "activities"
-    __table_args__ = (UniqueConstraint("user_id", "external_id", name="uq_activities_user_external"),)
+    __table_args__ = (
+        UniqueConstraint("user_id", "external_id", name="uq_activities_user_external"),
+        CheckConstraint("planned_intent IN ('recovery','easy','steady','tempo','race')", name="ck_activities_planned_intent"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True, nullable=False)
@@ -79,11 +93,13 @@ class Activity(Base):
     aerobic_effect: Mapped[float | None] = mapped_column(Float)
     anaerobic_effect: Mapped[float | None] = mapped_column(Float)
     notes: Mapped[str | None] = mapped_column(Text)
+    planned_intent: Mapped[str | None] = mapped_column(String(16))
 
     user: Mapped[User] = relationship(back_populates="activities")
     track_points: Mapped[list[ActivityTrackPoint]] = relationship(back_populates="activity", cascade="all, delete-orphan")
     laps: Mapped[list[ActivityLap]] = relationship(back_populates="activity", cascade="all, delete-orphan")
     coaching_insights: Mapped[list[ActivityCoachingInsight]] = relationship(back_populates="activity", cascade="all, delete-orphan")
+    coaching_opinion_history: Mapped[list[ActivityCoachingOpinionHistory]] = relationship(back_populates="activity", cascade="all, delete-orphan")
     prediction_snapshots: Mapped[list[PredictionSnapshot]] = relationship(back_populates="activity", cascade="all, delete-orphan")
 
 
@@ -205,11 +221,29 @@ class ActivityCoachingInsight(Base):
     model_name: Mapped[str | None] = mapped_column(String(80))
     schema_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
     prompt_version: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    validation_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow, onupdate=_utcnow)
 
     user: Mapped[User] = relationship(back_populates="activity_coaching_insights")
     activity: Mapped[Activity] = relationship(back_populates="coaching_insights")
+
+
+class ActivityCoachingOpinionHistory(Base):
+    __tablename__ = "activity_coaching_opinion_history"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    activity_id: Mapped[int] = mapped_column(ForeignKey("activities.id"), index=True, nullable=False)
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False)
+    prompt_context_json: Mapped[str] = mapped_column(Text, nullable=False)
+    schema_version: Mapped[str | None] = mapped_column(String(32))
+    prompt_version: Mapped[str | None] = mapped_column(String(80))
+    model_provider: Mapped[str | None] = mapped_column(String(32))
+    model_name: Mapped[str | None] = mapped_column(String(80))
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    replaced_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
+
+    activity: Mapped[Activity] = relationship(back_populates="coaching_opinion_history")
 
 
 class PredictionSnapshot(Base):

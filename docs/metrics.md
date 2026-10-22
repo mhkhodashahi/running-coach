@@ -65,11 +65,15 @@ lowercased, then matched exactly (no substring heuristics).
 | volleyball | volleyball, beach_volleyball |
 | football | soccer, football |
 | gym | strength_training, indoor_cardio, gym |
-| other | cycling, walking, lap_swimming, open_water_swimming, meditation |
+| other | cycling, walking, lap_swimming, open_water_swimming |
+| excluded | meditation, breathwork, yoga_nidra |
 
 Unrecognized types map to `other` and are reported separately. Unknown-type
 listing covers the user's history through `as_of`; session details cover the
-28-day load window. Other sports still contribute HR-derived load.
+28-day load window. Other sports, including walking, still contribute HR-derived
+load but are not recommendation candidates. Only `RECOMMENDABLE_SPORTS`
+(running, volleyball, football, gym) are candidates. Excluded activities are
+not sessions and contribute zero load.
 
 ## Health Baselines
 
@@ -148,7 +152,8 @@ are shared: the old UI helper's median-step gap imputation is not reused.
 
 Daily per-sport sums cover the 28 days ending on `as_of`. Weekly per-sport
 sums cover four successive seven-day blocks ending on `as_of`, not ISO weeks.
-All five categories are represented.
+All five load-bearing categories are represented. Excluded activity days count
+as observed zero-load days, even without health data.
 
 A date with health data or an activity is treated as observed. On an observed
 date, a category with no recorded sessions has zero load (assumed rest for that

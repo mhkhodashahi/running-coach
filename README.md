@@ -49,7 +49,7 @@ OLLAMA_MODEL=qwen3:14b
 
 # OpenAI
 OPENAI_API_KEY=
-OPENAI_MODEL=gpt-5-mini
+OPENAI_MODEL=gpt-6-luna
 
 # Garmin Connect sync
 GARMIN_EMAIL=
@@ -115,8 +115,12 @@ OpenAI:
 ```bash
 LLM_PROVIDER=openai
 OPENAI_API_KEY=your_openai_api_key
-OPENAI_MODEL=gpt-5-mini
+OPENAI_MODEL=gpt-6-luna
 ```
+
+OpenAI uses the Responses API with response storage disabled. Set `LLM_PROVIDER=openai`
+to use it; Ollama remains the default. `OPENAI_MODEL` can also be set to
+`gpt-6.1-sol` or `gpt-6-astra` for more demanding coaching workloads.
 
 Ollama:
 

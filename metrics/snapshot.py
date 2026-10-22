@@ -7,7 +7,7 @@ from metrics.baselines import FIELDS, current_health, health_baseline
 from metrics.load import daily_sport_loads, load_ratio, session_metrics, weekly_sport_loads
 from metrics.models import DailySnapshot, Inputs
 from metrics.readiness import readiness
-from metrics.sports import SPORT_MAP
+from metrics.sports import SPORT_MAP, sport_category
 
 
 def build_daily_snapshot(inputs: Inputs, as_of: date, timezone: str, sleep_goal_hours: float) -> DailySnapshot:
@@ -16,9 +16,12 @@ def build_daily_snapshot(inputs: Inputs, as_of: date, timezone: str, sleep_goal_
     activities = tuple(row for row in inputs.activities if row.day <= as_of)
     baselines = tuple(health_baseline(health, field, days, as_of) for field in FIELDS for days in (7, 28))
     current = {field: current_health(health, field, as_of) for field in FIELDS}
-    sessions = tuple(session_metrics(row, inputs.profile, health, as_of, timezone)
-                     for row in sorted(activities, key=lambda a: (a.day, a.id)) if row.day >= as_of - timedelta(days=27))
-    daily = daily_sport_loads(sessions, health, as_of)
+    recent = tuple(row for row in sorted(activities, key=lambda a: (a.day, a.id))
+                   if row.day >= as_of - timedelta(days=27))
+    sessions = tuple(session for row in recent
+                     if (session := session_metrics(row, inputs.profile, health, as_of, timezone)) is not None)
+    excluded_days = frozenset(row.day for row in recent if sport_category(row.type, as_of) == "excluded")
+    daily = daily_sport_loads(sessions, health, as_of, excluded_days)
     load = load_ratio(daily, as_of)
     ready = readiness(current, {(b.field, b.days): b.mean for b in baselines}, load.ratio, sleep_goal_hours, as_of)
     unknown = tuple(sorted({row.type for row in activities if row.type.strip().lower() not in SPORT_MAP}))

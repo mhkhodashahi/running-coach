@@ -4,7 +4,79 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
+
+Intent = Literal["recovery", "easy", "steady", "tempo", "race"]
+
+
+class OpinionIntent(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    planned: Intent | None = None
+    detected: Intent
+
+
+class OpinionVerdict(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    aspect: str
+    rating: Literal["good", "watch", "poor"]
+    word: str
+
+
+class OpinionPoint(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    lead: str
+    detail: str = ""
+
+
+class OpinionSections(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    pacing: str = ""
+    aerobic: str = ""
+    recovery: str = ""
+    mental: str = ""
+
+
+class OpinionRecommendation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    text: str
+    action: Literal["add_to_plan", "reminder", "none"] = "none"
+    session: dict = Field(default_factory=dict)
+
+
+class OpinionEvidence(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    metric: str
+    value: str
+    source: str
+
+
+class CoachOpinionV2(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    schema_version: Literal[2] = 2
+    headline: str
+    confidence: Literal["high", "medium", "low"]
+    conclusion: str = ""
+    assessment: str
+    intent: OpinionIntent
+    verdicts: list[OpinionVerdict] = Field(default_factory=list)
+    worked: list[OpinionPoint] = Field(default_factory=list)
+    fix: list[OpinionPoint] = Field(default_factory=list)
+    data_notes: list[str] = Field(default_factory=list)
+    sections: OpinionSections = Field(default_factory=OpinionSections)
+    recommendations: list[OpinionRecommendation] = Field(default_factory=list)
+    evidence: list[OpinionEvidence] = Field(default_factory=list)
+
+
+class OpenAIOpinionSession(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class OpenAIOpinionRecommendation(OpinionRecommendation):
+    session: OpenAIOpinionSession = Field(default_factory=OpenAIOpinionSession)
+
+
+class OpenAICoachOpinionV2(CoachOpinionV2):
+    recommendations: list[OpenAIOpinionRecommendation] = Field(default_factory=list)
 
 
 class CoachingDecisionSchema(BaseModel):

@@ -1,10 +1,19 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime
+from pathlib import Path
 
 import pandas as pd
 
 from services.coaching_prompts import build_calendar_context, build_decision_prompt, build_telegram_prompt
+
+
+def test_tracked_prompt_source_has_no_athlete_profile_or_custom_zone_literals() -> None:
+    source = (Path(__file__).parents[1] / "services/coaching_prompts.py").read_text()
+    assert "Known athlete context" not in source
+    assert "Use these custom heart-rate zones" not in source
+    assert not re.search(r"Zone [1-5].{0,35}\d{2,3}-\d{2,3} bpm", source)
 
 
 class DummyGoal:
@@ -57,7 +66,7 @@ def test_telegram_prompt_requires_specific_training_and_recovery_data() -> None:
     assert "Sleep score 66" in user_prompt
 
 
-def test_decision_prompt_uses_elite_coach_context_and_custom_zones() -> None:
+def test_decision_prompt_has_generic_coach_context_without_personal_zones() -> None:
     system_prompt, _ = build_decision_prompt(
         decision_type="daily",
         user=DummyUser(),
@@ -69,23 +78,21 @@ def test_decision_prompt_uses_elite_coach_context_and_custom_zones() -> None:
         rules=[],
     )
 
-    assert "elite endurance running coach" in system_prompt
-    assert "Zone 2 Easy/Aerobic: 110-128 bpm" in system_prompt
-    assert "ego pacing" in system_prompt
-    assert "brutally honest conclusion" in system_prompt
+    assert "evidence-led endurance coach" in system_prompt
+    assert "Never assume an" in system_prompt
+    assert "110-128 bpm" not in system_prompt
     assert "Map the requested eight-part coaching analysis" in system_prompt
 
 
-def test_telegram_prompt_uses_elite_coach_style() -> None:
+def test_telegram_prompt_uses_generic_coach_style() -> None:
     system_prompt, _ = build_telegram_prompt(
         user=DummyUser(),
         goal=DummyGoal(),
         decision_payload={"summary": "Controlled aerobic day."},
     )
 
-    assert "elite endurance running coach" in system_prompt
-    assert "Zone 4 Threshold: 147-165 bpm" in system_prompt
-    assert "brutally honest conclusion" in system_prompt
+    assert "evidence-led endurance coach" in system_prompt
+    assert "147-165 bpm" not in system_prompt
 
 
 def test_decision_prompt_sends_all_activities_from_latest_day() -> None:

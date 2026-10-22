@@ -69,7 +69,7 @@ def banister_trimp(minutes: float, heart_rate: float, resting_hr: float, max_hr:
 
 def session_metrics(activity: Activity, profile: Profile, health: tuple[HealthDay, ...], as_of: date,
                     timezone: str) -> Session | None:
-    if activity.day > as_of:
+    if activity.day > as_of or sport_category(activity.type, as_of) == "excluded":
         return None
     session_day = activity.day
     maximum = maximum_hr(profile, session_day)
@@ -101,13 +101,14 @@ def session_metrics(activity: Activity, profile: Profile, health: tuple[HealthDa
                           int(bool(intervals)), "observed_track_coverage"), tuple(zones))
 
 
-def daily_sport_loads(sessions: tuple[Session, ...], health: tuple[HealthDay, ...], as_of: date) -> tuple[SportLoad, ...]:
+def daily_sport_loads(sessions: tuple[Session, ...], health: tuple[HealthDay, ...], as_of: date,
+                      excluded_days: frozenset[date] = frozenset()) -> tuple[SportLoad, ...]:
     results = []
     health_days = {row.day for row in health if row.day <= as_of}
     for offset in range(27, -1, -1):
         day = as_of - timedelta(days=offset)
         day_sessions = [s for s in sessions if s.day == day.isoformat()]
-        observed = day in health_days or bool(day_sessions)
+        observed = day in health_days or day in excluded_days or bool(day_sessions)
         for sport in SPORTS:
             selected = [s for s in day_sessions if s.sport == sport]
             known = observed and all(s.load.value is not None for s in selected)

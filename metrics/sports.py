@@ -3,7 +3,8 @@
 from datetime import date
 from types import MappingProxyType
 
-SPORTS = ("running", "volleyball", "football", "gym", "other")
+RECOMMENDABLE_SPORTS = ("running", "volleyball", "football", "gym")
+SPORTS = (*RECOMMENDABLE_SPORTS, "other")
 SPORT_MAP = MappingProxyType({
     "running": "running", "trail_running": "running", "treadmill_running": "running",
     "treadmill": "running", "track_running": "running", "virtual_run": "running",
@@ -11,7 +12,8 @@ SPORT_MAP = MappingProxyType({
     "soccer": "football", "football": "football",
     "strength_training": "gym", "indoor_cardio": "gym", "gym": "gym",
     "cycling": "other", "walking": "other", "lap_swimming": "other",
-    "open_water_swimming": "other", "meditation": "other",
+    "open_water_swimming": "other",
+    "meditation": "excluded", "breathwork": "excluded", "yoga_nidra": "excluded",
 })
 
 

@@ -13,6 +13,7 @@ from config import get_settings
 from db.models import (
     Activity,
     ActivityCoachingInsight,
+    ActivityCoachingOpinionHistory,
     ActivityLap,
     ActivityTrackPoint,
     CoachingDecision,
@@ -353,8 +354,12 @@ def upsert_activity_coaching_insight(
     prompt_context_json: str,
     model_provider: str | None,
     model_name: str | None,
+    schema_version: str | None = None,
+    prompt_version: str | None = None,
+    validation_notes: str | None = None,
+    archive_existing: bool = False,
 ) -> ActivityCoachingInsight:
-    """Create or replace the stored coach opinion for one activity."""
+    """Create or replace an opinion, archiving the prior row when requested."""
 
     insight = get_activity_coaching_insight(session, activity_id=activity_id, user_id=user_id)
     if insight is None:
@@ -366,17 +371,48 @@ def upsert_activity_coaching_insight(
             prompt_context_json=prompt_context_json,
             model_provider=model_provider,
             model_name=model_name,
+            schema_version=schema_version,
+            prompt_version=prompt_version,
+            validation_notes=validation_notes,
         )
         session.add(insight)
     else:
+        if archive_existing:
+            session.add(ActivityCoachingOpinionHistory(
+                activity_id=activity_id,
+                payload_json=insight.payload_json,
+                prompt_context_json=insight.prompt_context_json,
+                schema_version=insight.schema_version,
+                prompt_version=insight.prompt_version,
+                model_provider=insight.model_provider,
+                model_name=insight.model_name,
+                created_at=insight.created_at,
+                replaced_at=datetime.now(UTC).replace(tzinfo=None),
+            ))
         insight.summary = summary
         insight.payload_json = payload_json
         insight.prompt_context_json = prompt_context_json
         insight.model_provider = model_provider
         insight.model_name = model_name
-        insight.updated_at = datetime.utcnow()
+        insight.schema_version = schema_version
+        insight.prompt_version = prompt_version
+        insight.validation_notes = validation_notes
+        insight.created_at = datetime.now(UTC).replace(tzinfo=None)
+        insight.updated_at = insight.created_at
     session.flush()
     return insight
+
+
+def set_activity_planned_intent(session: Session, *, activity_id: int, user_id: int,
+                                planned_intent: str | None) -> None:
+    """Save an athlete-selected plan without touching the stored opinion."""
+    if planned_intent not in (None, "recovery", "easy", "steady", "tempo", "race"):
+        raise ValueError("Invalid planned intent")
+    activity = get_activity(session, activity_id=activity_id, user_id=user_id)
+    if activity is None:
+        raise ValueError("Activity not found")
+    activity.planned_intent = planned_intent
+    session.flush()
 
 
 def upsert_prediction_snapshot(
@@ -482,7 +518,7 @@ def activities_dataframe(session: Session, user_id: int) -> pd.DataFrame:
         """
         SELECT id, user_id, external_id, activity_name, date, type, distance, duration, pace,
                avg_hr, max_hr, cadence, elevation, training_effect,
-               aerobic_effect, anaerobic_effect, notes
+               aerobic_effect, anaerobic_effect, notes, planned_intent
         FROM activities
         WHERE user_id = :user_id
         ORDER BY date ASC
