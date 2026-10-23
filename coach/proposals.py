@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+import warnings
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import replace
@@ -76,11 +77,37 @@ def _virtual_fixed(connection: sqlite3.Connection, user_id: int, start: date,
     return result
 
 
+def _virtual_protected(connection: sqlite3.Connection, user_id: int, start: date,
+                       existing: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Project recurring athlete habits to stable non-team days, one per day."""
+    team_days = {item["date"] for item in existing if item.get("origin") == "fixed" and
+                 item.get("status", "planned") == "planned"}
+    order = (0, 2, 4, 6, 1, 3, 5)
+    available = [start + timedelta(days=offset) for offset in order]
+    available.sort(key=lambda day: day.isoformat() in team_days)
+    habits = connection.execute("SELECT * FROM protected_habits WHERE user_id=? AND active=1 ORDER BY id",
+                                (user_id,)).fetchall()
+    if sum(row["per_week"] for row in habits) > 7:
+        raise ValueError("More than seven protected sessions cannot fit in one week")
+    result = []
+    for habit in habits:
+        for _ in range(habit["per_week"]):
+            day = available.pop(0)
+            result.append({"id": None, "user_id": user_id, "date": day.isoformat(),
+                           "sport": habit["sport"], "intent": habit["intent"],
+                           "duration_min": habit["duration_min"], "hr_cap_bpm": None,
+                           "notes": "Protected habit", "origin": "protected", "status": "planned",
+                           "linked_activity_id": None, "fixed_commitment_id": None,
+                           "protected_habit_id": habit["id"]})
+    return result
+
+
 def get_week(database: Path, user_id: int, start: date) -> dict[str, Any]:
     start = monday(start)
     with _db(database) as connection:
         sessions = _rows(connection, user_id, start)
         sessions.extend(_virtual_fixed(connection, user_id, start, sessions))
+        sessions.extend(_virtual_protected(connection, user_id, start, sessions))
         sessions.sort(key=lambda item: (item["date"], item["id"] or 0))
         return {"week_start": start.isoformat(), "version": _version(connection, user_id), "sessions": sessions}
 
@@ -89,6 +116,41 @@ def list_commitments(database: Path, user_id: int) -> list[dict[str, Any]]:
     with _db(database) as connection:
         return [dict(row) for row in connection.execute(
             "SELECT * FROM fixed_commitments WHERE user_id=? ORDER BY weekday,start_time,id", (user_id,))]
+
+
+def list_protected_habits(database: Path, user_id: int) -> list[dict[str, Any]]:
+    with _db(database) as connection:
+        return [dict(row) for row in connection.execute(
+            "SELECT * FROM protected_habits WHERE user_id=? ORDER BY id", (user_id,))]
+
+
+def save_protected_habit(database: Path, user_id: int, *, sport: str, intent: str,
+                         duration_min: int, per_week: int, active: bool = True,
+                         habit_id: int | None = None) -> int:
+    if sport not in ("running", "gym", "football", "volleyball") or not 1 <= len(intent) <= 32:
+        raise ValueError("Invalid protected sport or intent")
+    if not 15 <= duration_min <= 300 or not 1 <= per_week <= 7:
+        raise ValueError("Protected duration must be 15-300 minutes and frequency 1-7 per week")
+    with _db(database) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        existing = connection.execute("SELECT id,per_week FROM protected_habits WHERE user_id=? AND active=1",
+                                      (user_id,)).fetchall()
+        total = sum(row["per_week"] for row in existing if row["id"] != habit_id) + (per_week if active else 0)
+        if total > 7:
+            raise ValueError("Protected habits cannot exceed seven sessions per week")
+        if habit_id is None:
+            cursor = connection.execute("INSERT INTO protected_habits(user_id,sport,intent,duration_min,per_week,active) "
+                                        "VALUES(?,?,?,?,?,?)",
+                                        (user_id, sport, intent, duration_min, per_week, int(active)))
+            habit_id = int(cursor.lastrowid)
+        else:
+            cursor = connection.execute("UPDATE protected_habits SET sport=?,intent=?,duration_min=?,per_week=?,"
+                                        "active=? WHERE id=? AND user_id=?",
+                                        (sport, intent, duration_min, per_week, int(active), habit_id, user_id))
+            if cursor.rowcount != 1:
+                raise ValueError("Protected habit not found")
+        _bump(connection, user_id)
+    return habit_id
 
 
 def _materialize(connection: sqlite3.Connection, user_id: int, start: date) -> int:
@@ -148,15 +210,25 @@ def save_commitment(database: Path, user_id: int, *, weekday: int, start_time: s
                 "VALUES(?,?,?,?,?,?,?)", (user_id, weekday, start_time, sport, kind, duration_min, int(active)))
             commitment_id = int(cursor.lastrowid)
         else:
+            old = connection.execute("SELECT active FROM fixed_commitments WHERE id=? AND user_id=?",
+                                     (commitment_id, user_id)).fetchone()
+            if old is None:
+                raise ValueError("Commitment not found")
             cursor = connection.execute(
                 "UPDATE fixed_commitments SET weekday=?,start_time=?,sport=?,kind=?,typical_duration_min=?,active=? "
                 "WHERE id=? AND user_id=?", (weekday, start_time, sport, kind, duration_min, int(active),
                                               commitment_id, user_id))
             if cursor.rowcount != 1:
                 raise ValueError("Commitment not found")
-            connection.execute("UPDATE plan_sessions SET date=date, sport=?,intent=?,duration_min=?,updated_at=? "
-                               "WHERE user_id=? AND fixed_commitment_id=? AND status='planned'",
-                               (sport, kind, duration_min, _now(), user_id, commitment_id))
+            existing = connection.execute("SELECT id,date,status FROM plan_sessions WHERE user_id=? "
+                                          "AND fixed_commitment_id=? AND status!='done'",
+                                          (user_id, commitment_id)).fetchall()
+            for planned in existing:
+                moved = monday(date.fromisoformat(planned["date"])) + timedelta(days=weekday)
+                status = "skipped" if not active else "planned" if not old["active"] else planned["status"]
+                connection.execute("UPDATE plan_sessions SET date=?,sport=?,intent=?,duration_min=?,status=?,"
+                                   "updated_at=? WHERE id=?", (moved.isoformat(), sport, kind,
+                                                                duration_min, status, _now(), planned["id"]))
         _bump(connection, user_id)
     return commitment_id
 
@@ -180,6 +252,18 @@ def manual_session(database: Path, user_id: int, item: dict[str, Any], *, sessio
                                 item.get("hr_cap_bpm"), item.get("notes"), _now(), session_id, user_id))
         _bump(connection, user_id)
     return session_id
+
+
+def skip_manual_session(database: Path, user_id: int, session_id: int) -> None:
+    """Athlete removes an unlogged non-fixed session from the active plan."""
+    with _db(database) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        cursor = connection.execute("UPDATE plan_sessions SET status='skipped',updated_at=? WHERE id=? "
+                                    "AND user_id=? AND origin!='fixed' AND status='planned'",
+                                    (_now(), session_id, user_id))
+        if cursor.rowcount != 1:
+            raise ValueError("Only an unlogged non-fixed session can be skipped")
+        _bump(connection, user_id)
 
 
 def _proposal_view(connection: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any]:
@@ -217,8 +301,8 @@ def list_proposals(database: Path, user_id: int, start: date) -> list[dict[str, 
 
 
 def _validate_changes(kind: str, facts: list[dict[str, str]], changes: list[dict[str, Any]]) -> None:
-    if kind not in ("weekly_plan", "change") or not changes or len(changes) > 10:
-        raise ValueError("A proposal needs 1-10 changes")
+    if kind not in ("weekly_plan", "change") or not changes or len(changes) > 14:
+        raise ValueError("A proposal needs 1-14 changes")
     known = {fact["id"] for fact in facts}
     for change in changes:
         item = change["session"]
@@ -231,6 +315,10 @@ def _validate_changes(kind: str, facts: list[dict[str, str]], changes: list[dict
         if re.search(r"\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\b", change["reason"]):
             raise ValueError("Fact IDs belong in fact_ids, not in the reason")
         _validate_session(item)
+        group_id = change.get("group_id")
+        if group_id is not None and (not isinstance(group_id, str) or not 1 <= len(group_id) <= 64 or
+                                     re.fullmatch(r"[A-Za-z0-9_-]+", group_id) is None):
+            raise ValueError("Invalid proposal group ID")
 
 
 def _insert_proposal(connection: sqlite3.Connection, user_id: int, kind: str, summary: str,
@@ -239,11 +327,12 @@ def _insert_proposal(connection: sqlite3.Connection, user_id: int, kind: str, su
                                 "facts_json,created_at) VALUES(?,?,?,'pending',?,?,?)",
                                 (user_id, kind, version, summary, json.dumps(facts), _now()))
     proposal_id = int(cursor.lastrowid)
-    for change in changes:
+    for index, change in enumerate(changes, start=1):
         connection.execute("INSERT INTO proposal_changes(proposal_id,change_type,session_json,reason,"
-                           "fact_ids_json,decision) VALUES(?,?,?,?,?,'pending')",
+                           "fact_ids_json,decision,group_id) VALUES(?,?,?,?,?,'pending',?)",
                            (proposal_id, change["change_type"], json.dumps(change["session"]),
-                            change["reason"], json.dumps(change["fact_ids"])))
+                            change["reason"], json.dumps(change["fact_ids"]),
+                            change.get("group_id") or f"change-{index}"))
     return proposal_id
 
 
@@ -257,7 +346,23 @@ def create_proposal(database: Path, user_id: int, kind: str, summary: str,
         if base_version is not None and base_version != current:
             raise ValueError("Plan changed while drafting; request a fresh proposal")
         proposal_id = _insert_proposal(connection, user_id, kind, summary, facts, changes, current)
-    return get_proposal(database, user_id, proposal_id)
+    result = get_proposal(database, user_id, proposal_id)
+    _notify_created(database, user_id, summary)
+    return result
+
+
+def _notify_created(database: Path, user_id: int, summary: str) -> None:
+    from config import get_settings
+    from services.telegram_service import TelegramService
+
+    settings = get_settings()
+    if (database.resolve() != settings.db_path.resolve() or user_id != settings.default_user_id or
+            not settings.telegram_bot_token or not settings.telegram_chat_id):
+        return
+    try:
+        TelegramService(settings).send_text(f"Coach proposal: {summary[:120]}. Review it in the app.")
+    except Exception:
+        warnings.warn("Coach proposal saved, but Telegram notification failed.", RuntimeWarning, stacklevel=2)
 
 
 def _public_row(row: dict[str, Any]) -> dict[str, Any]:
@@ -283,6 +388,11 @@ def apply(database: Path, user_id: int, proposal_id: int, accepted_change_ids: l
         ids = {row["id"] for row in changes}
         if selected - ids:
             raise ValueError("Unknown change ID")
+        groups: dict[str, set[int]] = {}
+        for row in changes:
+            groups.setdefault(row["group_id"] or f"legacy-{row['id']}", set()).add(row["id"])
+        if any(selected & members and not members <= selected for members in groups.values()):
+            raise ValueError("Select or reject every change in a dependency group together")
         if selected:
             from coach.planning import apply_draft, load_model, validate_week
             from config import get_settings
@@ -303,9 +413,27 @@ def apply(database: Path, user_id: int, proposal_id: int, accepted_change_ids: l
             for start, proposed in by_week.items():
                 before = _rows(connection, user_id, start)
                 before.extend(_virtual_fixed(connection, user_id, start, before))
-                candidate = apply_draft(before, proposed)
+                before.extend(_virtual_protected(connection, user_id, start, before))
+                candidate = apply_draft(before, proposed, allow_fixed_daily=proposal["kind"] == "change")
+                for change in proposed:
+                    item = change["session"]
+                    if change["change_type"] == "add":
+                        continue
+                    target = next((row for row in before if row.get("id") == item.get("id")), None)
+                    if target is None or target.get("status") == "done":
+                        raise ValueError("Target session is missing or logged")
+                    if target["origin"] == "fixed":
+                        decision = decisions.get(date.fromisoformat(item["date"]))
+                        daily_allowed = (proposal["kind"] == "change" and change["change_type"] == "modify" and
+                                         item["date"] == now.isoformat() and item["sport"] == target["sport"] and
+                                         item["duration_min"] == target["duration_min"] and
+                                         ((decision == "easy" and item["intent"] == "skills only" and
+                                           item.get("status", "planned") == "planned") or
+                                          (decision == "rest" and item.get("status") == "skipped")))
+                        if not daily_allowed:
+                            raise ValueError("Fixed commitments are immutable in weekly plans")
                 errors = validate_week(candidate, load_model(database, user_id, start, settings),
-                                       today=now, decisions=decisions)
+                                       today=now, decisions=decisions, week_start=start)
                 if errors:
                     raise ValueError("Unsafe plan change: " + "; ".join(errors))
         affected: dict[str, list[dict[str, Any]]] = {}
@@ -321,12 +449,8 @@ def apply(database: Path, user_id: int, proposal_id: int, accepted_change_ids: l
                                             (item.get("id"), user_id)).fetchone()
                 if target is None or target["status"] == "done":
                     raise ValueError("Target session is missing or logged")
-                if target["origin"] == "fixed" and row["change_type"] == "remove":
-                    raise ValueError("Fixed commitments cannot be silently removed")
-                if target["origin"] == "fixed" and row["change_type"] == "modify" and not (
-                        item["sport"] == target["sport"] and
-                        (item["intent"] == "skills only" or item.get("status") == "skipped")):
-                    raise ValueError("A fixed team session may only be lightened to skills only")
+                if row["change_type"] == "modify" and item["date"] != target["date"]:
+                    raise ValueError("Moving a session requires remove and add changes")
             if row["change_type"] == "add":
                 _insert_session(connection, {**item, "user_id": user_id, "origin": "coach"})
             elif row["change_type"] == "modify":
@@ -337,7 +461,8 @@ def apply(database: Path, user_id: int, proposal_id: int, accepted_change_ids: l
                                     item.get("notes"), item.get("status", target["status"]), _now(),
                                     item["id"], user_id))
             else:
-                connection.execute("DELETE FROM plan_sessions WHERE id=? AND user_id=?", (item["id"], user_id))
+                connection.execute("UPDATE plan_sessions SET status='skipped',updated_at=? WHERE id=? AND user_id=?",
+                                   (_now(), item["id"], user_id))
         if selected:
             new_version = _bump(connection, user_id)
             snapshot = {start: {"before": [_public_row(item) for item in before],
@@ -380,7 +505,9 @@ def request_revision(database: Path, user_id: int, proposal_id: int, text: str,
         new_id = _insert_proposal(connection, user_id, old["kind"], text.strip(), facts,
                                   replacement, old["base_version"])
         connection.execute("UPDATE coach_proposals SET status='superseded' WHERE id=?", (proposal_id,))
-    return get_proposal(database, user_id, new_id)
+    result = get_proposal(database, user_id, new_id)
+    _notify_created(database, user_id, text.strip())
+    return result
 
 
 def undo_last(database: Path, user_id: int) -> dict[str, Any]:

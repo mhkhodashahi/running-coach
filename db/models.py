@@ -366,6 +366,18 @@ class FixedCommitment(Base):
     active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
 
+class ProtectedHabit(Base):
+    __tablename__ = "protected_habits"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True, nullable=False)
+    sport: Mapped[str] = mapped_column(String(16), nullable=False)
+    intent: Mapped[str] = mapped_column(String(32), nullable=False)
+    duration_min: Mapped[int] = mapped_column(Integer, nullable=False)
+    per_week: Mapped[int] = mapped_column(Integer, nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+
 class PlanSession(Base):
     __tablename__ = "plan_sessions"
 
@@ -428,6 +440,7 @@ class ProposalChange(Base):
     reason: Mapped[str] = mapped_column(Text, nullable=False)
     fact_ids_json: Mapped[str] = mapped_column(Text, nullable=False)
     decision: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
+    group_id: Mapped[str | None] = mapped_column(String(64))
 
 
 class EmailDelivery(Base):

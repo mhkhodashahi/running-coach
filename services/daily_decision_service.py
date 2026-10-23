@@ -157,8 +157,11 @@ def build_daily_decision(requested: date, database: Path, user_id: int, timezone
                                                timezone=timezone, sleep_goal_hours=sleep_goal_hours))
         sessions = _recent_sessions(connection, user_id, requested, timezone, session_snapshot)
         user = connection.execute("SELECT max_hr,age FROM users WHERE id=?", (user_id,)).fetchone()
-        fixed_teams = connection.execute("SELECT sport FROM fixed_commitments WHERE user_id=? "
-                                         "AND weekday=? AND active=1", (user_id, requested.weekday())).fetchall()
+        fixed_teams = connection.execute(
+            "SELECT f.sport FROM fixed_commitments f WHERE f.user_id=? AND f.weekday=? AND f.active=1 "
+            "AND NOT EXISTS (SELECT 1 FROM plan_sessions p WHERE p.user_id=f.user_id "
+            "AND p.fixed_commitment_id=f.id AND p.date=? AND p.status='skipped')",
+            (user_id, requested.weekday(), requested.isoformat())).fetchall()
         planned_teams = connection.execute("SELECT sport FROM plan_sessions WHERE user_id=? AND date=? "
                                            "AND sport IN ('football','volleyball') AND status='planned'",
                                            (user_id, requested.isoformat())).fetchall()
@@ -225,14 +228,15 @@ def build_daily_decision(requested: date, database: Path, user_id: int, timezone
         if isinstance(cap, int):
             facts.append(_fact(f"SPORT_{sport}_HR_CAP", f"{item.sport} suggested HR cap",
                                f"{cap} bpm", "coach.decision.session.hr_cap_bpm"))
-    return DailyDecision(requested.isoformat(), based_on.isoformat(), provisional, sync_display,
-                         readiness, next((item.score.value for item in snapshot.readiness.components
-                                          if item.name == "hrv"), None), intensity.intensity, intensity.rule,
-                         intensity.fact_ids, tuple(asdict(item) for item in ranking),
-                         ("Skip planned team training or attend skills only. Optional mobility or a walk; not training."
-                          if intensity.intensity == "rest" and scheduled_teams else
-                          "Optional mobility or a walk; not training" if intensity.intensity == "rest" else None),
-                         tuple(facts), "", "", (), (), team_options=team_options(intensity.intensity, scheduled_teams))
+    decision = DailyDecision(requested.isoformat(), based_on.isoformat(), provisional, sync_display,
+                             readiness, next((item.score.value for item in snapshot.readiness.components
+                                              if item.name == "hrv"), None), intensity.intensity, intensity.rule,
+                             intensity.fact_ids, tuple(asdict(item) for item in ranking),
+                             ("Skip planned team training or attend skills only. Optional mobility or a walk; not training."
+                              if intensity.intensity == "rest" and scheduled_teams else
+                              "Optional mobility or a walk; not training" if intensity.intensity == "rest" else None),
+                             tuple(facts), "", "", (), (), team_options=team_options(intensity.intensity, scheduled_teams))
+    return with_fallback(decision)
 
 
 def fallback_explanation(decision: DailyDecision) -> str:
@@ -260,8 +264,20 @@ def fallback_explanation(decision: DailyDecision) -> str:
     return result
 
 
+def with_fallback(decision: DailyDecision) -> DailyDecision:
+    """Do not expose an unadorned code decision with empty copy."""
+    if decision.headline.strip() and decision.explanation.strip():
+        return decision
+    return replace(decision, headline=f"{decision.intensity.title()} today.",
+                   explanation=fallback_explanation(decision),
+                   evidence_ids=decision.rule_fact_ids,
+                   explanation_source="fallback")
+
+
 def _validate_explanation(payload: Any, decision: DailyDecision) -> DecisionExplanation:
     result = DecisionExplanation.model_validate(payload)
+    if not result.headline.strip() or not result.explanation.strip():
+        raise ValueError("Headline and explanation cannot be blank")
     facts = {item["id"]: item for item in decision.facts}
     if len(result.evidence_ids) < 2 or set(result.evidence_ids) - facts.keys():
         raise ValueError("Two known evidence IDs are required")
@@ -348,7 +364,11 @@ def get_or_create_daily_decision(day: date, *, settings: Settings | None = None,
                                      (user_id, day.isoformat())).fetchone()
         previous = json.loads(old[0]) if old else {}
         if previous.get("input_hash") == fingerprint:
-            return DailyDecision(**previous["decision"])
+            cached = with_fallback(DailyDecision(**previous["decision"]))
+            from coach.planning import propose_daily_conflict
+
+            propose_daily_conflict(day, cached.intensity, list(cached.facts), settings=settings, user_id=user_id)
+            return cached
         client = llm or get_llm_client(settings.llm_provider, settings.openai_api_key, settings.openai_model,
                                        settings.ollama_base_url, settings.ollama_model)
         if isinstance(client, NullLLMClient):
@@ -369,6 +389,9 @@ def get_or_create_daily_decision(day: date, *, settings: Settings | None = None,
                                (user_id, day.isoformat(), decision.headline,
                                 "high" if decision.intensity == "rest" else "moderate" if decision.intensity == "easy" else "low",
                                 json.dumps(payload), datetime.now(UTC).replace(tzinfo=None).isoformat()))
+        from coach.planning import propose_daily_conflict
+
+        propose_daily_conflict(day, decision.intensity, list(decision.facts), settings=settings, user_id=user_id)
         return decision
 
 

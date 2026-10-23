@@ -250,6 +250,11 @@ def bulk_upsert_activities(session: Session, rows: list[dict[str, Any]]) -> int:
         touched.append(activity)
     session.flush()
     for activity in touched:
+        if session.scalar(select(PlanSession.id).where(
+                PlanSession.user_id == activity.user_id,
+                PlanSession.linked_activity_id == activity.id,
+        )) is not None:
+            continue
         sport = sport_category(activity.type, activity.date)
         if sport not in ("running", "gym", "football", "volleyball"):
             continue

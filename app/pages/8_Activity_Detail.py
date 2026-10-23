@@ -568,8 +568,25 @@ def _render_activity_coach_panel(activity: pd.Series, user_id: int, track_points
         for tab, (title, value) in zip(st.tabs([title for title, _ in visible]), visible, strict=True):
             with tab:
                 if title == "Recommendations":
-                    for item in value:
+                    for index, item in enumerate(value):
                         st.write(item["text"])
+                        if item.get("action") == "add_to_plan" and st.button(
+                                "Review plan proposal", key=f"opinion_plan_{activity_id}_{index}"):
+                            from coach.planning import propose_opinion_recommendations
+
+                            facts = [{"id": f"OPINION_{activity_id}_{number}", "metric": fact["metric"],
+                                      "display": fact["value"], "source": fact["source"]}
+                                     for number, fact in enumerate(insight.get("evidence", []), 1)]
+                            try:
+                                created = propose_opinion_recommendations(
+                                    activity_id, pd.to_datetime(activity["date"]).date(), [item], facts,
+                                    user_id=user_id)
+                                if created:
+                                    st.success("Proposal created. Review it on the Plan page.")
+                                else:
+                                    st.info("No safe slot found for this recommendation. Review your plan first.")
+                            except (ValueError, RuntimeError) as exc:
+                                st.error(str(exc))
                 elif title == "Evidence":
                     for item in value:
                         st.write(f"{item['metric']}: {item['value']} ({item['source']})")

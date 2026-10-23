@@ -1,53 +1,79 @@
 # Weekly Plan and Coach Proposals
 
-Milestone 4b-2 stores a plan for each athlete and Monday-starting week. The
-plan is a seven-day map with at most one session per day. A session records
-sport, intent, duration, optional running HR cap, and whether it is a fixed
-athlete commitment. Logged activities are separate and never modified by a
-plan action.
+Milestone 4b-2 uses `fixed_commitments` for recurring team training,
+`protected_habits` for athlete-owned sessions, and `plan_sessions` for dated
+sessions. Protected habits are projected into each week without seeding dated
+rows. They use separate days, preferring non-team days. A week may contain multiple sessions per
+day. Logged activities remain separate. Matching imported activities link to a
+planned session and mark it done; the import never rewrites the activity.
 
 ## Flow
 
-1. Open Coach, choose a week, and review its current sessions. Add or remove
-   fixed football/volleyball training yourself if needed.
-2. Choose **Suggest week** to create an unapplied proposal. It contains one
-   change per suggested day, each with a reason and cited facts. No LLM or
-   remote provider is called.
-3. Accept or reject each change independently. You can also ask for a fresh
-   day-level revision in plain words, such as "Make Saturday a rest day" or
-   "Put an easy run on Thursday". Ambiguous or multi-day requests are rejected
-   rather than guessed.
-4. **Undo last coach change** uses the full pre-approval snapshot. Unrelated
-   athlete edits are preserved. If the athlete edited the same day afterward,
-   undo refuses to overwrite that newer choice.
+1. Open **Plan** to add a recurring football or volleyball commitment, or a
+   protected habit with a weekly frequency. Neither is shortened or removed
+   by weekly proposals. Editing a protected habit versions the plan.
+2. **Suggest week** builds the sessions in code from the prior four complete
+   weeks' median running and gym sessions per week. The LLM only explains the
+   code-built changes. Nothing is applied automatically. Every change has a
+   reason and cited fact IDs.
+3. Select groups, then apply the selected groups in one transaction. Changes
+   that depend on one another share a group and cannot be accepted separately.
+   Unselected changes are rejected. **Apply nothing** or **Dismiss** leaves the
+   plan unchanged. A plain-word revision creates a new proposal and supersedes
+   the old one.
+   An accepted removal marks a plan session skipped, retaining its row for
+   audit and undo.
+4. **Undo last coach changes** restores only the rows affected by the latest
+   coach approval. If one of those rows was edited afterward, undo refuses
+   rather than overwrite the newer choice. Unrelated manual edits survive.
 
-Telegram exposes the same actions to the configured chat only: `/plan [MONDAY]`,
-`/plan-suggest [MONDAY]`, `/plan-accept CHANGE_ID`, `/plan-reject CHANGE_ID`,
-`/plan-revise PROPOSAL_ID make Saturday a rest day`, `/plan-undo [MONDAY]`,
-`/plan-fixed Saturday football`, and `/plan-unfix Saturday`. The week commands
-default to the current week; a Monday date may be supplied to inspect, suggest,
-or undo another week. Fixed training also accepts a `YYYY-MM-DD` day.
+Telegram `/plan [MONDAY]` is read-only and points to the app for review and
+approval. No Telegram command applies a plan change.
 
-## Safety and Limits
+## Load Estimate
 
-- All approval, rejection, manual commitment, and undo actions are scoped to
-  one athlete and use serialized SQLite transactions. A proposal names its
-  base plan revision. Another plan edit marks it stale; stale proposals cannot
-  apply. An accepted change snapshots the full plan before and after writing.
-- Suggestions fill only open future days, use easy running or light gym, and
-  never exceed the previous week's total training minutes. The code also
-  limits **projected** TRIMP to 110% of the previous week's observed session
-  TRIMP and rechecks this when a change is accepted. Running is estimated at
-  its Z2 HR cap; light gym uses the highest recent observed gym load per
-  minute with a safety margin. If the baseline or a session estimate is
-  missing, it abstains. A current illness signal or rest-level readiness
-  excludes the current day, and acceptance rechecks today's recovery.
-  Actual future load can differ from the projection, especially for gym and
-  team sports; this is not a promise that observed load will stay under cap.
-- Fixed team sessions are direct athlete actions, never coach proposals.
-  They rank first in the daily decision on non-rest days; on rest days, the
-  decision says to skip them or attend skills only. The plan currently holds
-  one session per day and does not import external calendar commitments.
-- The plan is stored in revision `0006_weekly_plan`. Upgrade only with
-  `python -m scripts.upgrade_db --db <path>` after stopping app and jobs. The
-  runner backs up the existing database first; see `docs/upgrade.md`.
+For each of the athlete's prior activities, the metrics engine computes
+session TRIMP. Code divides that session load by
+duration in minutes, then takes the median rate for its sport and planned
+intent. When that combination has no history, the sport median is used.
+The estimated load of a planned session is `duration_min * median TRIMP/min`.
+All planned session estimates **plus expected walking load** are summed.
+Expected walking is the last 28 days' walking TRIMP divided by four, the
+same contribution walking makes to the four-week base. It is spread evenly
+across the seven display days for comparison, not scheduled as training.
+The cap is `1.10 * (last 28 days' observed session TRIMP / 4)`.
+Historical session duration is not bucketed: the median is a TRIMP-per-minute
+rate per sport and intent, multiplied by each proposed duration. If a session in that window lacks HR load,
+code estimates it from the athlete's own sport/intent median and records the
+count in the facts. If no matching median exists, or no four-week load history
+exists, the proposal is rejected, never treated as zero load. Team
+sports' HR-based load may miss jumps and sprints until effort ratings arrive
+in milestone 4c.
+
+Code also enforces at most two hard days, no adjacent hard days, and today's
+and tomorrow's daily decisions, plus one rest day. Tempo and race, plus team
+training/matches, count as hard. Fixed sessions are counted first and are
+immutable to the weekly planner, including matches. When load is tight, code
+shortens flexible sessions to 15 minutes before dropping them; it never
+shortens or removes fixed or protected sessions. A longer easy run is included for an active
+running goal only when it fits. Otherwise the summary explains the shorter run
+or why no safe run fits. When flexible training is dropped, the proposal may
+add 15-minute mobility items on open days. Those items are explicitly
+non-training (`gym`/`recovery` with a mobility note), so their planned TRIMP
+is zero; an optional walk is an advisory, not a training session, and expected
+walking is still counted separately. If fixed and protected sessions alone
+exceed the cap, they remain and the planner warns. It proposes no additional
+training load, although non-training mobility can fill open days. If no safe
+addition exists it explains why; a complete safe week is labeled
+`already_planned`, not `no_safe_change`. Only a separate same-day daily-decision
+proposal may suggest lighter participation, with athlete approval.
+
+The Plan page shows each day's estimated TRIMP and the weekly total against
+the cap. The exact accepted group set is revalidated before any plan write;
+unsafe selections leave the proposal and plan unchanged.
+
+`plan_versions` increments on plan edits. A proposal whose base version no
+longer matches is stale. `plan_snapshots` holds undo state. Revision
+`0006_weekly_plan`, additive `0007_proposal_groups`, and additive
+`0008_protected_habits` are backup-first through
+`python -m scripts.upgrade_db --db <path>`; see `docs/upgrade.md`.

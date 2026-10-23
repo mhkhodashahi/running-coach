@@ -104,10 +104,10 @@ Sequence depends on the missing target contract. Acceptance criteria below are c
 
 #### 4b-2. Weekly plan and proposals/approval/undo
 
-- Status: complete. A deterministic easy-session draft becomes per-day proposals, never automatic plan edits. Accepted changes are versioned and undoable; projected weekly TRIMP is capped at 110% of the observed prior week or the coach abstains. Fixed team commitments are athlete-owned and feed the daily ranking.
-- Files: plan and proposal models/migration, `coach/`, Streamlit and Telegram approval surfaces, tests.
-- Acceptance: every proposed change has a reason and fact IDs; athlete accepts/rejects each independently; stale proposals cannot apply; undo restores the pre-change plan snapshot; logged activities never change.
-- Risks: concurrent plan edits, replayed approvals, and incomplete undo snapshots.
+- Status: complete through 4b-2c. Additive 0008 stores athlete-owned protected habits without seeding. Walking now enters the projected total in the same four-week amount as the cap base. Over-cap fixed/protected work is preserved with a warning; dropped flexible work can be replaced by explicitly non-training mobility.
+- Files: `db/migrations/versions/0006_weekly_plan.py`, `db/migrations/versions/0007_proposal_groups.py`, `db/migrations/versions/0008_protected_habits.py`, `db/models.py`, `coach/planning.py`, `coach/proposals.py`, plan views, Today, Telegram, import linking, tests, and `docs/weekly-plan.md`.
+- Acceptance: recurring commitments, protected habits and dated sessions remain athlete-owned; fixed and protected sessions count first and are never shortened or removed by the weekly planner. Flexible work is shortened then dropped to fit the 110% cap, at least one rest day and at most two nonadjacent hard days. Walking is included consistently. A longer easy run is included only when it fits; deload suggestions remain visible. Every change has a reason and fact IDs; dependency groups apply atomically; unsafe accepted sets refuse without writes; snapshots, stale checks and undo preserve unrelated athlete edits; logged activities never change. Telegram stays read-only for approvals.
+- Risks: unknown sport-specific TRIMP medians can prevent a draft; concurrent plan edits can stale proposals; team HR load understates jumps and sprints until 4c.
 
 #### 4c. Effort rating and team-sport load
 

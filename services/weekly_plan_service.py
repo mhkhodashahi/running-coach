@@ -22,8 +22,11 @@ def scheduled_team_sports(day: date, *, settings: Settings | None = None,
     settings = settings or get_settings()
     identifier = user_id or settings.default_user_id
     with sqlite3.connect(settings.db_path.resolve().as_uri() + "?mode=ro", uri=True) as connection:
-        fixed = connection.execute("SELECT sport FROM fixed_commitments WHERE user_id=? AND weekday=? AND active=1",
-                                   (identifier, day.weekday())).fetchall()
+        fixed = connection.execute(
+            "SELECT f.sport FROM fixed_commitments f WHERE f.user_id=? AND f.weekday=? AND f.active=1 "
+            "AND NOT EXISTS (SELECT 1 FROM plan_sessions p WHERE p.user_id=f.user_id "
+            "AND p.fixed_commitment_id=f.id AND p.date=? AND p.status='skipped')",
+            (identifier, day.weekday(), day.isoformat())).fetchall()
         planned = connection.execute("SELECT sport FROM plan_sessions WHERE user_id=? AND date=? "
                                      "AND sport IN ('football','volleyball') AND status='planned'",
                                      (identifier, day.isoformat())).fetchall()

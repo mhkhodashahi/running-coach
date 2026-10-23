@@ -19,7 +19,7 @@ from db.repository import get_or_create_default_goal, get_or_create_default_user
 from scripts.backup_db import backup_database
 
 SCHEMA = Path(__file__).parents[1] / "db/migrations/baseline.sql"
-HEAD = "0006_weekly_plan"
+HEAD = "0008_protected_habits"
 PLAN_TABLES = ("fixed_commitments", "plan_sessions", "plan_versions", "plan_snapshots",
                "coach_proposals", "proposal_changes")
 
@@ -34,7 +34,7 @@ def snapshot(database):
     with closing(sqlite3.connect(database)) as connection:
         old_tables = [table for table in tables(connection) if table not in {
             "activity_coaching_opinion_history", "coach_chat_turns", "coach_llm_calls",
-            *PLAN_TABLES,
+            *PLAN_TABLES, "protected_habits",
         }]
         counts = {table: connection.execute(f'SELECT count(*) FROM "{table}"').fetchone()[0] for table in old_tables}
         payloads = {}
@@ -115,7 +115,7 @@ def test_fresh_upgrade_and_default_user(tmp_path):
     database = tmp_path / "fresh.db"
     assert upgrade_database(database) is None
     with closing(sqlite3.connect(database)) as connection:
-        assert len(tables(connection)) == 24
+        assert len(tables(connection)) == 25
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (HEAD,)
         columns = {row[1]: row for row in connection.execute("PRAGMA table_info(activity_coaching_insights)")}
         for name in ("schema_version", "prompt_version"):
@@ -127,8 +127,10 @@ def test_fresh_upgrade_and_default_user(tmp_path):
         assert "coach_llm_calls" in tables(connection)
         for name in PLAN_TABLES:
             assert name in tables(connection)
+        assert "protected_habits" in tables(connection)
         assert "version_before" in {row[1] for row in connection.execute("PRAGMA table_info(plan_snapshots)")}
         assert "linked_activity_id" in {row[1] for row in connection.execute("PRAGMA table_info(plan_sessions)")}
+        assert "group_id" in {row[1] for row in connection.execute("PRAGMA table_info(proposal_changes)")}
         assert {row[1] for row in connection.execute("PRAGMA table_info(coach_chat_turns)")} == {
             "id", "user_id", "question", "answer", "evidence_json", "activity_ids_json",
             "tool_calls_json", "model_provider", "model_name", "prompt_version", "created_at",
@@ -171,6 +173,8 @@ def test_existing_upgrade_preserves_data_and_body_tables(legacy_copy):
         assert connection.execute("SELECT count(*) FROM coach_llm_calls").fetchone() == (0,)
         for name in PLAN_TABLES:
             assert connection.execute(f"SELECT count(*) FROM {name}").fetchone() == (0,)
+        assert connection.execute("SELECT count(*) FROM protected_habits").fetchone() == (0,)
+        assert "group_id" in {row[1] for row in connection.execute("PRAGMA table_info(proposal_changes)")}
         assert connection.execute("SELECT running_goal_time, running_date FROM users").fetchone() == expected_profile
         assert connection.execute("SELECT name, goal_type FROM goals ORDER BY id").fetchall() == [
             ("Primary Running Goal", "running_pb"), ("My Berlin Marathon", "running_pb"),
@@ -183,6 +187,62 @@ def test_existing_upgrade_preserves_data_and_body_tables(legacy_copy):
     assert upgrade_database(database) is None
     assert dump(database) == first_dump
     assert database.read_bytes() == first_bytes
+
+
+def test_0007_preserves_existing_proposals_and_only_adds_group_column(tmp_path):
+    database = tmp_path / "at-0006.db"
+    config = migration_config()
+    engine = create_engine(f"sqlite:///{database}")
+    try:
+        with engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.upgrade(config, "0006_weekly_plan")
+    finally:
+        engine.dispose()
+    with closing(sqlite3.connect(database)) as connection:
+        connection.execute("INSERT INTO users(id,marathon_goal_time,running_goal_time) "
+                           "VALUES(1,'04:00:00','04:00:00')")
+        connection.execute("INSERT INTO coach_proposals(user_id,kind,base_version,status,summary,facts_json,created_at) "
+                           "VALUES(1,'weekly_plan',0,'pending','Synthetic','[]','2026-01-01')")
+        connection.execute("INSERT INTO proposal_changes(proposal_id,change_type,session_json,reason,"
+                           "fact_ids_json,decision) VALUES(1,'add','{\"date\":\"2026-01-01\"}',"
+                           "'Synthetic','[]','pending')")
+        before = connection.execute("SELECT proposal_id,change_type,session_json,reason,fact_ids_json,decision "
+                                    "FROM proposal_changes").fetchall()
+        connection.commit()
+    assert upgrade_database(database) is not None
+    with closing(sqlite3.connect(database)) as connection:
+        after = connection.execute("SELECT proposal_id,change_type,session_json,reason,fact_ids_json,decision "
+                                   "FROM proposal_changes").fetchall()
+        assert after == before
+        assert connection.execute("SELECT group_id FROM proposal_changes").fetchall() == [(None,)]
+        assert connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+
+
+def test_0008_adds_empty_protected_habits_without_rewriting_plan_rows(tmp_path):
+    database = tmp_path / "at-0007.db"
+    config = migration_config()
+    engine = create_engine(f"sqlite:///{database}")
+    try:
+        with engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.upgrade(config, "0007_proposal_groups")
+    finally:
+        engine.dispose()
+    with closing(sqlite3.connect(database)) as connection:
+        connection.execute("INSERT INTO users(id,marathon_goal_time,running_goal_time) "
+                           "VALUES(1,'04:00:00','04:00:00')")
+        connection.execute("INSERT INTO plan_sessions(user_id,date,sport,intent,duration_min,origin,status,"
+                           "created_at,updated_at) VALUES(1,'2026-01-01','gym','light',30,'athlete','planned',"
+                           "'2026-01-01','2026-01-01')")
+        before = connection.execute("SELECT * FROM plan_sessions").fetchall()
+        connection.commit()
+    assert upgrade_database(database) is not None
+    with closing(sqlite3.connect(database)) as connection:
+        assert connection.execute("SELECT * FROM plan_sessions").fetchall() == before
+        assert connection.execute("SELECT count(*) FROM protected_habits").fetchone() == (0,)
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (HEAD,)
+        assert connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)
 
 
 def test_stamp_does_not_touch_existing_application_schema_or_data(legacy_copy):
@@ -209,7 +269,7 @@ def test_missing_tables_are_created_without_adding_body_tables(tmp_path):
         connection.execute("CREATE TABLE users(id INTEGER PRIMARY KEY, age INTEGER, gender VARCHAR(20), weight FLOAT, height FLOAT, max_hr INTEGER)")
     upgrade_database(database)
     with closing(sqlite3.connect(database)) as connection:
-        assert len(tables(connection)) == 22
+        assert len(tables(connection)) == 23
         assert "prediction_snapshots" in tables(connection)
         assert "garmin_sync_status" in tables(connection)
 

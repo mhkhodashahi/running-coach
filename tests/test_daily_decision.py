@@ -25,10 +25,19 @@ from services.daily_decision_service import (
     fallback_explanation,
     get_or_create_daily_decision,
     set_athlete_choice,
+    with_fallback,
 )
 
 DAY = date(2026, 6, 29)
 NOW = datetime(2026, 6, 30, tzinfo=ZoneInfo("Europe/Berlin"))
+
+
+def test_built_decision_and_old_cached_blank_copy_have_fallback(decision_db):
+    decision = build_daily_decision(DAY, decision_db, 1, "Europe/Berlin", 7.5)
+    assert decision.headline.strip() and decision.explanation.strip()
+    old = replace(decision, headline="", explanation="", explanation_source="none")
+    restored = with_fallback(old)
+    assert restored.headline.strip() and restored.explanation == fallback_explanation(old)
 
 
 def session(hours_ago, sport="running", intent=None, z4=None):
@@ -188,6 +197,26 @@ def test_planned_team_session_uses_same_priority_as_fixed_commitment(decision_db
     else:
         assert [item["sport"] for item in result.sports[:2]] == ["football", "volleyball"]
         assert not result.team_options
+
+
+def test_daily_decision_creates_reviewable_lighter_session_proposal(decision_db):
+    from coach.proposals import manual_session
+
+    session_id = manual_session(decision_db, 1, {"date": DAY.isoformat(), "sport": "running",
+                                                  "intent": "tempo", "duration_min": 45,
+                                                  "hr_cap_bpm": None, "notes": None})
+    settings = replace(get_settings(), db_path=decision_db, llm_provider="none")
+    decision = get_or_create_daily_decision(DAY, settings=settings)
+    if decision.intensity == "hard":
+        pytest.skip("Fixture recovery allowed hard work")
+    with sqlite3.connect(decision_db) as connection:
+        proposal = connection.execute("SELECT id,status FROM coach_proposals WHERE user_id=1").fetchone()
+        assert proposal[1] == "pending"
+        change = json.loads(connection.execute("SELECT session_json FROM proposal_changes "
+                                               "WHERE proposal_id=?", (proposal[0],)).fetchone()[0])
+        assert change["id"] == session_id
+        assert change["intent"] == ("easy" if decision.intensity == "easy" else "tempo")
+        assert connection.execute("SELECT intent FROM plan_sessions WHERE id=?", (session_id,)).fetchone() == ("tempo",)
 
 
 def test_running_cap_uses_custom_second_zone_or_exclusive_default(decision_db):

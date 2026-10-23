@@ -4,7 +4,9 @@ Running Coach now uses Alembic through a **backup-first runner**. This supersede
 the lightweight setup decision in `docs/adr/0001-lightweight-sqlite-setup.md`.
 Revision 0004 adds the coach opinion v2 storage contract; 0005 adds coach chat
 history and per-request counters; 0006 adds weekly plans, proposals and undo
-snapshots. Existing opinions and logged activities are not rewritten.
+snapshots; 0007 adds optional proposal dependency groups; 0008 adds empty
+athlete-owned protected habits. Existing opinions
+and logged activities are not rewritten.
 
 ## Upgrade
 
@@ -76,10 +78,18 @@ unsupported; restore the backup instead.
    evidence, activity IDs, tool-call names/arguments, model metadata and time;
    `coach_llm_calls` counts every chat model request, including retries and
    failures, by user and local day. No existing table or row is changed.
-6. `0006_weekly_plan`: new `weekly_plans`, `coach_plan_proposals`,
-   `coach_plan_changes`, and `coach_plan_undo` tables. Existing tables and rows
-   are untouched. Each accepted coach change stores a before-snapshot; undo
-   restores that snapshot only when no later plan edit would be overwritten.
+6. `0006_weekly_plan`: new `fixed_commitments`, `plan_sessions`,
+   `plan_versions`, `plan_snapshots`, `coach_proposals`, and
+   `proposal_changes` tables. Existing tables and rows are untouched.
+   The earlier four-table 0006 draft was uncommitted and had not been applied
+   to any real database, so there is no legacy plan table.
+   Accepted changes snapshot the affected weeks before applying; undo refuses
+   to overwrite later edits to affected rows.
+7. `0007_proposal_groups`: adds nullable `proposal_changes.group_id`. Existing
+   proposal rows remain NULL and are treated as independent groups. No backfill.
+8. `0008_protected_habits`: adds `protected_habits` with user, sport, intent,
+   duration, weekly frequency and active state. No rows are seeded. Existing
+   plans, opinions, activities and body-scan tables are unchanged.
 
 Revision 2 copies each non-NULL `marathon_goal_time` / `marathon_date` into
 `running_goal_time` / `running_date` **only if that running field is NULL**.
@@ -137,7 +147,7 @@ cp "$BACKUP" "$CHECK_DIR/candidate.db"
 sqlite3 "$CHECK_DIR/candidate.db" "SELECT version_num FROM alembic_version; PRAGMA integrity_check; PRAGMA foreign_key_check;"
 ```
 
-Expect `0006_weekly_plan` and `ok`. Compare `foreign_key_check` with the
+Expect `0008_protected_habits` and `ok`. Compare `foreign_key_check` with the
 pre-upgrade copy; a pre-existing violation must not be mistaken for a new one.
 Compare counts, exact JSON strings and complete body-scan schemas/rows:
 
@@ -166,7 +176,8 @@ with closing(sqlite3.connect(sys.argv[1])) as before, closing(sqlite3.connect(sy
             assert before.execute(f"SELECT * FROM {quoted} ORDER BY id").fetchall() == after.execute(f"SELECT * FROM {quoted} ORDER BY id").fetchall(), table
     assert before.execute("PRAGMA foreign_key_check").fetchall() == after.execute("PRAGMA foreign_key_check").fetchall()
     for table in ("activity_coaching_opinion_history", "coach_chat_turns", "coach_llm_calls",
-                  "weekly_plans", "coach_plan_proposals", "coach_plan_changes", "coach_plan_undo"):
+                  "fixed_commitments", "plan_sessions", "plan_versions", "plan_snapshots",
+                  "coach_proposals", "proposal_changes"):
         if table not in tables:
             assert after.execute(f"SELECT count(*) FROM {table}").fetchone() == (0,)
 print("Counts, JSON payloads, body-scan schema/data, and legacy NULL versions preserved.")
