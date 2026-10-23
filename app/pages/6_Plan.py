@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 
 import streamlit as st
 
-from coach.planning import MOBILITY_NOTE, apply_draft, load_model, propose_week, revise_week, week_load_breakdown
+from coach.planning import apply_draft, load_model, propose_week, revise_week, week_load_breakdown
 from coach.proposals import (
     apply,
     dismiss,
@@ -149,21 +149,26 @@ breakdown = week_load_breakdown(week["sessions"], model, start)
 for offset in range(7):
     day = start + timedelta(days=offset)
     items = [item for item in week["sessions"] if item["date"] == day.isoformat()]
-    text = "; ".join(f"{'Mobility' if item.get('notes') == MOBILITY_NOTE else item['sport'].title()} · "
+    text = "; ".join(f"{item['sport'].title()} · "
                      f"{item['intent']} · {item['duration_min']} min"
                      f"{' · protected' if item['origin'] == 'protected' else ' · fixed' if item['origin'] == 'fixed' else ''}"
                      f"{' · done' if item['status'] == 'done' else ' · skipped' if item['status'] == 'skipped' else ''}"
                      for item in items) or "Open"
     load = breakdown["days"][offset]["estimated_load"]
     st.write(f"**{day:%a %d %b}**  {text} · {f'{load:.1f} TRIMP' if load is not None else 'Load unknown'}")
-st.caption(f"Estimated week: {breakdown['weekly_total']:.1f} / {breakdown['cap']:.1f} TRIMP cap"
-           if breakdown["weekly_total"] is not None else "Estimated week: load unknown")
-st.caption(f"Includes {breakdown['expected_walking_weekly']:.1f} TRIMP expected walking from the prior four weeks.")
+if breakdown["weekly_total"] is None:
+    st.caption("Estimated week: load unknown")
+elif breakdown["cap"] is None:
+    st.caption(f"Estimated week: {breakdown['weekly_total']:.1f} TRIMP · not enough history for a load cap")
+else:
+    st.caption(f"Estimated week: {breakdown['weekly_total']:.1f} / {breakdown['cap']:.1f} TRIMP cap")
+st.caption(f"Expected walking, not counted in training load: {breakdown['expected_walking_weekly']:.1f} TRIMP/week.")
 
 with st.expander("Edit a session by hand"):
     with st.form("manual_session"):
         selected = st.selectbox("Session", [None, *[item["id"] for item in week["sessions"]
-                                             if item["id"] and item["origin"] != "fixed" and item["status"] == "planned"]],
+                                             if item["id"] and item["id"] > 0 and
+                                             item["origin"] != "fixed" and item["status"] == "planned"]],
                                 format_func=lambda identifier: "New session" if identifier is None else
                                 next(f"{item['date']} {item['sport']}" for item in week["sessions"]
                                      if item["id"] == identifier))
@@ -237,6 +242,8 @@ for proposal in list_proposals(settings.db_path, user_id, start):
                 if item["estimated_load"] is not None else f"{item['date']}: unknown"
                 for item in totals["days"]) +
                 (f" · total {totals['weekly_total']:.1f} / {totals['cap']:.1f}"
+                 if totals["weekly_total"] is not None and totals["cap"] is not None else
+                 f" · total {totals['weekly_total']:.1f}, no load cap"
                  if totals["weekly_total"] is not None else " · total unknown"))
         except ValueError as exc:
             st.caption(f"Proposed load unavailable: {exc}")

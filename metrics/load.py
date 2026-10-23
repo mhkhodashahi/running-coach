@@ -5,6 +5,7 @@ from math import exp, isfinite
 from zoneinfo import ZoneInfo
 
 from metrics.baselines import maximum_hr, resting_hr_for_session, valid
+from metrics.effort import Calibration, combined_load
 from metrics.models import Activity, HealthDay, LoadRatio, Profile, Session, SportLoad, metric
 from metrics.models import Zone as ZoneResult
 from metrics.sports import SPORTS, sport_category
@@ -68,8 +69,8 @@ def banister_trimp(minutes: float, heart_rate: float, resting_hr: float, max_hr:
 
 
 def session_metrics(activity: Activity, profile: Profile, health: tuple[HealthDay, ...], as_of: date,
-                    timezone: str) -> Session | None:
-    if activity.day > as_of or sport_category(activity.type, as_of) == "excluded":
+                    timezone: str, calibration: Calibration | None = None) -> Session | None:
+    if activity.day > as_of or sport_category(activity.type, as_of) in ("excluded", "mobility"):
         return None
     session_day = activity.day
     maximum = maximum_hr(profile, session_day)
@@ -84,6 +85,11 @@ def session_metrics(activity: Activity, profile: Profile, health: tuple[HealthDa
                 load = sum(parts)
         elif valid(activity.avg_hr, as_of) and valid(activity.duration, as_of):
             load = banister_trimp(activity.duration, activity.avg_hr, resting.value, maximum.value, session_day)
+    sport = sport_category(activity.type, as_of)
+    if calibration is not None:
+        load, effort_method = combined_load(sport, load, activity.rpe, activity.duration, calibration)
+        if effort_method not in ("trimp", "missing_hr"):
+            method += ";" + effort_method
     seconds_total = sum(seconds for seconds, _ in intervals)
     zones = []
     if maximum.value is not None:
@@ -94,7 +100,7 @@ def session_metrics(activity: Activity, profile: Profile, health: tuple[HealthDa
                 metric(seconds, "seconds", LOAD_SOURCES, session_day, session_day, int(bool(intervals)), "shared_hr_zone_bounds_track_intervals"),
                 metric(seconds / seconds_total * 100 if seconds is not None else None, "%", LOAD_SOURCES,
                        session_day, session_day, int(bool(intervals)), "percent_of_observed_hr_seconds")))
-    return Session(activity.id, session_day.isoformat(), sport_category(activity.type, as_of),
+    return Session(activity.id, session_day.isoformat(), sport,
                    metric(load, "TRIMP", LOAD_SOURCES, session_day, session_day, int(load is not None), method),
                    maximum, resting,
                    metric(seconds_total if intervals else None, "seconds", LOAD_SOURCES, session_day, session_day,

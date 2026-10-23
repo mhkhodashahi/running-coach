@@ -14,6 +14,7 @@ SPORT_MAP = MappingProxyType({
     "cycling": "other", "walking": "other", "lap_swimming": "other",
     "open_water_swimming": "other",
     "meditation": "excluded", "breathwork": "excluded", "yoga_nidra": "excluded",
+    "mobility": "mobility",
 })
 
 

@@ -16,7 +16,7 @@ from zoneinfo import ZoneInfo
 
 from services.coach_facts import unsupported_text_numbers
 
-SPORTS = frozenset({"running", "gym", "football", "volleyball"})
+SPORTS = frozenset({"running", "gym", "football", "volleyball", "mobility"})
 TEAM_SPORTS = frozenset({"football", "volleyball"})
 SESSION_FIELDS = ("id", "user_id", "date", "sport", "intent", "duration_min", "hr_cap_bpm",
                   "notes", "origin", "status", "linked_activity_id", "fixed_commitment_id")
@@ -55,9 +55,17 @@ def _bump(connection: sqlite3.Connection, user_id: int) -> int:
 
 def _rows(connection: sqlite3.Connection, user_id: int, start: date) -> list[dict[str, Any]]:
     end = start + timedelta(days=7)
-    return [dict(row) for row in connection.execute(
+    sessions = [dict(row) for row in connection.execute(
         "SELECT * FROM plan_sessions WHERE user_id=? AND date>=? AND date<? ORDER BY date,id",
         (user_id, start.isoformat(), end.isoformat()))]
+    for row in connection.execute("SELECT * FROM plan_mobility_sessions WHERE user_id=? AND date>=? AND date<? "
+                                  "ORDER BY date,id", (user_id, start.isoformat(), end.isoformat())):
+        item = dict(row)
+        item["id"] = -item["id"]
+        item["linked_activity_id"] = None
+        item["fixed_commitment_id"] = None
+        sessions.append(item)
+    return sorted(sessions, key=lambda item: (item["date"], item["id"]))
 
 
 def _virtual_fixed(connection: sqlite3.Connection, user_id: int, start: date,
@@ -175,17 +183,29 @@ def _validate_session(item: dict[str, Any]) -> None:
     date.fromisoformat(item["date"])
     if item["sport"] not in SPORTS or not 15 <= int(item["duration_min"]) <= 300:
         raise ValueError("Invalid planned sport or duration")
+    if item["sport"] == "mobility" and (item["intent"] != "recovery" or
+            not 15 <= int(item["duration_min"]) <= 20 or item.get("hr_cap_bpm") is not None):
+        raise ValueError("Mobility is non-training recovery for 15-20 minutes without an HR cap")
     if item.get("hr_cap_bpm") is not None and not 60 <= int(item["hr_cap_bpm"]) <= 240:
         raise ValueError("HR cap must be 60-240 bpm")
     if len(str(item.get("notes") or "")) > 500:
         raise ValueError("Plan notes are too long")
     if item.get("status", "planned") not in ("planned", "done", "skipped"):
         raise ValueError("Invalid plan status")
+    if item["sport"] == "mobility" and item.get("status", "planned") == "done":
+        raise ValueError("Non-training mobility is not linked as a logged activity")
 
 
 def _insert_session(connection: sqlite3.Connection, item: dict[str, Any]) -> int:
     _validate_session(item)
     stamp = _now()
+    if item["sport"] == "mobility":
+        cursor = connection.execute(
+            "INSERT INTO plan_mobility_sessions(user_id,date,sport,intent,duration_min,hr_cap_bpm,notes,origin,"
+            "status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            (item["user_id"], item["date"], "mobility", "recovery", item["duration_min"], None,
+             item.get("notes"), item["origin"], item.get("status", "planned"), stamp, stamp))
+        return -int(cursor.lastrowid)
     cursor = connection.execute(
         "INSERT INTO plan_sessions(user_id,date,sport,intent,duration_min,hr_cap_bpm,notes,origin,status,"
         "linked_activity_id,fixed_commitment_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -422,6 +442,8 @@ def apply(database: Path, user_id: int, proposal_id: int, accepted_change_ids: l
                     target = next((row for row in before if row.get("id") == item.get("id")), None)
                     if target is None or target.get("status") == "done":
                         raise ValueError("Target session is missing or logged")
+                    if (target["sport"] == "mobility") != (item["sport"] == "mobility"):
+                        raise ValueError("Changing between training and mobility requires remove and add")
                     if target["origin"] == "fixed":
                         decision = decisions.get(date.fromisoformat(item["date"]))
                         daily_allowed = (proposal["kind"] == "change" and change["change_type"] == "modify" and
@@ -445,8 +467,10 @@ def apply(database: Path, user_id: int, proposal_id: int, accepted_change_ids: l
             affected.setdefault(start.isoformat(), _rows(connection, user_id, start))
             target = None
             if row["change_type"] != "add":
-                target = connection.execute("SELECT * FROM plan_sessions WHERE id=? AND user_id=?",
-                                            (item.get("id"), user_id)).fetchone()
+                table = "plan_mobility_sessions" if int(item.get("id") or 0) < 0 else "plan_sessions"
+                target_id = -item["id"] if table == "plan_mobility_sessions" else item.get("id")
+                target = connection.execute(f"SELECT * FROM {table} WHERE id=? AND user_id=?",
+                                            (target_id, user_id)).fetchone()
                 if target is None or target["status"] == "done":
                     raise ValueError("Target session is missing or logged")
                 if row["change_type"] == "modify" and item["date"] != target["date"]:
@@ -455,14 +479,14 @@ def apply(database: Path, user_id: int, proposal_id: int, accepted_change_ids: l
                 _insert_session(connection, {**item, "user_id": user_id, "origin": "coach"})
             elif row["change_type"] == "modify":
                 _validate_session(item)
-                connection.execute("UPDATE plan_sessions SET sport=?,intent=?,duration_min=?,hr_cap_bpm=?,"
+                connection.execute(f"UPDATE {table} SET sport=?,intent=?,duration_min=?,hr_cap_bpm=?,"
                                    "notes=?,status=?,updated_at=? WHERE id=? AND user_id=?",
                                    (item["sport"], item["intent"], item["duration_min"], item.get("hr_cap_bpm"),
                                     item.get("notes"), item.get("status", target["status"]), _now(),
-                                    item["id"], user_id))
+                                    target_id, user_id))
             else:
-                connection.execute("UPDATE plan_sessions SET status='skipped',updated_at=? WHERE id=? AND user_id=?",
-                                   (_now(), item["id"], user_id))
+                connection.execute(f"UPDATE {table} SET status='skipped',updated_at=? WHERE id=? AND user_id=?",
+                                   (_now(), target_id, user_id))
         if selected:
             new_version = _bump(connection, user_id)
             snapshot = {start: {"before": [_public_row(item) for item in before],
@@ -533,21 +557,37 @@ def undo_last(database: Path, user_id: int) -> dict[str, Any]:
             for key in before.keys() | after.keys():
                 if before.get(key) == after.get(key):
                     continue
+                table = "plan_mobility_sessions" if key < 0 else "plan_sessions"
+                target_id = -key if key < 0 else key
                 if key not in before:
-                    connection.execute("DELETE FROM plan_sessions WHERE id=? AND user_id=?", (key, user_id))
+                    connection.execute(f"DELETE FROM {table} WHERE id=? AND user_id=?", (target_id, user_id))
                 elif key not in after:
                     restored = before[key]
-                    columns = ",".join(SESSION_FIELDS)
-                    connection.execute(f"INSERT INTO plan_sessions({columns},created_at,updated_at) "
-                                       f"VALUES({','.join('?' for _ in SESSION_FIELDS)},?,?)",
-                                       (*(restored[field] for field in SESSION_FIELDS), _now(), _now()))
+                    if key < 0:
+                        fields = ("user_id", "date", "sport", "intent", "duration_min", "hr_cap_bpm",
+                                  "notes", "origin", "status")
+                        connection.execute("INSERT INTO plan_mobility_sessions(id," + ",".join(fields) +
+                                           ",created_at,updated_at) VALUES(" +
+                                           ",".join("?" for _ in range(len(fields) + 3)) + ")",
+                                           (target_id, *(restored[field] for field in fields), _now(), _now()))
+                    else:
+                        columns = ",".join(SESSION_FIELDS)
+                        connection.execute(f"INSERT INTO plan_sessions({columns},created_at,updated_at) "
+                                           f"VALUES({','.join('?' for _ in SESSION_FIELDS)},?,?)",
+                                           (*(restored[field] for field in SESSION_FIELDS), _now(), _now()))
                 else:
                     restored = before[key]
-                    connection.execute("UPDATE plan_sessions SET sport=?,intent=?,duration_min=?,hr_cap_bpm=?,"
-                                       "notes=?,status=?,linked_activity_id=?,updated_at=? WHERE id=? AND user_id=?",
-                                       (restored["sport"], restored["intent"], restored["duration_min"],
-                                        restored["hr_cap_bpm"], restored["notes"], restored["status"],
-                                        restored["linked_activity_id"], _now(), key, user_id))
+                    if key < 0:
+                        connection.execute("UPDATE plan_mobility_sessions SET duration_min=?,notes=?,status=?,"
+                                           "updated_at=? WHERE id=? AND user_id=?",
+                                           (restored["duration_min"], restored["notes"], restored["status"],
+                                            _now(), target_id, user_id))
+                    else:
+                        connection.execute("UPDATE plan_sessions SET sport=?,intent=?,duration_min=?,hr_cap_bpm=?,"
+                                           "notes=?,status=?,linked_activity_id=?,updated_at=? WHERE id=? AND user_id=?",
+                                           (restored["sport"], restored["intent"], restored["duration_min"],
+                                            restored["hr_cap_bpm"], restored["notes"], restored["status"],
+                                            restored["linked_activity_id"], _now(), target_id, user_id))
         connection.execute("UPDATE plan_snapshots SET undone_at=? WHERE id=?", (_now(), record["id"]))
         version = _bump(connection, user_id)
     return {"undone_snapshot_id": record["id"], "version": version}

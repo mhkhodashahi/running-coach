@@ -18,12 +18,17 @@ def local_day(value: str, timezone: str, as_of: date) -> date:
     return (timestamp.replace(tzinfo=zone) if timestamp.tzinfo is None else timestamp.astimezone(zone)).date()
 
 
-def read_inputs(database: Path, user_id: int, as_of: date, timezone: str) -> Inputs:
+def read_inputs(database: Path, user_id: int, as_of: date, timezone: str,
+                point_lookback_days: int | None = 28) -> Inputs:
     zone = ZoneInfo(timezone)
     with closing(sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True)) as connection:
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA query_only=ON")
         connection.execute("BEGIN")
+        has_efforts = connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='activity_efforts'").fetchone() is not None
+        efforts = ({row[0]: row[1] for row in connection.execute(
+            "SELECT e.activity_id,e.rpe FROM activity_efforts e JOIN activities a ON a.id=e.activity_id "
+            "WHERE a.user_id=? AND a.date<=?", (user_id, as_of.isoformat()))} if has_efforts else {})
         row = connection.execute("SELECT id, max_hr, age FROM users WHERE id=?", (user_id,)).fetchone()
         if row is None:
             raise ValueError(f"User {user_id} does not exist")
@@ -37,7 +42,7 @@ def read_inputs(database: Path, user_id: int, as_of: date, timezone: str) -> Inp
             if day > as_of:
                 continue
             points = []
-            if day >= as_of - timedelta(days=27):
+            if point_lookback_days is None or day >= as_of - timedelta(days=point_lookback_days - 1):
                 for point in connection.execute("SELECT point_index, elapsed_seconds, heart_rate, timestamp FROM activity_track_points WHERE activity_id=? ORDER BY point_index", (row["id"],)):
                     stamp = datetime.fromisoformat(point["timestamp"]) if point["timestamp"] else None
                     if stamp is not None:
@@ -45,7 +50,8 @@ def read_inputs(database: Path, user_id: int, as_of: date, timezone: str) -> Inp
                         if stamp.date() > as_of:
                             continue
                     points.append(TrackPoint(point["point_index"], point["elapsed_seconds"], point["heart_rate"], stamp))
-            activities.append(Activity(row["id"], day, row["type"], row["duration"], row["avg_hr"], tuple(points)))
+            activities.append(Activity(row["id"], day, row["type"], row["duration"], row["avg_hr"],
+                                       tuple(points), efforts.get(row["id"])))
     return Inputs(profile, health, tuple(activities))
 
 

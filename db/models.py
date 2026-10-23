@@ -105,6 +105,28 @@ class Activity(Base):
     prediction_snapshots: Mapped[list[PredictionSnapshot]] = relationship(back_populates="activity", cascade="all, delete-orphan")
 
 
+class ActivityEffort(Base):
+    __tablename__ = "activity_efforts"
+    __table_args__ = (
+        CheckConstraint("rpe BETWEEN 0 AND 10", name="ck_activity_efforts_rpe"),
+        CheckConstraint("source IN ('web','telegram')", name="ck_activity_efforts_source"),
+    )
+
+    activity_id: Mapped[int] = mapped_column(ForeignKey("activities.id"), primary_key=True)
+    rpe: Mapped[int] = mapped_column(Integer, nullable=False)
+    rated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    source: Mapped[str] = mapped_column(String(16), nullable=False)
+    note: Mapped[str | None] = mapped_column(Text)
+
+
+class ActivityEffortPrompt(Base):
+    __tablename__ = "activity_effort_prompts"
+
+    activity_id: Mapped[int] = mapped_column(ForeignKey("activities.id"), primary_key=True)
+    sent_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    reminded_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
 class ActivityTrackPoint(Base):
     """GPS and metric stream point for one activity."""
 
@@ -393,6 +415,23 @@ class PlanSession(Base):
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="planned")
     linked_activity_id: Mapped[int | None] = mapped_column(ForeignKey("activities.id"))
     fixed_commitment_id: Mapped[int | None] = mapped_column(ForeignKey("fixed_commitments.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow, onupdate=_utcnow)
+
+
+class PlanMobilitySession(Base):
+    __tablename__ = "plan_mobility_sessions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    date: Mapped[date] = mapped_column(Date, nullable=False)
+    sport: Mapped[str] = mapped_column(String(16), nullable=False, default="mobility")
+    intent: Mapped[str] = mapped_column(String(32), nullable=False, default="recovery")
+    duration_min: Mapped[int] = mapped_column(Integer, nullable=False)
+    hr_cap_bpm: Mapped[int | None] = mapped_column(Integer)
+    notes: Mapped[str | None] = mapped_column(Text)
+    origin: Mapped[str] = mapped_column(String(16), nullable=False, default="coach")
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="planned")
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow, onupdate=_utcnow)
 

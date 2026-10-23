@@ -165,8 +165,8 @@ are shared: the old UI helper's median-step gap imputation is not reused.
 
 Daily per-sport sums cover the 28 days ending on `as_of`. Weekly per-sport
 sums cover four successive seven-day blocks ending on `as_of`, not ISO weeks.
-All five load-bearing categories are represented. Excluded activity days count
-as observed zero-load days, even without health data.
+All five load-bearing categories are represented. Excluded and mobility
+activity days count as observed zero-load days, even without health data.
 
 A date with health data or an activity is treated as observed. On an observed
 date, a category with no recorded sessions has zero load (assumed rest for that
@@ -191,6 +191,31 @@ window. This is a count of observed days, not merely elapsed time since the
 first import. Acute is NULL if no complete day is observed. Ratio is NULL if
 chronic is zero or negative. There is no extrapolation to fill missing days.
 The fixed divisor 4 follows the requested formula even with 14-27 observed days.
+
+### Weekly Planner Load Reference
+
+The planner's 110% cap is separate from the metrics engine's acute/chronic
+ratio. For a requested week, it selects the eight most recent **complete**
+Monday-Sunday weeks with recorded load-bearing activities, excluding the
+current unfinished week. Empty and walking-only weeks do not qualify.
+Walking, meditation and mobility are excluded from each selected week's
+training load. A week containing a session whose TRIMP cannot be measured or
+estimated from the athlete's own sport/intent median is also excluded, not
+treated as zero. Older track points are loaded for this planning calculation.
+
+```text
+reference = median(selected weekly training TRIMP totals)
+cap = reference * 1.10
+```
+
+With fewer than three qualifying weeks, `reference` and `cap` are NULL: the
+planner enforces hard-day spacing but no load cap and says there is not enough
+history. The athlete's own median TRIMP/minute by sport and intent estimates
+each planned training session; the sport median is the fallback. Fixed and
+protected sessions count first. Walking contributes neither to the reference
+nor to the planned training total; expected walking (last 28 days / 4) is
+shown separately for information. Mobility is non-training, zero planned
+training TRIMP, and never ranked as a sport.
 
 ## Readiness and Illness Flag
 

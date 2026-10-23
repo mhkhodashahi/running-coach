@@ -128,16 +128,17 @@ def test_sport_mapping_and_unknowns():
     for raw, expected in ((" RUNNING ", "running"), ("soccer", "football"), ("volleyball", "volleyball"),
                           ("strength_training", "gym"), ("walking", "other"), ("new sport", "other"),
                           ("meditation", "excluded"), ("breathwork", "excluded"),
-                          ("yoga_nidra", "excluded")):
+                          ("yoga_nidra", "excluded"), ("mobility", "mobility")):
         assert sport_category(raw, DAY) == expected
     assert RECOMMENDABLE_SPORTS == ("running", "volleyball", "football", "gym")
     assert "other" not in RECOMMENDABLE_SPORTS
     assert "excluded" not in RECOMMENDABLE_SPORTS
+    assert "mobility" not in RECOMMENDABLE_SPORTS
     snapshot = build_daily_snapshot(Inputs(PROFILE, (), (activity(kind="new sport"),)), DAY, ZONE, 7.5)
     assert snapshot.unknown_types == ("new sport",)
 
 
-@pytest.mark.parametrize("kind", ("meditation", "breathwork", "yoga_nidra"))
+@pytest.mark.parametrize("kind", ("meditation", "breathwork", "yoga_nidra", "mobility"))
 def test_excluded_activity_has_no_session_or_load(kind):
     excluded = activity(kind=kind)
     assert session_metrics(excluded, PROFILE, health_history(), DAY, ZONE) is None
@@ -307,6 +308,8 @@ def test_reader_local_dates_future_and_legacy_comparison(database):
     before = database.read_bytes()
     rows = compare_legacy(database, 1, DAY, ZONE, 7.5)
     assert len(rows) == 7
+
+
     assert rows[-1]["old_7d_load_arbitrary_units"] == 9
     assert rows[-1]["new_7d_load_trimp"] == pytest.approx(10 * 0.5 * 0.64 * math.exp(.96))
     assert {"new_hrv_score", "new_rhr_score", "new_sleep_score", "new_load_score",
@@ -316,3 +319,18 @@ def test_reader_local_dates_future_and_legacy_comparison(database):
     assert rows[-1]["new_load_ratio"] == snapshot.load.ratio.value
     assert rows[-1]["new_illness_flag"] == snapshot.readiness.illness_flag.value
     assert database.read_bytes() == before
+
+
+def test_reader_planning_can_include_older_track_points(database):
+    old_day = DAY - timedelta(days=40)
+    with closing(sqlite3.connect(database)) as connection:
+        connection.execute("INSERT INTO activities(id,user_id,date,type,distance,duration,avg_hr) "
+                           "VALUES(4,1,?,'running',2,10,120)", (old_day.isoformat(),))
+        connection.execute("INSERT INTO activity_track_points(activity_id,point_index,elapsed_seconds,heart_rate) "
+                           "VALUES(4,0,0,120)")
+        connection.commit()
+    default = next(item for item in read_inputs(database, 1, DAY, ZONE).activities if item.id == 4)
+    planning = next(item for item in read_inputs(database, 1, DAY, ZONE,
+                                                 point_lookback_days=None).activities if item.id == 4)
+    assert default.points == ()
+    assert len(planning.points) == 1

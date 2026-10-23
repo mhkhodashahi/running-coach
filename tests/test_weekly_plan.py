@@ -24,15 +24,18 @@ from coach.planning import (
     habit_pattern,
     is_hard,
     is_recovery_item,
+    lighter_week_allowed,
     load_model,
     propose_daily_conflict,
     propose_opinion_recommendations,
     propose_week,
+    reference_habit_pattern,
     revise_week,
     validate_draft,
     validate_narrative,
     validate_week,
     week_load_breakdown,
+    weekly_load_reference,
 )
 from coach.proposals import (
     apply,
@@ -116,7 +119,8 @@ def test_pure_week_rules_and_boundaries():
 
 
 def test_fixed_session_does_not_conflict_with_daily_decision():
-    model = LoadModel(100, {("football", "match"): 1}, {"football": 1})
+    model = LoadModel(100, {("football", "match"): 1}, {"football": 1},
+                      reference_weeks=(("2026-06-22", 100),))
     fixed = {**session(START, sport="football", intent="match", minutes=90),
              "origin": "fixed", "status": "planned"}
     assert validate_week([fixed], model, today=START, decisions={START: "rest"}, week_start=START) == []
@@ -330,6 +334,60 @@ def test_habit_pattern_uses_four_week_medians():
     assert pattern.duration_min["running"] == 40
 
 
+def test_reference_skips_empty_walking_only_unknown_and_unfinished_weeks():
+    cutoff = START + timedelta(weeks=1)
+    rows = []
+    for offset in range(12):
+        day = cutoff - timedelta(weeks=offset + 1)
+        rows.append((day, "running", float(offset + 10)))
+    rows.extend([(cutoff, "running", 999.0),
+                 (cutoff - timedelta(weeks=2), "walking", 500.0),
+                 (cutoff - timedelta(weeks=3), "gym", None)])
+    weeks = weekly_load_reference(rows, cutoff)
+    assert len(weeks) == 8
+    assert all(day < cutoff.isoformat() for day, _ in weeks)
+    assert all(day != (cutoff - timedelta(weeks=3)).isoformat() for day, _ in weeks)
+    assert weeks[0][1] == 10.0
+    assert weekly_load_reference([(START, "walking", 100.0)], cutoff) == ()
+
+
+def test_reference_habits_include_zero_running_weeks():
+    weeks = tuple(((START - timedelta(weeks=index + 1)).isoformat(), 100.0) for index in range(4))
+    rows = [{"date": (date.fromisoformat(week) + timedelta(days=2)).isoformat(),
+             "sport": "gym", "duration_min": 30} for week, _ in weeks]
+    pattern = reference_habit_pattern(rows, weeks)
+    assert pattern.sessions_per_week == {"running": 0, "gym": 1}
+    assert pattern.duration_min["gym"] == 30
+
+
+def test_fewer_than_three_reference_weeks_has_no_cap_but_hard_days_still_apply():
+    model = LoadModel(None, {("running", "easy"): 1}, {"running": 1},
+                      reference_weeks=((START.isoformat(), 10),))
+    assert model.cap is None
+    assert validate_week([session(START, minutes=300)], model, today=START - timedelta(days=7),
+                         decisions={}, week_start=START) == []
+    hard = [session(START + timedelta(days=day), intent="tempo") for day in (0, 2, 4)]
+    assert "More than two hard days" in validate_week(hard, model, today=START - timedelta(days=7),
+                                                       decisions={}, week_start=START)
+    built = build_habit_week([], model, HabitPattern({"running": 0, "gym": 0},
+                             {"running": 30, "gym": 30}), START, START - timedelta(days=7), {}, False, None)
+    assert "not enough history for a load cap" in built.summary.lower()
+
+
+def test_week_label_rule_and_narrative_validator():
+    assert not lighter_week_allowed(1.3, 50)
+    assert lighter_week_allowed(1.3001, 90)
+    assert lighter_week_allowed(None, 49.99)
+    narrative = WeekNarrative.model_validate({"summary": "lighter week", "reasons": []})
+    assert any("Lighter-week" in error for error in validate_narrative(
+        narrative, (), FACTS, lighter_allowed=False))
+    assert validate_narrative(narrative, (), FACTS, lighter_allowed=True) == []
+    reason = WeekNarrative.model_validate({"summary": "full week", "reasons": [
+        {"reason": "A lighter week fits.", "fact_ids": ["TRAINING_LOAD"]}]})
+    assert any("Lighter-week" in error for error in validate_narrative(
+        reason, (change(START),), FACTS, lighter_allowed=False))
+
+
 def test_builder_keeps_fixed_match_and_trims_flexible_first():
     fixed = {**session(START + timedelta(days=5), sport="football", intent="match", minutes=90),
              "origin": "fixed", "status": "planned"}
@@ -352,13 +410,14 @@ def test_builder_keeps_fixed_match_and_trims_flexible_first():
 def test_builder_abstains_when_fixed_commitments_exceed_cap():
     fixed = [{**session(START + timedelta(days=day), sport="football", intent="match", minutes=90),
               "origin": "fixed", "status": "planned"} for day in (1, 5)]
-    model = LoadModel(100, {("football", "match"): 1}, {"football": 1})
+    model = LoadModel(100, {("football", "match"): 1}, {"football": 1},
+                      reference_weeks=(("2026-06-22", 100),))
     result = build_habit_week(fixed, model, HabitPattern({"running": 0, "gym": 0},
                               {"running": 30, "gym": 30}), START, START - timedelta(days=7), {}, False, None)
     assert all(item["origin"] == "fixed" for item in result.candidate if item["sport"] == "football")
     assert all(item["session"]["notes"] == MOBILITY_NOTE for item in result.changes)
-    assert any("exceed" in warning for warning in result.warnings)
-    assert "Lighter week" in result.summary
+    assert any("heavier than any recent week" in warning for warning in result.warnings)
+    assert "full week:" in result.summary
 
 
 def test_protected_habits_use_nonteam_days_and_are_immutable(database):
@@ -393,7 +452,8 @@ def test_protected_and_walking_load_are_kept_above_cap():
     protected = {**session(START + timedelta(days=2), sport="gym", intent="light upper body", minutes=30),
                  "origin": "protected", "status": "planned"}
     model = LoadModel(80, {("volleyball", "training"): 1},
-                      {"volleyball": 1, "gym": 1}, expected_walking_weekly=12)
+                      {"volleyball": 1, "gym": 1}, expected_walking_weekly=12,
+                      reference_weeks=(("2026-06-22", 100),))
     result = build_habit_week([fixed, protected], model,
                               HabitPattern({"running": 0, "gym": 0}, {"running": 30, "gym": 30}),
                               START, START - timedelta(days=7), {}, False, None, 1.4)
@@ -401,12 +461,18 @@ def test_protected_and_walking_load_are_kept_above_cap():
     assert "1.40" in result.summary
     assert result.changes and all(is_recovery_item(item["session"]) for item in result.changes)
     preview = week_load_breakdown(list(result.candidate), model, START)
-    assert preview["weekly_total"] == 132
+    assert preview["weekly_total"] == 120
     assert preview["cap"] == 88
     assert preview["expected_walking_weekly"] == 12
-    assert any(day["rest"] and day["estimated_load"] > 0 for day in preview["days"])
+    assert any(day["rest"] and day["estimated_load"] == 0 and day["expected_walking_load"] > 0
+               for day in preview["days"])
     assert validate_week(list(result.candidate), model, today=START - timedelta(days=7),
                          decisions={}, week_start=START) == []
+    below_peak = replace(model, reference_weeks=(("2026-06-22", 150),))
+    quiet = build_habit_week([fixed, protected], below_peak,
+                             HabitPattern({"running": 0, "gym": 0}, {"running": 30, "gym": 30}),
+                             START, START - timedelta(days=7), {}, False, None)
+    assert not any("heavier than any recent week" in warning for warning in quiet.warnings)
 
 
 def test_flexible_session_dropped_for_cap_becomes_lighter_week():
@@ -418,14 +484,31 @@ def test_flexible_session_dropped_for_cap_becomes_lighter_week():
                               {"running": 30, "gym": 30}), START, START - timedelta(days=7),
                               {}, False, 130, 1.35)
     assert result.status == "proposal"
-    assert "Lighter week" in result.summary and "1.35" in result.summary
+    assert "lighter week" in result.summary and "1.35" in result.summary
     assert any("dropped" in warning for warning in result.warnings)
     assert all(is_recovery_item(change["session"]) for change in result.changes)
     assert all(change["fact_ids"] == ["LOAD_RATIO", "LOAD_CAP"] for change in result.changes)
     assert week_load_breakdown(list(result.candidate), model, START)["weekly_total"] <= model.cap
 
 
-def test_observed_walking_enters_base_and_proposed_total_equally(database):
+def test_zero_running_habit_rebuilds_only_when_thirty_minutes_fit():
+    habits = HabitPattern({"running": 0, "gym": 0}, {"running": 45, "gym": 30})
+    available = LoadModel(100, {("running", "easy"): 1}, {"running": 1})
+    week = build_habit_week([], available, habits, START, START - timedelta(days=7), {}, True, 130)
+    rebuild = [item for item in week.candidate if item["sport"] == "running"]
+    assert len(rebuild) == 1
+    assert rebuild[0]["duration_min"] == 30 and rebuild[0]["hr_cap_bpm"] == 130
+    assert rebuild[0]["notes"] == "rebuild"
+
+    full = LoadModel(20, {("running", "easy"): 1}, {"running": 1})
+    no_room = build_habit_week([], full, habits, START, START - timedelta(days=7), {}, True, 130,
+                               load_ratio=1.2, week_start_readiness=70)
+    assert not any(item["sport"] == "running" and item["status"] == "planned" for item in no_room.candidate)
+    assert "next week" in no_room.summary and "full week:" in no_room.summary
+    assert "lighter week" not in no_room.summary
+
+
+def test_observed_walking_is_informational_only_for_weekly_cap(database):
     settings = replace(get_settings(), db_path=database)
     before = load_model(database, 1, START, settings)
     with sqlite3.connect(database) as connection:
@@ -434,9 +517,10 @@ def test_observed_walking_enters_base_and_proposed_total_equally(database):
     after = load_model(database, 1, START, settings)
     walking_delta = after.expected_walking_weekly - before.expected_walking_weekly
     assert walking_delta > 0
-    assert after.previous_weekly_average - before.previous_weekly_average == pytest.approx(walking_delta)
+    assert after.previous_weekly_average == before.previous_weekly_average
     empty_week = week_load_breakdown([], after, START)
-    assert empty_week["weekly_total"] == pytest.approx(after.expected_walking_weekly)
+    assert empty_week["weekly_total"] == 0
+    assert empty_week["expected_walking_weekly"] == pytest.approx(after.expected_walking_weekly)
     assert all(day["rest"] for day in empty_week["days"])
 
 
@@ -473,7 +557,7 @@ def test_approved_mobility_does_not_remove_over_cap_protected_habit(database, mo
                       {"volleyball": 1, "gym": 1}, expected_walking_weekly=12)
     monkeypatch.setattr("coach.planning.load_model", lambda *args: model)
     day = START + timedelta(days=3)
-    mobility = {**session(day, sport="gym", intent="recovery", minutes=15), "notes": MOBILITY_NOTE}
+    mobility = {**session(day, sport="mobility", intent="recovery", minutes=15), "notes": MOBILITY_NOTE}
     facts = [{"id": "LOAD_CAP", "metric": "Cap", "display": "88.0 TRIMP", "source": "metrics"}]
     proposal = create_proposal(database, 1, "weekly_plan", "Lighter week", facts,
                                [{"change_type": "add", "session": mobility,
@@ -484,6 +568,45 @@ def test_approved_mobility_does_not_remove_over_cap_protected_habit(database, mo
     assert len([item for item in week if item["origin"] == "protected"]) == 2
     assert len([item for item in week if item["origin"] == "fixed"]) == 1
     assert any(is_recovery_item(item) for item in week)
+
+
+def test_mobility_is_separate_from_training_link_and_undo(database):
+    day = START
+    mobility = {**session(day, sport="mobility", intent="recovery", minutes=15), "notes": MOBILITY_NOTE}
+    proposal = create_proposal(database, 1, "weekly_plan", "Mobility", FACTS,
+                               [{"change_type": "add", "session": mobility,
+                                 "reason": "Keep mobility non-training.", "fact_ids": ["TRAINING_LOAD"]}])
+    apply(database, 1, proposal["id"], [proposal["changes"][0]["id"]])
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("SELECT sport,intent,duration_min FROM plan_mobility_sessions").fetchall() == [
+            ("mobility", "recovery", 15)]
+        assert connection.execute("SELECT count(*) FROM plan_sessions").fetchone() == (0,)
+        connection.execute("INSERT INTO activities(user_id,date,type,distance,duration) "
+                           "VALUES(1,?,'strength_training',0,30)", (day.isoformat(),))
+        activity_id = connection.execute("SELECT max(id) FROM activities").fetchone()[0]
+        assert not link_activity(connection, 1, activity_id, day, "gym")
+    undo_last(database, 1)
+    assert not any(item["sport"] == "mobility" for item in get_week(database, 1, START)["sessions"])
+
+
+def test_mobility_modify_and_undo_preserves_separate_row(database):
+    initial = {**session(START, sport="mobility", intent="recovery", minutes=15), "notes": MOBILITY_NOTE}
+    first = create_proposal(database, 1, "weekly_plan", "Mobility", FACTS,
+                            [{"change_type": "add", "session": initial,
+                              "reason": "Keep mobility non-training.", "fact_ids": ["TRAINING_LOAD"]}])
+    apply(database, 1, first["id"], [first["changes"][0]["id"]])
+    row = next(item for item in get_week(database, 1, START)["sessions"] if item["sport"] == "mobility")
+    assert row["id"] < 0
+    updated = {**initial, "id": row["id"], "duration_min": 20}
+    second = create_proposal(database, 1, "change", "Longer mobility", FACTS,
+                             [{"change_type": "modify", "session": updated,
+                               "reason": "Keep mobility non-training.", "fact_ids": ["TRAINING_LOAD"]}])
+    apply(database, 1, second["id"], [second["changes"][0]["id"]])
+    assert next(item for item in get_week(database, 1, START)["sessions"] if item["sport"] == "mobility")[
+        "duration_min"] == 20
+    undo_last(database, 1)
+    assert next(item for item in get_week(database, 1, START)["sessions"] if item["sport"] == "mobility")[
+        "duration_min"] == 15
 
 
 def test_group_is_atomic_and_unsafe_selected_set_writes_nothing(database):

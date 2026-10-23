@@ -5,7 +5,7 @@ the lightweight setup decision in `docs/adr/0001-lightweight-sqlite-setup.md`.
 Revision 0004 adds the coach opinion v2 storage contract; 0005 adds coach chat
 history and per-request counters; 0006 adds weekly plans, proposals and undo
 snapshots; 0007 adds optional proposal dependency groups; 0008 adds empty
-athlete-owned protected habits. Existing opinions
+athlete-owned protected habits; 0009 adds separate mobility plans. Existing opinions
 and logged activities are not rewritten.
 
 ## Upgrade
@@ -90,6 +90,9 @@ unsupported; restore the backup instead.
 8. `0008_protected_habits`: adds `protected_habits` with user, sport, intent,
    duration, weekly frequency and active state. No rows are seeded. Existing
    plans, opinions, activities and body-scan tables are unchanged.
+9. `0009_mobility_sessions`: adds `plan_mobility_sessions` for non-training
+   mobility. The constrained `plan_sessions` table is not rebuilt; no existing
+   plan rows or logged activities are changed.
 
 Revision 2 copies each non-NULL `marathon_goal_time` / `marathon_date` into
 `running_goal_time` / `running_date` **only if that running field is NULL**.
@@ -147,7 +150,7 @@ cp "$BACKUP" "$CHECK_DIR/candidate.db"
 sqlite3 "$CHECK_DIR/candidate.db" "SELECT version_num FROM alembic_version; PRAGMA integrity_check; PRAGMA foreign_key_check;"
 ```
 
-Expect `0008_protected_habits` and `ok`. Compare `foreign_key_check` with the
+Expect `0009_mobility_sessions` and `ok`. Compare `foreign_key_check` with the
 pre-upgrade copy; a pre-existing violation must not be mistaken for a new one.
 Compare counts, exact JSON strings and complete body-scan schemas/rows:
 
