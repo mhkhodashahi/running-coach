@@ -23,9 +23,12 @@ from db.models import (
     HealthMetric,
     LLMMemory,
     NutritionEntry,
+    PlanSession,
+    PlanVersion,
     PredictionSnapshot,
     User,
 )
+from metrics.sports import sport_category
 
 
 def get_or_create_default_user(session: Session, default_user_id: int) -> User:
@@ -222,6 +225,7 @@ def bulk_upsert_activities(session: Session, rows: list[dict[str, Any]]) -> int:
     """Insert or update activity rows."""
 
     inserted = 0
+    touched: list[Activity] = []
     for row in rows:
         external_id = row.get("external_id")
         query = select(Activity).where(Activity.user_id == row["user_id"])
@@ -238,10 +242,34 @@ def bulk_upsert_activities(session: Session, rows: list[dict[str, Any]]) -> int:
             activity = Activity(**row)
             session.add(activity)
             inserted += 1
+            touched.append(activity)
             continue
 
         for field, value in row.items():
             setattr(activity, field, value)
+        touched.append(activity)
+    session.flush()
+    for activity in touched:
+        sport = sport_category(activity.type, activity.date)
+        if sport not in ("running", "gym", "football", "volleyball"):
+            continue
+        planned = session.scalars(select(PlanSession).where(
+            PlanSession.user_id == activity.user_id,
+            PlanSession.date == activity.date,
+            PlanSession.sport == sport,
+            PlanSession.status == "planned",
+            PlanSession.linked_activity_id.is_(None),
+        ).order_by(PlanSession.id)).first()
+        if planned is None:
+            continue
+        planned.status = "done"
+        planned.linked_activity_id = activity.id
+        planned.updated_at = datetime.now(UTC).replace(tzinfo=None)
+        version = session.get(PlanVersion, activity.user_id)
+        if version is None:
+            session.add(PlanVersion(user_id=activity.user_id, version=1))
+        else:
+            version.version += 1
     session.flush()
     return inserted
 

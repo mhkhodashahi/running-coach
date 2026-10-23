@@ -29,6 +29,7 @@ def navigation_specs() -> list[NavigationSpec]:
             icon=":material/flag:",
         ),
         NavigationSpec("pages/4_AI_Coach.py", title="Coach", icon=":material/smart_toy:"),
+        NavigationSpec("pages/6_Plan.py", title="Plan", icon=":material/calendar_month:"),
         NavigationSpec("pages/5_Goals_and_Digests.py", title="Goals", icon=":material/event_note:"),
         NavigationSpec("pages/7_Quality_Sessions.py", title="Key Sessions", icon=":material/fitness_center:"),
     ]

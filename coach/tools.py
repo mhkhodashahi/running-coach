@@ -369,20 +369,31 @@ class CoachTools:
         if start_date != monday(start_date):
             raise ValueError("Week must start on Monday")
         with _readonly(self.database) as connection:
-            row = connection.execute("SELECT revision,sessions_json FROM weekly_plans WHERE user_id=? AND week_start=?",
-                                     (self.user_id, start_date.isoformat())).fetchone()
-        sessions = json.loads(row["sessions_json"]) if row else {}
-        facts = [_fact("PLAN_WEEK_START", "Plan week start", start_date.isoformat(), "weekly_plans.week_start"),
-                 _fact("PLAN_REVISION", "Plan revision", str(row["revision"] if row else 0),
-                       "weekly_plans.revision")]
+            version = connection.execute("SELECT version FROM plan_versions WHERE user_id=?",
+                                         (self.user_id,)).fetchone()
+            sessions = [dict(row) for row in connection.execute(
+                "SELECT date,sport,intent,duration_min,origin,fixed_commitment_id FROM plan_sessions "
+                "WHERE user_id=? AND date>=? AND date<? ORDER BY date,id LIMIT 30",
+                (self.user_id, start_date.isoformat(), (start_date + timedelta(days=7)).isoformat()))]
+            existing = {item["fixed_commitment_id"] for item in sessions}
+            for row in connection.execute("SELECT id,weekday,sport,kind,typical_duration_min FROM fixed_commitments "
+                                          "WHERE user_id=? AND active=1", (self.user_id,)):
+                if row["id"] not in existing:
+                    sessions.append({"date": (start_date + timedelta(days=row["weekday"])).isoformat(),
+                                     "sport": row["sport"], "intent": row["kind"],
+                                     "duration_min": row["typical_duration_min"], "origin": "fixed"})
+        facts = [_fact("PLAN_WEEK_START", "Plan week start", start_date.isoformat(), "plan_sessions.date"),
+                 _fact("PLAN_VERSION", "Plan version", str(version[0] if version else 0),
+                       "plan_versions.version")]
         items = []
-        for index, (day, session) in enumerate(sorted(sessions.items())[:7]):
+        for index, session in enumerate(sorted(sessions, key=lambda item: item["date"])[:30]):
+            day = session["date"]
             facts.append(_fact(f"PLAN_DAY_{index}", "Planned session", f"{day}: {session['sport']} "
-                               f"{session['intent']}", f"weekly_plans.sessions_json[{day}]"))
+                               f"{session['intent']}", "plan_sessions"))
             facts.append(_fact(f"PLAN_DAY_{index}_DURATION", "Planned duration",
-                               f"{session['duration_min']} min", f"weekly_plans.sessions_json[{day}].duration_min"))
+                               f"{session['duration_min']} min", "plan_sessions.duration_min"))
             items.append({"date": day, "sport": session["sport"], "intent": session["intent"],
-                          "duration_min": session["duration_min"], "fixed": bool(session["fixed"])})
+                          "duration_min": session["duration_min"], "fixed": session["origin"] == "fixed"})
         return _bounded({"week_start": start_date.isoformat(), "sessions": items, "facts": facts})
 
     def call(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:

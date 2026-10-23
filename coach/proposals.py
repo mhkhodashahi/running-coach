@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
+from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
+from zoneinfo import ZoneInfo
 
 from services.coach_facts import unsupported_text_numbers
 
@@ -87,10 +91,22 @@ def list_commitments(database: Path, user_id: int) -> list[dict[str, Any]]:
             "SELECT * FROM fixed_commitments WHERE user_id=? ORDER BY weekday,start_time,id", (user_id,))]
 
 
-def _materialize(connection: sqlite3.Connection, user_id: int, start: date) -> None:
+def _materialize(connection: sqlite3.Connection, user_id: int, start: date) -> int:
     existing = _rows(connection, user_id, start)
-    for item in _virtual_fixed(connection, user_id, start, existing):
+    missing = _virtual_fixed(connection, user_id, start, existing)
+    for item in missing:
         _insert_session(connection, item)
+    return len(missing)
+
+
+def materialize_week(database: Path, user_id: int, start: date) -> int:
+    """Create dated copies of recurring commitments before drafting a week."""
+    with _db(database) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        added = _materialize(connection, user_id, monday(start))
+        if added:
+            _bump(connection, user_id)
+        return added
 
 
 def _validate_session(item: dict[str, Any]) -> None:
@@ -101,6 +117,8 @@ def _validate_session(item: dict[str, Any]) -> None:
         raise ValueError("HR cap must be 60-240 bpm")
     if len(str(item.get("notes") or "")) > 500:
         raise ValueError("Plan notes are too long")
+    if item.get("status", "planned") not in ("planned", "done", "skipped"):
+        raise ValueError("Invalid plan status")
 
 
 def _insert_session(connection: sqlite3.Connection, item: dict[str, Any]) -> int:
@@ -198,9 +216,7 @@ def list_proposals(database: Path, user_id: int, start: date) -> list[dict[str, 
         return [_proposal_view(connection, row) for row in rows]
 
 
-def create_proposal(database: Path, user_id: int, kind: str, summary: str,
-                    facts: list[dict[str, str]], changes: list[dict[str, Any]], *,
-                    base_version: int | None = None) -> dict[str, Any]:
+def _validate_changes(kind: str, facts: list[dict[str, str]], changes: list[dict[str, Any]]) -> None:
     if kind not in ("weekly_plan", "change") or not changes or len(changes) > 10:
         raise ValueError("A proposal needs 1-10 changes")
     known = {fact["id"] for fact in facts}
@@ -212,21 +228,35 @@ def create_proposal(database: Path, user_id: int, kind: str, summary: str,
             raise ValueError("Each change must cite known facts")
         if unsupported_text_numbers(change["reason"], facts):
             raise ValueError("Proposal reason contains a number absent from its facts")
+        if re.search(r"\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\b", change["reason"]):
+            raise ValueError("Fact IDs belong in fact_ids, not in the reason")
         _validate_session(item)
+
+
+def _insert_proposal(connection: sqlite3.Connection, user_id: int, kind: str, summary: str,
+                     facts: list[dict[str, str]], changes: list[dict[str, Any]], version: int) -> int:
+    cursor = connection.execute("INSERT INTO coach_proposals(user_id,kind,base_version,status,summary,"
+                                "facts_json,created_at) VALUES(?,?,?,'pending',?,?,?)",
+                                (user_id, kind, version, summary, json.dumps(facts), _now()))
+    proposal_id = int(cursor.lastrowid)
+    for change in changes:
+        connection.execute("INSERT INTO proposal_changes(proposal_id,change_type,session_json,reason,"
+                           "fact_ids_json,decision) VALUES(?,?,?,?,?,'pending')",
+                           (proposal_id, change["change_type"], json.dumps(change["session"]),
+                            change["reason"], json.dumps(change["fact_ids"])))
+    return proposal_id
+
+
+def create_proposal(database: Path, user_id: int, kind: str, summary: str,
+                    facts: list[dict[str, str]], changes: list[dict[str, Any]], *,
+                    base_version: int | None = None) -> dict[str, Any]:
+    _validate_changes(kind, facts, changes)
     with _db(database) as connection:
         connection.execute("BEGIN IMMEDIATE")
         current = _version(connection, user_id)
         if base_version is not None and base_version != current:
             raise ValueError("Plan changed while drafting; request a fresh proposal")
-        cursor = connection.execute("INSERT INTO coach_proposals(user_id,kind,base_version,status,summary,"
-                                    "facts_json,created_at) VALUES(?,?,?,'pending',?,?,?)",
-                                    (user_id, kind, current, summary, json.dumps(facts), _now()))
-        proposal_id = int(cursor.lastrowid)
-        for change in changes:
-            connection.execute("INSERT INTO proposal_changes(proposal_id,change_type,session_json,reason,"
-                               "fact_ids_json,decision) VALUES(?,?,?,?,?,'pending')",
-                               (proposal_id, change["change_type"], json.dumps(change["session"]),
-                                change["reason"], json.dumps(change["fact_ids"])))
+        proposal_id = _insert_proposal(connection, user_id, kind, summary, facts, changes, current)
     return get_proposal(database, user_id, proposal_id)
 
 
@@ -253,6 +283,31 @@ def apply(database: Path, user_id: int, proposal_id: int, accepted_change_ids: l
         ids = {row["id"] for row in changes}
         if selected - ids:
             raise ValueError("Unknown change ID")
+        if selected:
+            from coach.planning import apply_draft, load_model, validate_week
+            from config import get_settings
+            from services.daily_decision_service import build_daily_decision
+
+            settings = replace(get_settings(), db_path=database)
+            now = datetime.now(ZoneInfo(settings.local_timezone)).date()
+            by_week: dict[date, list[dict[str, Any]]] = {}
+            for row in changes:
+                if row["id"] in selected:
+                    item = json.loads(row["session_json"])
+                    by_week.setdefault(monday(date.fromisoformat(item["date"])), []).append(
+                        {"change_type": row["change_type"], "session": item})
+            decisions = {}
+            for day in (now, now + timedelta(days=1)):
+                decisions[day] = build_daily_decision(day, database, user_id, settings.local_timezone,
+                                                      settings.sleep_goal_hours, settings.hr_zones).intensity
+            for start, proposed in by_week.items():
+                before = _rows(connection, user_id, start)
+                before.extend(_virtual_fixed(connection, user_id, start, before))
+                candidate = apply_draft(before, proposed)
+                errors = validate_week(candidate, load_model(database, user_id, start, settings),
+                                       today=now, decisions=decisions)
+                if errors:
+                    raise ValueError("Unsafe plan change: " + "; ".join(errors))
         affected: dict[str, list[dict[str, Any]]] = {}
         for row in changes:
             if row["id"] not in selected:
@@ -268,14 +323,19 @@ def apply(database: Path, user_id: int, proposal_id: int, accepted_change_ids: l
                     raise ValueError("Target session is missing or logged")
                 if target["origin"] == "fixed" and row["change_type"] == "remove":
                     raise ValueError("Fixed commitments cannot be silently removed")
+                if target["origin"] == "fixed" and row["change_type"] == "modify" and not (
+                        item["sport"] == target["sport"] and
+                        (item["intent"] == "skills only" or item.get("status") == "skipped")):
+                    raise ValueError("A fixed team session may only be lightened to skills only")
             if row["change_type"] == "add":
                 _insert_session(connection, {**item, "user_id": user_id, "origin": "coach"})
             elif row["change_type"] == "modify":
                 _validate_session(item)
                 connection.execute("UPDATE plan_sessions SET sport=?,intent=?,duration_min=?,hr_cap_bpm=?,"
-                                   "notes=?,updated_at=? WHERE id=? AND user_id=?",
+                                   "notes=?,status=?,updated_at=? WHERE id=? AND user_id=?",
                                    (item["sport"], item["intent"], item["duration_min"], item.get("hr_cap_bpm"),
-                                    item.get("notes"), _now(), item["id"], user_id))
+                                    item.get("notes"), item.get("status", target["status"]), _now(),
+                                    item["id"], user_id))
             else:
                 connection.execute("DELETE FROM plan_sessions WHERE id=? AND user_id=?", (item["id"], user_id))
         if selected:
@@ -309,15 +369,18 @@ def request_revision(database: Path, user_id: int, proposal_id: int, text: str,
     """Store revised draft; caller supplies validated replacements from the planner."""
     if not 1 <= len(text.strip()) <= 500:
         raise ValueError("Give a short revision request")
-    old = get_proposal(database, user_id, proposal_id)
-    if old["status"] != "pending":
-        raise ValueError("Proposal is stale or no longer pending")
-    revised = create_proposal(database, user_id, old["kind"], text.strip(), old["facts"], replacement,
-                              base_version=old["base_version"])
     with _db(database) as connection:
-        connection.execute("UPDATE coach_proposals SET status='superseded' WHERE id=? AND user_id=? AND status='pending'",
-                           (proposal_id, user_id))
-    return revised
+        connection.execute("BEGIN IMMEDIATE")
+        old = connection.execute("SELECT * FROM coach_proposals WHERE id=? AND user_id=?",
+                                 (proposal_id, user_id)).fetchone()
+        if old is None or old["status"] != "pending" or old["base_version"] != _version(connection, user_id):
+            raise ValueError("Proposal is stale or no longer pending")
+        facts = json.loads(old["facts_json"])
+        _validate_changes(old["kind"], facts, replacement)
+        new_id = _insert_proposal(connection, user_id, old["kind"], text.strip(), facts,
+                                  replacement, old["base_version"])
+        connection.execute("UPDATE coach_proposals SET status='superseded' WHERE id=?", (proposal_id,))
+    return get_proposal(database, user_id, new_id)
 
 
 def undo_last(database: Path, user_id: int) -> dict[str, Any]:

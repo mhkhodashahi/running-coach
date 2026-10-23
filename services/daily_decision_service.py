@@ -38,7 +38,6 @@ from services.coach_facts import unsupported_text_numbers
 from services.fact_display import ratio as format_ratio
 from services.fact_display import score as format_score
 from services.hr_zones import heart_rate_zone_bounds
-from services.weekly_plan_service import scheduled_team_sports
 
 PROMPT_VERSION = "daily-v2.2"
 SYSTEM_PROMPT = (
@@ -137,9 +136,7 @@ def _recent_sessions(connection: sqlite3.Connection, user_id: int, requested: da
 
 
 def build_daily_decision(requested: date, database: Path, user_id: int, timezone: str,
-                         sleep_goal_hours: float, hr_zones: tuple[tuple[str, int, int | None], ...] = (),
-                         team_commitments: tuple[str, ...] = (),
-                         planned_team_sessions: tuple[str, ...] = ()) -> DailyDecision:
+                         sleep_goal_hours: float, hr_zones: tuple[tuple[str, int, int | None], ...] = ()) -> DailyDecision:
     """Read the DB but never write it; all rankings and intensity come from code."""
     with _read_only(database) as connection:
         rows = connection.execute("SELECT date,sleep_duration,hrv FROM health_metrics "
@@ -160,9 +157,13 @@ def build_daily_decision(requested: date, database: Path, user_id: int, timezone
                                                timezone=timezone, sleep_goal_hours=sleep_goal_hours))
         sessions = _recent_sessions(connection, user_id, requested, timezone, session_snapshot)
         user = connection.execute("SELECT max_hr,age FROM users WHERE id=?", (user_id,)).fetchone()
+        fixed_teams = connection.execute("SELECT sport FROM fixed_commitments WHERE user_id=? "
+                                         "AND weekday=? AND active=1", (user_id, requested.weekday())).fetchall()
+        planned_teams = connection.execute("SELECT sport FROM plan_sessions WHERE user_id=? AND date=? "
+                                           "AND sport IN ('football','volleyball') AND status='planned'",
+                                           (user_id, requested.isoformat())).fetchall()
     now = datetime.combine(requested + timedelta(days=1), time.min, ZoneInfo(timezone))
-    scheduled_teams = tuple(dict.fromkeys(sport for sport in (*team_commitments, *planned_team_sessions)
-                                           if sport in TEAM_SPORTS))
+    scheduled_teams = tuple(dict.fromkeys(row[0] for row in (*fixed_teams, *planned_teams)))
     recent = tuple(item for item in sessions if item.when < now)
     readiness = snapshot.readiness.score.value
     load_ratio = snapshot.load.ratio.value
@@ -331,19 +332,14 @@ def explain_decision(decision: DailyDecision, llm: Any | None = None,
 
 def get_or_create_daily_decision(day: date, *, settings: Settings | None = None,
                                  user_id: int | None = None, llm: Any | None = None,
-                                 team_commitments: tuple[str, ...] = (),
-                                 planned_team_sessions: tuple[str, ...] = (),
                                  on_explanation_error: Callable[[int, str], None] | None = None) -> DailyDecision:
     """Recompute on changed inputs; store immutable coach choice and separate athlete override."""
     settings = settings or get_settings()
     _read_version(settings.db_path)
     user_id = user_id or settings.default_user_id
     with _user_lock(settings.db_path, user_id):
-        planned_team_sessions = tuple(dict.fromkeys((*planned_team_sessions,
-                                                     *scheduled_team_sports(day, settings=settings, user_id=user_id))))
         candidate = build_daily_decision(day, settings.db_path, user_id, settings.local_timezone,
-                                         settings.sleep_goal_hours, settings.hr_zones, team_commitments,
-                                         planned_team_sessions)
+                                         settings.sleep_goal_hours, settings.hr_zones)
         fingerprint = hashlib.sha256(json.dumps({"candidate": asdict(candidate),
                                                  "prompt_version": PROMPT_VERSION}, sort_keys=True).encode()).hexdigest()
         with sqlite3.connect(settings.db_path) as connection:

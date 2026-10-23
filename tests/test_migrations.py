@@ -20,6 +20,8 @@ from scripts.backup_db import backup_database
 
 SCHEMA = Path(__file__).parents[1] / "db/migrations/baseline.sql"
 HEAD = "0006_weekly_plan"
+PLAN_TABLES = ("fixed_commitments", "plan_sessions", "plan_versions", "plan_snapshots",
+               "coach_proposals", "proposal_changes")
 
 
 def tables(connection):
@@ -32,7 +34,7 @@ def snapshot(database):
     with closing(sqlite3.connect(database)) as connection:
         old_tables = [table for table in tables(connection) if table not in {
             "activity_coaching_opinion_history", "coach_chat_turns", "coach_llm_calls",
-            "weekly_plans", "coach_plan_proposals", "coach_plan_changes", "coach_plan_undo",
+            *PLAN_TABLES,
         }]
         counts = {table: connection.execute(f'SELECT count(*) FROM "{table}"').fetchone()[0] for table in old_tables}
         payloads = {}
@@ -113,7 +115,7 @@ def test_fresh_upgrade_and_default_user(tmp_path):
     database = tmp_path / "fresh.db"
     assert upgrade_database(database) is None
     with closing(sqlite3.connect(database)) as connection:
-        assert len(tables(connection)) == 22
+        assert len(tables(connection)) == 24
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (HEAD,)
         columns = {row[1]: row for row in connection.execute("PRAGMA table_info(activity_coaching_insights)")}
         for name in ("schema_version", "prompt_version"):
@@ -123,10 +125,10 @@ def test_fresh_upgrade_and_default_user(tmp_path):
         assert "activity_coaching_opinion_history" in tables(connection)
         assert "coach_chat_turns" in tables(connection)
         assert "coach_llm_calls" in tables(connection)
-        for name in ("weekly_plans", "coach_plan_proposals", "coach_plan_changes", "coach_plan_undo"):
+        for name in PLAN_TABLES:
             assert name in tables(connection)
-        assert "expected_revision" in {row[1] for row in connection.execute("PRAGMA table_info(coach_plan_undo)")}
-        assert "after_json" in {row[1] for row in connection.execute("PRAGMA table_info(coach_plan_undo)")}
+        assert "version_before" in {row[1] for row in connection.execute("PRAGMA table_info(plan_snapshots)")}
+        assert "linked_activity_id" in {row[1] for row in connection.execute("PRAGMA table_info(plan_sessions)")}
         assert {row[1] for row in connection.execute("PRAGMA table_info(coach_chat_turns)")} == {
             "id", "user_id", "question", "answer", "evidence_json", "activity_ids_json",
             "tool_calls_json", "model_provider", "model_name", "prompt_version", "created_at",
@@ -167,7 +169,7 @@ def test_existing_upgrade_preserves_data_and_body_tables(legacy_copy):
         assert connection.execute("SELECT count(*) FROM activity_coaching_opinion_history").fetchone() == (0,)
         assert connection.execute("SELECT count(*) FROM coach_chat_turns").fetchone() == (0,)
         assert connection.execute("SELECT count(*) FROM coach_llm_calls").fetchone() == (0,)
-        for name in ("weekly_plans", "coach_plan_proposals", "coach_plan_changes", "coach_plan_undo"):
+        for name in PLAN_TABLES:
             assert connection.execute(f"SELECT count(*) FROM {name}").fetchone() == (0,)
         assert connection.execute("SELECT running_goal_time, running_date FROM users").fetchone() == expected_profile
         assert connection.execute("SELECT name, goal_type FROM goals ORDER BY id").fetchall() == [
@@ -207,7 +209,7 @@ def test_missing_tables_are_created_without_adding_body_tables(tmp_path):
         connection.execute("CREATE TABLE users(id INTEGER PRIMARY KEY, age INTEGER, gender VARCHAR(20), weight FLOAT, height FLOAT, max_hr INTEGER)")
     upgrade_database(database)
     with closing(sqlite3.connect(database)) as connection:
-        assert len(tables(connection)) == 20
+        assert len(tables(connection)) == 22
         assert "prediction_snapshots" in tables(connection)
         assert "garmin_sync_status" in tables(connection)
 

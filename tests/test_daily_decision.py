@@ -151,8 +151,10 @@ def test_builder_team_commitment_and_readable_boolean_facts(decision_db):
     with sqlite3.connect(decision_db) as connection:
         connection.execute("INSERT INTO activities (id,user_id,date,type,distance,duration,avg_hr) "
                            "VALUES (1,1,?,'football',3,60,140)", (DAY.isoformat(),))
-    result = build_daily_decision(DAY, decision_db, 1, "Europe/Berlin", 7.5,
-                                  team_commitments=("volleyball",))
+        connection.execute("INSERT INTO fixed_commitments(user_id,weekday,start_time,sport,kind,"
+                           "typical_duration_min,active) VALUES(1,?,'19:00','volleyball','training',90,1)",
+                           (DAY.weekday(),))
+    result = build_daily_decision(DAY, decision_db, 1, "Europe/Berlin", 7.5)
     facts = {fact["id"]: fact["display"] for fact in result.facts}
     assert facts["HARD_LAST_48H"] == "football session on Mon 29 Jun"
     assert facts["SPORT_FOOTBALL_LAST_24H"] == "football session on Mon 29 Jun"
@@ -168,9 +170,14 @@ def test_builder_team_commitment_and_readable_boolean_facts(decision_db):
 
 
 def test_planned_team_session_uses_same_priority_as_fixed_commitment(decision_db):
-    result = build_daily_decision(DAY, decision_db, 1, "Europe/Berlin", 7.5,
-                                  team_commitments=("football",),
-                                  planned_team_sessions=("football", "volleyball", "running"))
+    with sqlite3.connect(decision_db) as connection:
+        connection.execute("INSERT INTO fixed_commitments(user_id,weekday,start_time,sport,kind,"
+                           "typical_duration_min,active) VALUES(1,?,'19:00','football','training',90,1)",
+                           (DAY.weekday(),))
+        connection.execute("INSERT INTO plan_sessions(user_id,date,sport,intent,duration_min,origin,status,"
+                           "created_at,updated_at) VALUES(1,?,'volleyball','training',90,'athlete','planned',"
+                           "'2026-01-01','2026-01-01')", (DAY.isoformat(),))
+    result = build_daily_decision(DAY, decision_db, 1, "Europe/Berlin", 7.5)
     facts = {fact["id"]: fact["display"] for fact in result.facts}
     assert facts["TEAM_FOOTBALL_TODAY"] == "football training planned today"
     assert facts["TEAM_VOLLEYBALL_TODAY"] == "volleyball training planned today"

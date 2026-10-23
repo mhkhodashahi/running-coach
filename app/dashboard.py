@@ -12,6 +12,7 @@ from config import get_settings
 from services.coaching_engine import build_rule_recommendations
 from services.daily_decision_service import get_or_create_daily_decision, set_athlete_choice
 from services.training_context_service import load_training_bundle
+from services.weekly_plan_service import todays_sessions
 from ui.charts import (
     activity_calendar_chart,
     goal_pace_chart,
@@ -111,6 +112,12 @@ try:
     if daily_decision.provisional:
         st.caption(f"Provisional · Based on {daily_decision.based_on} · Last sync {daily_decision.last_sync_time}")
     st.write(daily_decision.explanation)
+    planned = todays_sessions(decision_day, settings=settings, user_id=user.id)
+    if planned:
+        st.caption("Planned today")
+        for item in planned:
+            st.write(f"{item['sport'].title()} · {item['intent']} · {item['duration_min']} min"
+                     f"{' · fixed' if item['origin'] == 'fixed' else ''}")
     if daily_decision.sports:
         for item in daily_decision.sports:
             session = item["session"]

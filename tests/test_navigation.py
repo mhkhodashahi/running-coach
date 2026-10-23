@@ -14,6 +14,7 @@ def test_default_navigation_pages_do_not_include_removed_surfaces() -> None:
         "pages/2_Recovery.py",
         "pages/3_Goal_Achievement_Readiness.py",
         "pages/4_AI_Coach.py",
+        "pages/6_Plan.py",
         "pages/5_Goals_and_Digests.py",
         "pages/7_Quality_Sessions.py",
     ]
@@ -24,7 +25,7 @@ def test_activity_details_stays_registered_without_sidebar_link() -> None:
 
     pages = build_pages()
 
-    assert len(pages) == 8
+    assert len(pages) == 9
     assert pages[-1].visibility == "hidden"
 
 
