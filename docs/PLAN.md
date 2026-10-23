@@ -97,12 +97,14 @@ Sequence depends on the missing target contract. Acceptance criteria below are c
 
 #### 4b-1. Daily decision
 
+- Status: complete. Readiness v1.2 and deterministic daily decisions are active; the athlete override remains separate.
 - Files: `metrics/readiness.py`, `metrics/snapshot.py`, `coach/decision.py`, daily decision storage/service, Today and Telegram surfaces, tests and `docs/metrics.md`.
 - Acceptance: readiness v1.1 uses a 3-night HRV mean (2-night minimum) while the illness flag uses last night; deterministic first-match intensity and four-sport ranking cite facts; stale health is provisional; `daily_v2` stores coach output and independent athlete override; LLM explains only and safely falls back; Today and `/today` agree.
 - Risks: same-day health can arrive after a provisional decision; existing daily decision rows must remain intact; short-term HRV volatility and HR-derived team-sport load are limitations.
 
 #### 4b-2. Weekly plan and proposals/approval/undo
 
+- Status: complete. A deterministic easy-session draft becomes per-day proposals, never automatic plan edits. Accepted changes are versioned and undoable; projected weekly TRIMP is capped at 110% of the observed prior week or the coach abstains. Fixed team commitments are athlete-owned and feed the daily ranking.
 - Files: plan and proposal models/migration, `coach/`, Streamlit and Telegram approval surfaces, tests.
 - Acceptance: every proposed change has a reason and fact IDs; athlete accepts/rejects each independently; stale proposals cannot apply; undo restores the pre-change plan snapshot; logged activities never change.
 - Risks: concurrent plan edits, replayed approvals, and incomplete undo snapshots.

@@ -69,6 +69,7 @@ def _tool_specs() -> list[dict[str, Any]]:
         "list_activities": {"start_date": {"type": "string"}, "end_date": {"type": "string"},
                             "sport": {"type": ["string", "null"]}},
         "get_opinion": {"activity_id": {"type": "integer"}},
+        "plan_week": {"start_date": {"type": "string"}},
     }
     return [{"name": name, "description": f"Read-only {name} for this athlete",
              "parameters": {"type": "object", "properties": properties,

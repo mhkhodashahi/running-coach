@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from coach.plan import monday
 from metrics import get_daily_snapshot
 from metrics.readiness import LOWER_LOAD, UPPER_LOAD
 from metrics.sports import sport_category
@@ -37,7 +38,8 @@ MAX_SAMPLES = 60
 MAX_LIST = 30
 MAX_TEXT = 500
 MAX_OUTPUT_CHARS = 16000
-TOOL_NAMES = ("get_daily_snapshot", "get_activity", "compare_sessions", "list_activities", "get_opinion")
+TOOL_NAMES = ("get_daily_snapshot", "get_activity", "compare_sessions", "list_activities", "get_opinion",
+              "plan_week")
 
 
 @contextmanager
@@ -363,6 +365,26 @@ class CoachTools:
         return _bounded({"activity_id": activity_id, "opinion": compact, "facts": facts,
                          "saved_at": row["created_at"], "model": row["model_name"]})
 
+    def plan_week(self, start_date: date) -> dict[str, Any]:
+        if start_date != monday(start_date):
+            raise ValueError("Week must start on Monday")
+        with _readonly(self.database) as connection:
+            row = connection.execute("SELECT revision,sessions_json FROM weekly_plans WHERE user_id=? AND week_start=?",
+                                     (self.user_id, start_date.isoformat())).fetchone()
+        sessions = json.loads(row["sessions_json"]) if row else {}
+        facts = [_fact("PLAN_WEEK_START", "Plan week start", start_date.isoformat(), "weekly_plans.week_start"),
+                 _fact("PLAN_REVISION", "Plan revision", str(row["revision"] if row else 0),
+                       "weekly_plans.revision")]
+        items = []
+        for index, (day, session) in enumerate(sorted(sessions.items())[:7]):
+            facts.append(_fact(f"PLAN_DAY_{index}", "Planned session", f"{day}: {session['sport']} "
+                               f"{session['intent']}", f"weekly_plans.sessions_json[{day}]"))
+            facts.append(_fact(f"PLAN_DAY_{index}_DURATION", "Planned duration",
+                               f"{session['duration_min']} min", f"weekly_plans.sessions_json[{day}].duration_min"))
+            items.append({"date": day, "sport": session["sport"], "intent": session["intent"],
+                          "duration_min": session["duration_min"], "fixed": bool(session["fixed"])})
+        return _bounded({"week_start": start_date.isoformat(), "sessions": items, "facts": facts})
+
     def call(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         if name not in TOOL_NAMES:
             raise ValueError("Unknown coach tool")
@@ -370,5 +392,7 @@ class CoachTools:
             return self.get_daily_snapshot(date.fromisoformat(arguments["date"]))
         if name in {"get_activity", "compare_sessions", "get_opinion"}:
             return getattr(self, name)(int(arguments["activity_id"]))
+        if name == "plan_week":
+            return self.plan_week(date.fromisoformat(arguments["start_date"]))
         return self.list_activities(date.fromisoformat(arguments["start_date"]),
                                     date.fromisoformat(arguments["end_date"]), arguments.get("sport"))

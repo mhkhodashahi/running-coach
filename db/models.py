@@ -351,6 +351,85 @@ class CoachingDecision(Base):
     email_deliveries: Mapped[list[EmailDelivery]] = relationship(back_populates="coaching_decision")
 
 
+class FixedCommitment(Base):
+    __tablename__ = "fixed_commitments"
+    __table_args__ = (UniqueConstraint("user_id", "weekday", "start_time", "sport",
+                                      name="uq_fixed_commitments_slot"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True, nullable=False)
+    weekday: Mapped[int] = mapped_column(Integer, nullable=False)
+    start_time: Mapped[str] = mapped_column(String(5), nullable=False)
+    sport: Mapped[str] = mapped_column(String(16), nullable=False)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    typical_duration_min: Mapped[int] = mapped_column(Integer, nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+
+class PlanSession(Base):
+    __tablename__ = "plan_sessions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    date: Mapped[date] = mapped_column(Date, nullable=False)
+    sport: Mapped[str] = mapped_column(String(16), nullable=False)
+    intent: Mapped[str] = mapped_column(String(32), nullable=False)
+    duration_min: Mapped[int] = mapped_column(Integer, nullable=False)
+    hr_cap_bpm: Mapped[int | None] = mapped_column(Integer)
+    notes: Mapped[str | None] = mapped_column(Text)
+    origin: Mapped[str] = mapped_column(String(16), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="planned")
+    linked_activity_id: Mapped[int | None] = mapped_column(ForeignKey("activities.id"))
+    fixed_commitment_id: Mapped[int | None] = mapped_column(ForeignKey("fixed_commitments.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow, onupdate=_utcnow)
+
+
+class PlanVersion(Base):
+    __tablename__ = "plan_versions"
+
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), primary_key=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+
+class PlanSnapshot(Base):
+    __tablename__ = "plan_snapshots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True, nullable=False)
+    version_before: Mapped[int] = mapped_column(Integer, nullable=False)
+    version_after: Mapped[int] = mapped_column(Integer, nullable=False)
+    snapshot_json: Mapped[str] = mapped_column(Text, nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
+    undone_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
+class CoachProposal(Base):
+    __tablename__ = "coach_proposals"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True, nullable=False)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    base_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(24), nullable=False)
+    summary: Mapped[str] = mapped_column(Text, nullable=False)
+    facts_json: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
+
+
+class ProposalChange(Base):
+    __tablename__ = "proposal_changes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    proposal_id: Mapped[int] = mapped_column(ForeignKey("coach_proposals.id"), index=True, nullable=False)
+    change_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    session_json: Mapped[str] = mapped_column(Text, nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    fact_ids_json: Mapped[str] = mapped_column(Text, nullable=False)
+    decision: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
+
+
 class EmailDelivery(Base):
     """History of outbound coaching emails."""
 

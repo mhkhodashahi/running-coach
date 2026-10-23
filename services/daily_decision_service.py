@@ -19,11 +19,13 @@ from coach.agent import CoachAgent, _read_version, _user_lock
 from coach.decision import (
     RECENT_RECOVERY_WINDOW,
     SPORT_WINDOW,
+    TEAM_SPORTS,
     PriorSession,
     decide_intensity,
     is_hard_session,
     provisional_day,
     rank_sports,
+    session_cause,
     team_options,
 )
 from coach.guardrails import GuardrailContext, guardrail_errors
@@ -36,13 +38,15 @@ from services.coach_facts import unsupported_text_numbers
 from services.fact_display import ratio as format_ratio
 from services.fact_display import score as format_score
 from services.hr_zones import heart_rate_zone_bounds
+from services.weekly_plan_service import scheduled_team_sports
 
-PROMPT_VERSION = "daily-v2.1"
+PROMPT_VERSION = "daily-v2.2"
 SYSTEM_PROMPT = (
     "You are Pulse Coach. Explain the code's daily decision; never change its intensity or ranked sports. "
     "Speak as I to you. No diagnosis. Return exactly the JSON schema fields. "
     "Use only supplied fact display strings for numerical claims. Cite at least two facts: put their IDs in "
     "evidence_ids, and copy their display values exactly into the explanation. Never put IDs in prose. "
+    "The explanation and headline are statements, never questions. Put questions only in follow_ups. "
     "The explanation must be 2 or 3 short sentences. Give 2 or 3 short, answerable follow-up questions. "
     "Do not mention internal rules, scores, thresholds, dates or durations unless their exact display appears in facts."
 )
@@ -134,7 +138,8 @@ def _recent_sessions(connection: sqlite3.Connection, user_id: int, requested: da
 
 def build_daily_decision(requested: date, database: Path, user_id: int, timezone: str,
                          sleep_goal_hours: float, hr_zones: tuple[tuple[str, int, int | None], ...] = (),
-                         team_commitments: tuple[str, ...] = ()) -> DailyDecision:
+                         team_commitments: tuple[str, ...] = (),
+                         planned_team_sessions: tuple[str, ...] = ()) -> DailyDecision:
     """Read the DB but never write it; all rankings and intensity come from code."""
     with _read_only(database) as connection:
         rows = connection.execute("SELECT date,sleep_duration,hrv FROM health_metrics "
@@ -156,6 +161,8 @@ def build_daily_decision(requested: date, database: Path, user_id: int, timezone
         sessions = _recent_sessions(connection, user_id, requested, timezone, session_snapshot)
         user = connection.execute("SELECT max_hr,age FROM users WHERE id=?", (user_id,)).fetchone()
     now = datetime.combine(requested + timedelta(days=1), time.min, ZoneInfo(timezone))
+    scheduled_teams = tuple(dict.fromkeys(sport for sport in (*team_commitments, *planned_team_sessions)
+                                           if sport in TEAM_SPORTS))
     recent = tuple(item for item in sessions if item.when < now)
     readiness = snapshot.readiness.score.value
     load_ratio = snapshot.load.ratio.value
@@ -168,33 +175,41 @@ def build_daily_decision(requested: date, database: Path, user_id: int, timezone
     elif max_hr:
         z2_cap = int(heart_rate_zone_bounds(int(max_hr))[1][2] - 1e-9)
     ranking = rank_sports(intensity.intensity, recent, now, z2_cap, readiness=readiness,
-                          team_commitments=team_commitments)
-    hard_recent = any(now - timedelta(hours=48) <= item.when < now and is_hard_session(item) for item in recent)
+                          team_commitments=scheduled_teams)
+    hard_recent = max((item for item in recent if now - timedelta(hours=48) <= item.when < now and
+                       is_hard_session(item)), key=lambda item: item.when, default=None)
     facts = [
         _fact("READINESS", "Readiness", format_score(readiness) or "No data", "metrics_snapshot.readiness.score"),
         _fact("LOAD_RATIO", "Load ratio", format_ratio(load_ratio) or "No data", "metrics_snapshot.load.ratio"),
-        _fact("ILLNESS_FLAG", "Illness signal", "yes" if illness else "no" if illness is False else "No data",
+        _fact("ILLNESS_FLAG", "Illness signal", "resting HR and HRV signal strain" if illness else
+              "no combined illness signal" if illness is False else "No data",
               "metrics_snapshot.readiness.illness_flag"),
-        _fact("HARD_LAST_48H", "Hard session in last 48h", "yes" if hard_recent else "no", "activities + HR zones"),
+        _fact("HARD_LAST_48H", "Hard session in last 48h",
+              session_cause(hard_recent) if hard_recent else "no hard session in last 48 hours",
+              "activities + HR zones"),
         _fact("BASED_ON_DATE", "Health day used", based_on.isoformat(), "health_metrics.date"),
         _fact("LAST_SYNC_TIME", "Last Garmin sync", sync_display, "garmin_sync_status.last_synced_at"),
     ]
     for sport in RECOMMENDABLE_SPORTS:
         count = sum(now - SPORT_WINDOW <= item.when < now and item.sport == sport for item in recent)
-        was_recent = any(now - timedelta(hours=24) <= item.when < now and item.sport == sport for item in recent)
+        last_sport = max((item for item in recent if now - timedelta(hours=24) <= item.when < now and
+                          item.sport == sport), key=lambda item: item.when, default=None)
         facts.append(_fact(f"SPORT_{sport.upper()}_7D", f"{sport} last 7 days", str(count), "activities.date,type"))
-        facts.append(_fact(f"SPORT_{sport.upper()}_LAST_24H", f"{sport} last 24h", "yes" if was_recent else "no",
+        facts.append(_fact(f"SPORT_{sport.upper()}_LAST_24H", f"{sport} last 24h",
+                           session_cause(last_sport) if last_sport else f"no {sport} session in last 24 hours",
                            "activities.date,type"))
         if sport in ("running", "gym"):
             count_3d = sum(now - RECENT_RECOVERY_WINDOW <= item.when < now and item.sport == sport for item in recent)
             facts.append(_fact(f"SPORT_{sport.upper()}_3D", f"{sport} last 3 days", str(count_3d),
                                "activities.date,type"))
-    for sport in ("football", "volleyball"):
-        facts.append(_fact(f"TEAM_{sport.upper()}_TODAY", f"{sport} team commitment today",
-                           "yes" if sport in team_commitments else "no", "explicit_team_commitments"))
+    for sport in TEAM_SPORTS:
+        facts.append(_fact(f"TEAM_{sport.upper()}_TODAY", f"{sport} team training today",
+                           f"{sport} training planned today" if sport in scheduled_teams else
+                           f"no {sport} training planned today", "explicit_team_schedule"))
+    last_team = max((item for item in recent if now - timedelta(hours=48) <= item.when < now and
+                     item.sport in TEAM_SPORTS), key=lambda item: item.when, default=None)
     facts.append(_fact("TEAM_LAST_48H", "Team session last 48h",
-                       "yes" if any(now - timedelta(hours=48) <= item.when < now and
-                                    item.sport in ("football", "volleyball") for item in recent) else "no",
+                       session_cause(last_team) if last_team else "no team session in last 48 hours",
                        "activities.date,type"))
     facts.extend((_fact("HARD_LOOKBACK", "Hard-session lookback", "48 hours", "coach.decision.HARD_LOOKBACK"),
                   _fact("RECENT_SPORT_WINDOW", "Recent sport window", "24 hours", "coach.decision.RECENT_SPORT"),
@@ -214,9 +229,9 @@ def build_daily_decision(requested: date, database: Path, user_id: int, timezone
                                           if item.name == "hrv"), None), intensity.intensity, intensity.rule,
                          intensity.fact_ids, tuple(asdict(item) for item in ranking),
                          ("Skip planned team training or attend skills only. Optional mobility or a walk; not training."
-                          if intensity.intensity == "rest" and team_commitments else
+                          if intensity.intensity == "rest" and scheduled_teams else
                           "Optional mobility or a walk; not training" if intensity.intensity == "rest" else None),
-                         tuple(facts), "", "", (), (), team_options=team_options(intensity.intensity, team_commitments))
+                         tuple(facts), "", "", (), (), team_options=team_options(intensity.intensity, scheduled_teams))
 
 
 def fallback_explanation(decision: DailyDecision) -> str:
@@ -230,6 +245,8 @@ def fallback_explanation(decision: DailyDecision) -> str:
         "readiness_below_50": f"Keep today easy. Readiness is {readiness}, so protect recovery.",
         "load_ratio_above_1_5": ("Keep today easy. Your training load is well above your usual level "
                                    f"(load ratio {load_ratio})."),
+        "load_ratio_above_1_3": (f"Keep today easy. Your load ratio is {load_ratio}, above the range "
+                                   "for a hard session."),
         "hard_allowed": (f"A hard session is available today. Readiness is {readiness}, and recent load "
                          f"is within range (ratio {load_ratio})."),
         "hard_in_last_48h": "Keep today easy. You had a hard session in the last 48 hours.",
@@ -248,6 +265,9 @@ def _validate_explanation(payload: Any, decision: DailyDecision) -> DecisionExpl
     if len(result.evidence_ids) < 2 or set(result.evidence_ids) - facts.keys():
         raise ValueError("Two known evidence IDs are required")
     text = f"{result.headline} {result.explanation}"
+    if "?" in text or re.search(r"(?:^|[.!]\s+)(?:what|why|how|should|would|could|do|did|is|are|can|when|where)\b",
+                               text, flags=re.IGNORECASE):
+        raise ValueError("Headline and explanation must be statements; put questions in follow_ups")
     if any(re.search(rf"(?<![A-Za-z0-9_]){re.escape(fact_id)}(?![A-Za-z0-9_])", text) for fact_id in facts):
         raise ValueError("Fact ID in prose")
     unsupported = unsupported_text_numbers(text, list(facts.values()))
@@ -282,7 +302,8 @@ def explain_decision(decision: DailyDecision, llm: Any | None = None,
     context = {"intensity": decision.intensity,
                "top_sport": decision.sports[0]["sport"] if decision.sports else None,
                "provisional": decision.provisional,
-               "facts": [fact for fact in decision.facts if fact["id"] in explanation_fact_ids],
+               "facts": [fact for fact in decision.facts if fact["id"] in explanation_fact_ids and
+                         (fact["id"] != "ILLNESS_FLAG" or decision.rule == "illness_signal")],
                "decision_basis": fallback_explanation(decision)}
     prompt = (json.dumps(context) + "\nWrite 2-3 sentences. Cite two facts whose display values are "
               "copied verbatim into the explanation. Do not add fields outside the response schema.")
@@ -311,14 +332,18 @@ def explain_decision(decision: DailyDecision, llm: Any | None = None,
 def get_or_create_daily_decision(day: date, *, settings: Settings | None = None,
                                  user_id: int | None = None, llm: Any | None = None,
                                  team_commitments: tuple[str, ...] = (),
+                                 planned_team_sessions: tuple[str, ...] = (),
                                  on_explanation_error: Callable[[int, str], None] | None = None) -> DailyDecision:
     """Recompute on changed inputs; store immutable coach choice and separate athlete override."""
     settings = settings or get_settings()
     _read_version(settings.db_path)
     user_id = user_id or settings.default_user_id
     with _user_lock(settings.db_path, user_id):
+        planned_team_sessions = tuple(dict.fromkeys((*planned_team_sessions,
+                                                     *scheduled_team_sports(day, settings=settings, user_id=user_id))))
         candidate = build_daily_decision(day, settings.db_path, user_id, settings.local_timezone,
-                                         settings.sleep_goal_hours, settings.hr_zones, team_commitments)
+                                         settings.sleep_goal_hours, settings.hr_zones, team_commitments,
+                                         planned_team_sessions)
         fingerprint = hashlib.sha256(json.dumps({"candidate": asdict(candidate),
                                                  "prompt_version": PROMPT_VERSION}, sort_keys=True).encode()).hexdigest()
         with sqlite3.connect(settings.db_path) as connection:

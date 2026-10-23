@@ -8,7 +8,15 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from coach.decision import PriorSession, decide_intensity, is_hard_session, provisional_day, rank_sports, team_options
+from coach.decision import (
+    PriorSession,
+    decide_intensity,
+    is_hard_session,
+    provisional_day,
+    rank_sports,
+    session_cause,
+    team_options,
+)
 from config import get_settings
 from db.migration_runner import upgrade_database
 from services.daily_decision_service import (
@@ -33,8 +41,9 @@ def session(hours_ago, sport="running", intent=None, z4=None):
     (False, 30, 1, (), "readiness_below_50"),
     (False, None, 1, (), "not_enough_data"),
     (False, 50, 1.5001, (), "load_ratio_above_1_5"),
+    (False, 70, 1.5, (), "load_ratio_above_1_3"),
     (False, 70, 1.3, (), "hard_allowed"),
-    (False, 70, 1.3001, (), "otherwise_easy"),
+    (False, 70, 1.3001, (), "load_ratio_above_1_3"),
     (False, 70, 1.3, (session(1, "football"),), "hard_in_last_48h"),
     (False, 70, 1.3, (session(49, "football"),), "hard_allowed"),
     (False, 69.99, 1, (), "otherwise_easy"),
@@ -53,6 +62,13 @@ def test_hard_session_detection():
     assert is_hard_session(session(1, z4=15))
     assert is_hard_session(session(1, sport="volleyball"))
     assert not is_hard_session(session(1, z4=14.99))
+
+
+def test_session_cause_names_recorded_sport_and_date_without_inventing_a_match():
+    team = PriorSession(datetime(2026, 10, 17, tzinfo=ZoneInfo("Europe/Berlin")), "football")
+    tempo = PriorSession(team.when, "running", "tempo")
+    assert session_cause(team) == "football session on Sat 17 Oct"
+    assert session_cause(tempo) == "tempo run on Sat 17 Oct"
 
 
 def test_sport_ranking_and_rest_option():
@@ -89,6 +105,8 @@ def test_easy_duration_and_committed_team_priority():
     assert [item.sport for item in committed] == ["football", "running", "gym"]
     assert committed[0].session["intent"] == "skills only, no match play"
     assert committed[0].session["hr_cap_bpm"] is None
+    assert team_options("easy", ("football",)) == (
+        {"sport": "volleyball", "label": "Only with team training today"},)
     assert team_options("rest", ("football",))[0]["label"] == "Skip team training or attend skills only"
     assert rank_sports("rest", (), NOW, 130, team_commitments=("football",)) == ()
 
@@ -127,6 +145,42 @@ def test_builder_uses_latest_complete_day_and_no_future_health(decision_db):
     assert result.readiness is not None
     assert {item["sport"] for item in result.sports} == {"running", "gym"} or result.intensity == "rest"
     assert result.last_sync_time == "never synced"
+
+
+def test_builder_team_commitment_and_readable_boolean_facts(decision_db):
+    with sqlite3.connect(decision_db) as connection:
+        connection.execute("INSERT INTO activities (id,user_id,date,type,distance,duration,avg_hr) "
+                           "VALUES (1,1,?,'football',3,60,140)", (DAY.isoformat(),))
+    result = build_daily_decision(DAY, decision_db, 1, "Europe/Berlin", 7.5,
+                                  team_commitments=("volleyball",))
+    facts = {fact["id"]: fact["display"] for fact in result.facts}
+    assert facts["HARD_LAST_48H"] == "football session on Mon 29 Jun"
+    assert facts["SPORT_FOOTBALL_LAST_24H"] == "football session on Mon 29 Jun"
+    assert facts["TEAM_LAST_48H"] == "football session on Mon 29 Jun"
+    assert facts["TEAM_VOLLEYBALL_TODAY"] == "volleyball training planned today"
+    assert facts["ILLNESS_FLAG"] == "no combined illness signal"
+    if result.intensity == "rest":
+        assert not result.sports
+        assert any("Skip" in item["label"] for item in result.team_options if item["sport"] == "volleyball")
+    else:
+        assert result.sports[0]["sport"] == "volleyball"
+        assert all(item["sport"] != "volleyball" for item in result.team_options)
+
+
+def test_planned_team_session_uses_same_priority_as_fixed_commitment(decision_db):
+    result = build_daily_decision(DAY, decision_db, 1, "Europe/Berlin", 7.5,
+                                  team_commitments=("football",),
+                                  planned_team_sessions=("football", "volleyball", "running"))
+    facts = {fact["id"]: fact["display"] for fact in result.facts}
+    assert facts["TEAM_FOOTBALL_TODAY"] == "football training planned today"
+    assert facts["TEAM_VOLLEYBALL_TODAY"] == "volleyball training planned today"
+    if result.intensity == "rest":
+        assert not result.sports
+        assert {item["sport"] for item in result.team_options} == {"football", "volleyball"}
+        assert all("Skip" in item["label"] for item in result.team_options)
+    else:
+        assert [item["sport"] for item in result.sports[:2]] == ["football", "volleyball"]
+        assert not result.team_options
 
 
 def test_running_cap_uses_custom_second_zone_or_exclusive_default(decision_db):
@@ -168,6 +222,7 @@ def test_llm_failure_falls_back_and_cannot_change_intensity(decision_db):
     ("not_enough_data", "not enough recovery data"),
     ("readiness_below_50", "protect recovery"),
     ("load_ratio_above_1_5", "training load is well above"),
+    ("load_ratio_above_1_3", "above the range for a hard session"),
     ("hard_allowed", "hard session is available"),
     ("hard_in_last_48h", "hard session in the last 48 hours"),
     ("otherwise_easy", "conditions for a hard session"),
@@ -189,6 +244,7 @@ def test_valid_explanation_cites_facts_but_cannot_change_code_decision(decision_
             assert "ranking" not in context
             assert context["top_sport"] in ("running", "gym")
             facts = {fact["id"]: fact["display"] for fact in context["facts"]}
+            assert "ILLNESS_FLAG" not in facts
             return {"headline": "Keep it steady.",
                     "explanation": f"I see readiness {facts['READINESS']} and load ratio {facts['LOAD_RATIO']}. "
                                    "I would keep the code decision.",
@@ -202,6 +258,47 @@ def test_valid_explanation_cites_facts_but_cannot_change_code_decision(decision_
     assert result.sports == original.sports
     assert result.evidence_ids == ("READINESS", "LOAD_RATIO")
     assert result.explanation_source == "llm"
+
+
+def test_illness_fact_is_sent_only_when_true(decision_db):
+    class Model:
+        def generate_json(self, system, prompt, response_schema=None):
+            facts = {fact["id"]: fact["display"] for fact in json.loads(prompt.splitlines()[0])["facts"]}
+            assert facts["ILLNESS_FLAG"] == "resting HR and HRV signal strain"
+            return {"headline": "Rest today.",
+                    "explanation": f"I see {facts['ILLNESS_FLAG']}. Readiness is {facts['READINESS']}.",
+                    "evidence_ids": ["ILLNESS_FLAG", "READINESS"],
+                    "follow_ups": ["How is my recovery?", "What changed in my load?"]}
+
+    original = build_daily_decision(DAY, decision_db, 1, "Europe/Berlin", 7.5)
+    illness_facts = tuple({**fact, "display": "resting HR and HRV signal strain"}
+                          if fact["id"] == "ILLNESS_FLAG" else fact for fact in original.facts)
+    result = explain_decision(replace(original, rule="illness_signal", facts=illness_facts), Model())
+    assert result.explanation_source == "llm"
+
+
+@pytest.mark.parametrize("question", ["Should I train harder?", "Should I train harder."])
+def test_question_in_explanation_retries_then_uses_statements(decision_db, question):
+    class Model:
+        calls = 0
+
+        def generate_json(self, system, prompt, response_schema=None):
+            self.calls += 1
+            facts = {fact["id"]: fact["display"] for fact in json.loads(prompt.splitlines()[0])["facts"]}
+            sentence = question if self.calls == 1 else "Keep the effort easy."
+            return {"headline": "Keep it easy.",
+                    "explanation": f"I see {facts['READINESS']} readiness and {facts['LOAD_RATIO']} load. {sentence}",
+                    "evidence_ids": ["READINESS", "LOAD_RATIO"],
+                    "follow_ups": ["How is my recovery?", "What changed in my load?"]}
+
+    model = Model()
+    errors = []
+    result = explain_decision(build_daily_decision(DAY, decision_db, 1, "Europe/Berlin", 7.5), model,
+                              on_error=lambda attempt, error: errors.append(error))
+    assert model.calls == 2
+    assert "put questions in follow_ups" in errors[0]
+    assert result.explanation_source == "llm"
+    assert "?" not in result.explanation
 
 
 def test_explanation_retries_diagnosis_and_missing_second_citation(decision_db):

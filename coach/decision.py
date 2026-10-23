@@ -59,6 +59,19 @@ def is_hard_session(session: PriorSession) -> bool:
             (session.z4_plus_percent is not None and session.z4_plus_percent >= HARD_Z4_SHARE))
 
 
+def session_cause(session: PriorSession) -> str:
+    """Describe a recorded session without guessing whether team play was a match."""
+    if session.sport in TEAM_SPORTS:
+        label = f"{session.sport} session"
+    elif session.detected_intent in ("tempo", "race"):
+        label = f"{session.detected_intent} run"
+    elif session.z4_plus_percent is not None and session.z4_plus_percent >= HARD_Z4_SHARE:
+        label = "high-intensity run"
+    else:
+        label = f"{session.sport} session"
+    return f"{label} on {session.when:%a} {session.when.day} {session.when:%b}"
+
+
 def decide_intensity(illness: bool | None, readiness: float | None, load_ratio: float | None,
                      sessions: tuple[PriorSession, ...], now: datetime) -> IntensityDecision:
     if illness is True:
@@ -71,6 +84,8 @@ def decide_intensity(illness: bool | None, readiness: float | None, load_ratio: 
         return IntensityDecision("easy", "readiness_below_50", ("READINESS",))
     if load_ratio is not None and load_ratio > EASY_LOAD_RATIO:
         return IntensityDecision("easy", "load_ratio_above_1_5", ("LOAD_RATIO",))
+    if load_ratio is not None and load_ratio > HARD_LOAD_RATIO:
+        return IntensityDecision("easy", "load_ratio_above_1_3", ("LOAD_RATIO",))
     recent_hard = any(now - HARD_LOOKBACK <= item.when < now and is_hard_session(item) for item in sessions)
     if readiness >= HARD_READINESS and load_ratio is not None and load_ratio <= HARD_LOAD_RATIO and not recent_hard:
         return IntensityDecision("hard", "hard_allowed", ("READINESS", "LOAD_RATIO", "HARD_LAST_48H"))
@@ -127,10 +142,10 @@ def team_options(intensity: Intensity, team_commitments: tuple[str, ...] = ()) -
     committed = set(team_commitments) & set(TEAM_SPORTS)
     result = []
     for sport in TEAM_SPORTS:
+        if sport in committed and intensity != "rest":
+            continue
         if sport in committed and intensity == "rest":
             label = "Skip team training or attend skills only"
-        elif sport in committed:
-            label = "Planned team training today"
         else:
             label = "Only with team training today"
         result.append({"sport": sport, "label": label})

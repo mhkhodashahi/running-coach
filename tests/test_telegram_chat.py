@@ -122,3 +122,44 @@ def test_today_command_uses_same_daily_decision_and_keeps_allowlist(monkeypatch)
     assert "1. running: easy" in result.reply
     assert "Football: Only with team training today" in result.reply
     assert "Your choice: rest (coach: easy)" in result.reply
+
+
+def test_plan_commands_keep_allowlist_and_require_explicit_approval(monkeypatch) -> None:
+    telegram = FakeTelegram()
+    called = []
+    proposal = {"id": 7, "status": "open", "facts": [{"id": "READINESS", "display": "72"}],
+                "changes": [{"id": 11, "day": "2026-06-29", "session": {"sport": "running", "intent": "easy",
+                                                                       "duration_min": 30},
+                             "reason": "Keep it easy.", "fact_ids": ["READINESS"], "status": "pending"}]}
+    monkeypatch.setattr("services.telegram_chatbot.propose_week",
+                        lambda *args, **kwargs: called.append("suggest") or proposal)
+    monkeypatch.setattr("services.telegram_chatbot.get_weekly_plan",
+                        lambda *args, **kwargs: {"revision": 0, "sessions": {}})
+    monkeypatch.setattr("services.telegram_chatbot.list_proposals", lambda *args, **kwargs: [proposal])
+    monkeypatch.setattr("services.telegram_chatbot.accept_change",
+                        lambda change_id, **kwargs: called.append(("accept", change_id)))
+    monkeypatch.setattr("services.telegram_chatbot.reject_change",
+                        lambda change_id, **kwargs: called.append(("reject", change_id)))
+    monkeypatch.setattr("services.telegram_chatbot.undo_last_coach_change",
+                        lambda *args, **kwargs: called.append("undo"))
+    monkeypatch.setattr("services.telegram_chatbot.revise_proposal",
+                        lambda proposal_id, request, **kwargs: called.append(("revise", proposal_id, request))
+                        or {"id": 8})
+    monkeypatch.setattr("services.telegram_chatbot.set_fixed_commitment",
+                        lambda day, sport, **kwargs: called.append(("fixed", sport)))
+    bot = TelegramTrainingChatBot(
+        settings=SimpleNamespace(telegram_chat_id="111", telegram_bot_token="token",
+                                 local_timezone="Europe/Berlin"),
+        telegram_service=telegram, chat_service=FakeChat(),
+    )
+    assert not bot.handle_update({"message": {"chat": {"id": 222}, "text": "/plan-accept 11"}}).authorized
+    assert not called
+    preview = bot.handle_update({"message": {"chat": {"id": 111}, "text": "/plan"}})
+    assert "Keep it easy." in preview.reply
+    assert "72" in preview.reply
+    for command in ("/plan-suggest 2026-11-02", "/plan-accept 11", "/plan-reject 12", "/plan-undo",
+                    "/plan-revise 7 make Saturday a rest day", "/plan-fixed Saturday football",
+                    "/plan-unfix 2026-11-07"):
+        assert bot.handle_update({"message": {"chat": {"id": 111}, "text": command}}).authorized
+    assert called == ["suggest", ("accept", 11), ("reject", 12), "undo",
+                      ("revise", 7, "make Saturday a rest day"), ("fixed", "football"), ("fixed", None)]
