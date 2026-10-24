@@ -11,6 +11,6 @@
 {% for value, label in options %}<button type="submit" name="choice" value="{{ value }}" {% if selected == value %}aria-pressed="true"{% else %}aria-pressed="false"{% endif %}><span>{{ label }}</span>{% if coach_pick == value %}<small>Coach</small>{% endif %}</button>{% endfor %}</form>
 {%- endmacro %}
 {% macro zone_bar(zones, sync) -%}
-{% if zones %}<div class="zone-bar" aria-label="Time in heart rate zones">{% for name, percent in zones %}<span class="zone-segment zone-{{ loop.index }}" style="width:{{ [percent, 0]|max }}%" title="{{ name }}: {{ '%.1f'|format(percent) }}%"></span>{% endfor %}</div><div class="zone-labels">{% for name, percent in zones %}<span title="{{ name }}: {{ '%.1f'|format(percent) }}%">{{ '<Z1' if name.startswith('Below') else name.split(' ')[0] }}</span>{% endfor %}</div>{% else %}{{ empty(sync) }}{% endif %}
+{% if zones %}<div class="zone-bar" aria-label="Time in heart rate zones">{% for name, percent in zones %}<span class="zone-segment {{ 'zone-below' if name.startswith('Below') else 'zone-' ~ loop.index }}" style="width:{{ [percent, 0]|max }}%" title="{{ name }}: {{ '%.1f'|format(percent) }}%"></span>{% endfor %}</div>{% else %}{{ empty(sync) }}{% endif %}
 {%- endmacro %}
 {% macro load_bar(chart) -%}<div class="chart-wrap">{{ chart|safe }}</div>{%- endmacro %}

@@ -21,27 +21,37 @@ def readiness_ring(value: float | None) -> str:
     )
 
 
-def load_bars(values: list[tuple[str, float | None]], average: float | None, last_sync: str) -> str:
+def load_bars(values: list[tuple[str, float | None]], average: float | None, last_sync: str,
+              today: str | None = None) -> str:
     maximum = max([value for _, value in values if value is not None] + [average or 0, 1])
     bars = []
+    patterns = ('<defs><pattern id="missing-load" width="4" height="4" patternUnits="userSpaceOnUse" '
+                'patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="4" '
+                'stroke="var(--ink-muted)" stroke-width="1"/></pattern></defs>')
     for index, (day, value) in enumerate(values[-14:]):
         x = index * 32 + 6
+        label = f"{short_date(day)}{' (today, in progress)' if day == today else ''}"
+        axis = "today" if day == today else day[-2:]
         if value is None:
-            bars.append(f'<rect x="{x}" y="105" width="19" height="7" fill="var(--line)">'
-                        f'<title>{escape(short_date(day))}: No data; {escape(last_sync)}</title></rect>'
-                        f'<text x="{x + 9}" y="135" text-anchor="middle" class="axis-label">{escape(day[-2:])}</text>')
+            bars.append(f'<rect x="{x}" y="105" width="19" height="7" fill="url(#missing-load)">'
+                        f'<title>{escape(label)}: No data; {escape(last_sync)}</title></rect>'
+                        f'<text x="{x + 9}" y="135" text-anchor="middle" class="axis-label">{axis}</text>')
             continue
-        height = max(1, round(value / maximum * 104)) if value else 0
+        height = max(2, round(value / maximum * 104)) if value else 4
+        color = "var(--ink-muted)" if value == 0 else "var(--load)"
+        progress = ' opacity="0.6"' if day == today else ""
         bars.append(
             f'<rect x="{x}" y="{112 - height}" width="19" height="{height}" rx="3" '
-            f'fill="var(--load)"><title>{escape(short_date(day))}: {value:.1f} load</title></rect>'
-            f'<text x="{x + 9}" y="135" text-anchor="middle" class="axis-label">{escape(day[-2:])}</text>'
+            f'fill="{color}"{progress}>'
+            f'<title>{escape(label)}: {value:.1f} load</title></rect>'
+            f'<text x="{x + 9}" y="135" text-anchor="middle" class="axis-label">{axis}</text>'
         )
     line = ""
     if average is not None:
         y = 112 - average / maximum * 104
         line = f'<line x1="0" y1="{y:.1f}" x2="448" y2="{y:.1f}" stroke="var(--ink-muted)" stroke-dasharray="4 4"/>'
-    return '<svg class="load-chart" viewBox="0 0 448 144" role="img" aria-label="Training load for the last fourteen days">' + line + "".join(bars) + "</svg>"
+    return ('<svg class="load-chart" viewBox="0 0 448 144" role="img" '
+            'aria-label="Training load for the last fourteen days">' + patterns + line + "".join(bars) + "</svg>")
 
 
 def sparkline(values: list[float | None], label: str, color: str = "muted",

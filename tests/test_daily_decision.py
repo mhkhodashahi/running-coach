@@ -98,6 +98,13 @@ def test_sport_ranking_and_rest_option():
                                     {"sport": "volleyball", "label": "Only with team training today"})
 
 
+def test_running_goal_prioritises_run_on_hard_day_unless_recent_hard_run():
+    assert rank_sports("hard", (session(2, "running", "easy"),), NOW, 130,
+                       running_goal=True)[0].sport == "running"
+    assert rank_sports("hard", (session(2, "running", "tempo"),), NOW, 130,
+                       running_goal=True)[0].sport == "gym"
+
+
 def test_three_day_count_precedes_seven_day_tiebreaker():
     history = (session(50, "running"), session(60, "running"), session(70, "gym"))
     ranked = rank_sports("easy", history, NOW, 132)

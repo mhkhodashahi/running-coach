@@ -28,16 +28,18 @@ def duration_minutes(value: float | None) -> str | None:
     return f"-{text}" if minutes < 0 else text
 
 
-def activity_duration(seconds: float | None) -> str | None:
-    if seconds is None or seconds <= 0:
+def activity_duration(minutes: float | None) -> str | None:
+    """Activity.duration is stored in minutes."""
+    if minutes is None or minutes <= 0:
         return None
-    return f"{round(seconds)}s" if seconds < 60 else duration_minutes(seconds / 60)
+    return duration_minutes(minutes)
 
 
-def activity_distance(metres: float | None) -> str | None:
-    if metres is None or metres <= 0:
+def activity_distance(kilometres: float | None) -> str | None:
+    """Activity.distance is stored in kilometres."""
+    if kilometres is None or kilometres <= 0:
         return None
-    return f"{round(metres)} m" if metres < 1000 else f"{metres / 1000:.1f} km"
+    return f"{kilometres:.1f} km"
 
 
 def sleep_hours(value: float | None) -> str | None:

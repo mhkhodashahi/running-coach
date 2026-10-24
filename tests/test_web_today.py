@@ -30,7 +30,7 @@ def web_db(tmp_path):
             connection.execute("INSERT INTO health_metrics(user_id,date,resting_hr,hrv,sleep_duration,body_battery) "
                                "VALUES(1,?,?,?,?,?)", (date.isoformat(), 55, 50, 7.5, 80))
         connection.execute("INSERT INTO activities(id,user_id,date,type,distance,duration,avg_hr) "
-                           "VALUES(340,1,?,'running',5000,1800,140)", ((day - timedelta(days=1)).isoformat(),))
+                           "VALUES(340,1,?,'running',4.04,27.27,140)", ((day - timedelta(days=1)).isoformat(),))
     return database
 
 
@@ -120,6 +120,58 @@ def test_rating_post_persists(client, web_db):
         assert connection.execute("SELECT rpe,source FROM activity_efforts WHERE activity_id=340").fetchone() == (7, "web")
 
 
+def test_recent_sessions_and_rating_target_exclude_walking_and_show_units(client, web_db):
+    day = datetime.now(ZoneInfo("Europe/Berlin")).date()
+    with sqlite3.connect(web_db) as connection:
+        connection.execute("INSERT INTO activities(id,user_id,date,type,distance,duration,avg_hr) "
+                           "VALUES(341,1,?,'strength_training',0,28.16,110)", (day.isoformat(),))
+        connection.execute("INSERT INTO activities(id,user_id,date,type,distance,duration,avg_hr) "
+                           "VALUES(342,1,?,'walking',0.87,9.57,90)", (day.isoformat(),))
+        connection.execute("INSERT INTO activities(id,user_id,date,type,distance,duration,avg_hr) "
+                           "VALUES(343,1,?,'meditation',0,10,0)", (day.isoformat(),))
+    response = client.get("/")
+    assert response.status_code == 200
+    assert "4.0 km" in response.text and "27m" in response.text
+    assert "/activities/341" in response.text and "/activities/342" not in response.text
+    assert "/activities/343" not in response.text
+    assert "<td>—</td>" in response.text
+    assert 'name="activity_id" value="341"' in response.text
+    assert '<select id="rpe"' not in response.text
+    assert response.text.count('name="rpe" value=') == 11
+    assert response.text.count('<span>Below Z1</span>') == 1
+    assert 'href="/activities">All activities' in response.text
+
+
+def test_week_empty_has_plan_proposal_action(client):
+    response = client.get("/")
+    assert 'action="/today/plan"' in response.text
+
+
+def test_fixed_commitments_show_in_week_even_without_materialized_plan(client, web_db):
+    day = datetime.now(ZoneInfo("Europe/Berlin")).date()
+    with sqlite3.connect(web_db) as connection:
+        connection.execute(
+            "INSERT INTO fixed_commitments(user_id,weekday,start_time,sport,kind,typical_duration_min,active) "
+            "VALUES(1,?,'19:00','volleyball','training',90,1)", (day.weekday(),))
+    response = client.get("/")
+    assert "Volleyball" in response.text
+    assert "This week" in response.text
+
+
+def test_plan_button_calls_proposal_service_not_apply(client, monkeypatch):
+    called = []
+
+    def propose(settings, day, llm):
+        called.append(day)
+        return {"status": "pending"}
+
+    monkeypatch.setattr("web.routes.pages.create_week_proposal", propose)
+    response = client.post("/today/plan", follow_redirects=False)
+    assert response.status_code == 303
+    assert response.headers["location"] == "/plan"
+    assert len(called) == 1
+
+
 def test_missing_values_show_no_data(tmp_path):
     database = tmp_path / "empty.db"
     upgrade_database(database)
@@ -150,9 +202,11 @@ def test_templates_have_no_remote_asset_urls():
 
 
 def test_load_chart_distinguishes_missing_day_from_rest():
-    chart = load_bars([("2026-10-01", None), ("2026-10-02", 0)], 1.0, "2026-10-03 08:00")
+    chart = load_bars([("2026-10-01", None), ("2026-10-02", 0)], 1.0, "2026-10-03 08:00", "2026-10-02")
     assert "Thu 1 Oct: No data; 2026-10-03 08:00" in chart
-    assert "Fri 2 Oct: 0.0 load" in chart
+    assert "Fri 2 Oct (today, in progress): 0.0 load" in chart
+    assert 'fill="url(#missing-load)"' in chart
+    assert 'fill="var(--ink-muted)"' in chart
 
 
 def test_sparkline_needs_two_observations_and_escapes_label():

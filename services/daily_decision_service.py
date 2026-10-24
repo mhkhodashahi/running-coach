@@ -168,6 +168,10 @@ def build_daily_decision(requested: date, database: Path, user_id: int, timezone
         planned_teams = connection.execute("SELECT sport FROM plan_sessions WHERE user_id=? AND date=? "
                                            "AND sport IN ('football','volleyball') AND status='planned'",
                                            (user_id, requested.isoformat())).fetchall()
+        running_goal = connection.execute(
+            "SELECT 1 FROM goals WHERE user_id=? AND is_active=1 "
+            "AND goal_type IN ('running_pb','marathon_pb','5k_pb','10k_pb','half_marathon_pb') LIMIT 1",
+            (user_id,)).fetchone() is not None
     now = datetime.combine(requested + timedelta(days=1), time.min, ZoneInfo(timezone))
     scheduled_teams = tuple(dict.fromkeys(row[0] for row in (*fixed_teams, *planned_teams)))
     recent = tuple(item for item in sessions if item.when < now)
@@ -187,7 +191,8 @@ def build_daily_decision(requested: date, database: Path, user_id: int, timezone
     else:
         z4 = None
     ranking = rank_sports(intensity.intensity, recent, now, z2_cap, readiness=readiness,
-                          team_commitments=scheduled_teams, z4_bounds_bpm=z4)
+                          team_commitments=scheduled_teams, z4_bounds_bpm=z4,
+                          running_goal=running_goal)
     hard_recent = max((item for item in recent if now - timedelta(hours=48) <= item.when < now and
                        is_hard_session(item)), key=lambda item: item.when, default=None)
     facts = [

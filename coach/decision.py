@@ -108,7 +108,8 @@ def decide_intensity(illness: bool | None, readiness: float | None, load_ratio: 
 def rank_sports(intensity: Intensity, sessions: tuple[PriorSession, ...], now: datetime,
                 z2_cap_bpm: int | None, *, readiness: float | None = None,
                 team_commitments: tuple[str, ...] = (),
-                z4_bounds_bpm: tuple[int, int] | None = None) -> tuple[RankedSport, ...]:
+                z4_bounds_bpm: tuple[int, int] | None = None,
+                running_goal: bool = False) -> tuple[RankedSport, ...]:
     if intensity == "rest":
         return ()
     counts = {sport: sum(now - SPORT_WINDOW <= item.when < now and item.sport == sport
@@ -122,6 +123,10 @@ def rank_sports(intensity: Intensity, sessions: tuple[PriorSession, ...], now: d
     solo_order = sorted(SOLO_SPORTS,
                         key=lambda sport: (int(recent[sport]), recent_counts[sport], counts[sport],
                                            SOLO_SPORTS.index(sport)))
+    if intensity == "hard" and running_goal and not any(
+            now - HARD_LOOKBACK <= item.when < now and item.sport == "running" and is_hard_session(item)
+            for item in sessions):
+        solo_order = ["running", "gym"]
     committed = tuple(dict.fromkeys(sport for sport in team_commitments if sport in TEAM_SPORTS))
     order = (*committed, *solo_order)
     result = []

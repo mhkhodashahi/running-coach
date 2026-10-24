@@ -32,10 +32,13 @@ def test_durations_and_baseline_deltas():
     assert delta(None, 49, "bpm") is None
 
 
-def test_short_activities_do_not_round_to_zero():
-    assert activity_duration(42) == "42s"
-    assert activity_distance(75) == "75 m"
+def test_stored_activity_units_for_running_walking_and_strength():
+    # activities.distance is kilometres; activities.duration is minutes.
+    assert activity_distance(4.04) == "4.0 km"
+    assert activity_duration(27.27) == "27m"
+    assert activity_distance(0.87) == "0.9 km"
+    assert activity_duration(9.57) == "10m"
+    assert activity_distance(0) is None  # Gym distance does not apply.
+    assert activity_duration(28.16) == "28m"
     assert activity_duration(0) is None
-    assert activity_distance(0) is None
-    assert activity_duration(1800) == "30m"
-    assert activity_distance(5000) == "5.0 km"
+    assert activity_duration(92) == "1h 32m"

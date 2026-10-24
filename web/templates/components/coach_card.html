@@ -16,9 +16,9 @@
     {% if recommendations %}
     <ol>{% for item in recommendations %}
       <li{% if loop.first %} class="top-pick"{% endif %}>
-        <div class="session-heading"><strong>{{ item.sport|title }}</strong><span>{{ item.session.intent|replace('_',' ')|title }} · {{ item.duration_label }}</span></div>
-        <p class="session-structure">{{ item.session.structure }}</p>
-        <p class="session-reason">{{ item.reason }}</p>
+        <div class="session-heading"><strong>{{ item.sport|title }} — {% if item.sport == 'gym' %}{{ 'strength, full body' if item.session.intent == 'strength' else item.session.intent }}{% else %}{{ item.session.intent|replace('_',' ')|title }}{% endif %}</strong></div>
+        {% if item.sport != 'gym' %}<p class="session-structure">{{ item.session.structure }}</p>{% endif %}
+        <p class="session-reason">{{ item.session.duration_min }} min · {{ item.reason|replace('Last ', 'last ')|replace('No ', 'no ') }}</p>
       </li>
     {% endfor %}</ol>
     {% else %}<p class="subtle">{{ decision.optional or 'Rest today.' }}</p>{% endif %}

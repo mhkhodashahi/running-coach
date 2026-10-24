@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo
 from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from web.today import choose_intensity, save_rating, sync_label, today_context
+from web.today import choose_intensity, create_week_proposal, save_rating, sync_label, today_context
 
 router = APIRouter()
 
@@ -43,6 +43,17 @@ def rate(request: Request, activity_id: int = Form(...), rpe: int = Form(...)):
     if request.headers.get("HX-Request") == "true":
         return request.app.state.templates.TemplateResponse(request, "components/rating.html", _today(request))
     return RedirectResponse("/", status_code=303)
+
+
+@router.post("/today/plan")
+def plan_today(request: Request):
+    settings = request.app.state.settings
+    day = datetime.now(ZoneInfo(settings.local_timezone)).date()
+    try:
+        create_week_proposal(settings, day, request.app.state.llm)
+    except (ValueError, PermissionError, RuntimeError) as exc:
+        raise HTTPException(503, str(exc)) from exc
+    return RedirectResponse("/plan", status_code=303)
 
 
 @router.get("/{section}", response_class=HTMLResponse)

@@ -10,8 +10,10 @@ from typing import Any
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
+from coach.planning import propose_week
 from config import Settings
 from metrics import get_daily_snapshot
+from metrics.sports import RECOMMENDABLE_SPORTS, sport_category
 from services.daily_decision_service import get_or_create_daily_decision, set_athlete_choice
 from services.effort_service import rate_activity, unrated_activities
 from services.weekly_plan_service import get_weekly_plan
@@ -61,16 +63,21 @@ def today_context(settings: Settings, *, day: date, llm: Any = None) -> dict[str
             "AND date<=? ORDER BY date DESC LIMIT 7", (user_id, decision.based_on)).fetchall()
         rows = connection.execute(
             "SELECT id,date,type,distance,duration,avg_hr FROM activities WHERE user_id=? AND date<=? "
-            "ORDER BY date DESC,id DESC LIMIT 5", (user_id, day.isoformat())).fetchall()
+            "ORDER BY date DESC,id DESC", (user_id, day.isoformat())).fetchall()
     sessions = {session.activity_id: session for session in snapshot.sessions}
     activities = []
     for row in rows:
+        sport = sport_category(row["type"], day)
+        if sport not in RECOMMENDABLE_SPORTS:
+            continue
         session = sessions.get(row["id"])
         activities.append({"id": row["id"], "date": short_date(row["date"]),
                            "sport": row["type"].replace("_", " ").title(),
-                           "distance": activity_distance(row["distance"]),
+                           "distance": activity_distance(row["distance"]) if sport == "running" else "—",
                            "duration": activity_duration(row["duration"]),
                            "zones": [(zone.name, zone.percent.value or 0) for zone in session.zones] if session else []})
+        if len(activities) == 5:
+            break
     # Daily sport loads are already computed by the metrics engine; aggregate all sports by date.
     daily_values: dict[str, list[float | None]] = {}
     for item in snapshot.sport_loads:
@@ -84,8 +91,7 @@ def today_context(settings: Settings, *, day: date, llm: Any = None) -> dict[str
     plan = get_weekly_plan(day, settings=settings, user_id=user_id)
     plan_sessions = [{**item, "date_label": short_date(item["date"]),
                       "duration_label": duration_minutes(item["duration_min"])} for item in plan["sessions"]]
-    recommendations = [{**item, "duration_label": duration_minutes(item["session"]["duration_min"])}
-                       for item in decision.sports]
+    recommendations = decision.sports
     body_baseline = (sum(row[0] for row in body_history) / len(body_history)) if len(body_history) >= 4 else None
     engine = create_engine(settings.db_url)
     try:
@@ -119,7 +125,8 @@ def today_context(settings: Settings, *, day: date, llm: Any = None) -> dict[str
                  "sparkline": sparkline([row[3] for row in reversed(trend_rows)], "Body Battery", "muted",
                                         body_baseline)},
             ], "load_chart": load_bars(bars, snapshot.load.chronic.value / 7
-                                       if snapshot.load.chronic.value is not None else None, sync),
+                                       if snapshot.load.chronic.value is not None else None, sync,
+                                       day.isoformat()),
             "load_ratio": metric(snapshot.load.ratio.value, precision=2),
             "load_status": "Above usual range" if snapshot.load.ratio.value is not None and snapshot.load.ratio.value > 1.3
                            else "Below usual range" if snapshot.load.ratio.value is not None and snapshot.load.ratio.value < 0.8
@@ -143,3 +150,8 @@ def save_rating(settings: Settings, activity_id: int, rpe: int) -> None:
             session.commit()
     finally:
         engine.dispose()
+
+
+def create_week_proposal(settings: Settings, day: date, llm: Any = None) -> dict[str, Any]:
+    """Propose, but never apply, a plan for the current week."""
+    return propose_week(day, settings=settings, llm=llm, today=day)
