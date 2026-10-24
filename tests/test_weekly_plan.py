@@ -547,6 +547,31 @@ def test_planner_uses_rated_sport_median_after_three_sessions(database, sport):
     assert before.sport_rates[category] < after.sport_rates[category]
 
 
+def test_planner_reference_scales_older_unrated_team_session(database):
+    settings = replace(get_settings(), db_path=database)
+    rated = []
+    with sqlite3.connect(database) as connection:
+        for offset in (9, 16, 23, 30):
+            day = (START - timedelta(days=offset)).isoformat()
+            cursor = connection.execute("INSERT INTO activities(user_id,date,type,distance,duration,avg_hr) "
+                                        "VALUES(1,?,'volleyball',1,60,105)", (day,))
+            if offset != 30:
+                rated.append((cursor.lastrowid, day))
+    before = load_model(database, 1, START, settings)
+    with sqlite3.connect(database) as connection:
+        for identifier, day in rated:
+            connection.execute("INSERT INTO activity_efforts(activity_id,rpe,rated_at,source) "
+                               "VALUES(?,8,?,'web')", (identifier, day))
+    after = load_model(database, 1, START, settings)
+    oldest_week = (START - timedelta(days=30)).isoformat()
+    before_week = next(load for day, load in before.reference_weeks if day <= oldest_week <
+                       (date.fromisoformat(day) + timedelta(days=7)).isoformat())
+    after_week = next(load for day, load in after.reference_weeks if day <= oldest_week <
+                      (date.fromisoformat(day) + timedelta(days=7)).isoformat())
+    assert after_week > before_week
+    assert after.sport_rates["volleyball"] > before.sport_rates["volleyball"]
+
+
 def test_no_safe_change_only_when_no_day_available_for_recovery():
     fixed = [{**session(START + timedelta(days=day), sport="football", intent="match", minutes=90),
               "origin": "fixed", "status": "planned"} for day in range(7)]

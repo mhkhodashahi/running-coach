@@ -1,6 +1,7 @@
 """Invented athlete sessions only."""
 
 from contextlib import contextmanager
+from dataclasses import replace
 from datetime import date, datetime, timedelta
 from types import SimpleNamespace
 
@@ -10,7 +11,14 @@ from sqlalchemy.orm import Session
 
 from coach.decision import PriorSession, is_hard_session
 from db.models import Activity, ActivityEffort, Base, User
-from metrics.effort import DEFAULT_TRIMP_PER_SRPE, calibrate, combined_load, srpe_load
+from metrics.effort import (
+    calibrate,
+    combined_load,
+    scaled_session_load,
+    sport_multipliers,
+    srpe_load,
+)
+from metrics.load import calibration_and_scales
 from metrics.models import Activity as MetricActivity
 from metrics.models import HealthDay, Inputs, Profile
 from metrics.snapshot import build_daily_snapshot
@@ -29,7 +37,8 @@ def test_srpe_calibration_and_max_rule():
     assert srpe_load(8, 90) == 720
     with pytest.raises(ValueError):
         srpe_load(11, 20)
-    assert calibrate(((90, 180),) * 4).factor == DEFAULT_TRIMP_PER_SRPE
+    assert calibrate(((90, 180),) * 4).factor is None
+    assert calibrate(((90, 180),) * 4).method == "insufficient_rated_hr_sessions"
     calibrated = calibrate(((90, 180), (100, 200), (110, 220), (120, 240), (500, 500)))
     assert calibrated.factor == 0.5
     assert calibrated.method == "median_hr_trimp_per_srpe"
@@ -47,8 +56,88 @@ def test_snapshot_effort_load_and_future_rating_ignored():
     health = tuple(HealthDay(day - timedelta(days=i), 60, 50, 7.5) for i in range(29))
     snapshot = build_daily_snapshot(Inputs(Profile(1, 180, 40), health, activities), day, "Europe/Berlin", 7.5)
     assert len(snapshot.sessions) == 1
-    assert snapshot.sessions[0].load.value == 360
-    assert "calibrated_srpe" in snapshot.sessions[0].load.provenance.method
+    assert snapshot.sessions[0].load.value is not None
+    assert snapshot.sessions[0].load.value < 360
+    assert "trimp_uncalibrated" in snapshot.sessions[0].load.provenance.method
+
+
+def test_sport_multiplier_threshold_and_unrated_scale():
+    pairs = (("football", 100.0, 200.0), ("football", 80.0, 160.0),
+             ("football", 120.0, 240.0))
+    assert sport_multipliers(pairs[:2]) == {}
+    assert sport_multipliers(pairs) == {"football": 2.0}
+    unavailable = calibrate(())
+    assert scaled_session_load("football", 100, 8, 60, unavailable, {"football": 2})[0] == 100
+    assert combined_load("football", None, 8, 60, unavailable)[0] is None
+    calibration = calibrate(((100, 200),) * 5)
+    assert scaled_session_load("football", 100, 8, 60, calibration, {})[0] == 100
+    assert scaled_session_load("football", 100, None, 60, calibration, {})[0] == 100
+    assert scaled_session_load("football", 100, None, 60, calibration, {"football": 2}) == (200, "trimp_scaled_sport_median")
+    assert scaled_session_load("football", 100, 8, 60, calibration, {"football": 2})[0] == 240
+    assert scaled_session_load("running", 100, 8, 60, calibration, {"football": 2})[0] == 100
+
+
+def test_last_two_weeks_rated_do_not_inflate_identical_training_load_ratio():
+    day = date(2026, 5, 28)
+    health = tuple(HealthDay(day - timedelta(days=offset), 60, 50, 7.5) for offset in range(29))
+    activities = tuple(MetricActivity(index + 1, day - timedelta(days=week * 7 + offset),
+                                      "football", 60, 120,
+                                      rpe=8 if week < 2 else None)
+                       for week in range(4) for offset in (1, 3, 5)
+                       for index in (week * 3 + (offset - 1) // 2,))
+    profile = Profile(1, 180, 40)
+    unmodified = tuple(MetricActivity(row.id, row.day, row.type, row.duration, row.avg_hr)
+                       for row in activities)
+    before = build_daily_snapshot(Inputs(profile, health, unmodified), day, "Europe/Berlin", 7.5)
+    after = build_daily_snapshot(Inputs(profile, health, activities), day, "Europe/Berlin", 7.5)
+    _, multipliers = calibration_and_scales(activities, profile, health, day, "Europe/Berlin")
+    assert multipliers["football"] > 1
+    assert before.load.ratio.value == pytest.approx(1.0)
+    assert abs(after.load.ratio.value - before.load.ratio.value) <= 0.05
+    assert all(session.load.value == pytest.approx(after.sessions[0].load.value) for session in after.sessions)
+
+
+def test_future_rated_sessions_do_not_change_past_sport_scale():
+    day = date(2026, 5, 28)
+    activities = tuple(MetricActivity(index, day + timedelta(days=index - 3),
+                                      "volleyball", 60, 120, rpe=8) for index in range(5))
+    health = tuple(HealthDay(day - timedelta(days=offset), 60) for offset in range(7))
+    calibration, multipliers = calibration_and_scales(activities, Profile(1, 180, 40),
+                                                      health, day, "Europe/Berlin")
+    assert calibration.rated_hr_sessions == 4
+    assert calibration.factor is None
+    assert multipliers == {}
+    later_calibration, later_multipliers = calibration_and_scales(
+        activities, Profile(1, 180, 40), health, day + timedelta(days=1), "Europe/Berlin")
+    assert later_calibration.rated_hr_sessions == 5
+    assert later_calibration.factor is not None
+    assert "volleyball" in later_multipliers
+
+
+@pytest.mark.parametrize("rated_count", range(5))
+def test_zero_to_four_ratings_match_unrated_loads_exactly(rated_count):
+    day = date(2026, 5, 28)
+    health = tuple(HealthDay(day - timedelta(days=offset), 60, 50, 7.5) for offset in range(29))
+    activities = tuple(MetricActivity(index + 1, day - timedelta(days=index), "gym", 60, 120,
+                                      rpe=8 if index < rated_count else None) for index in range(6))
+    baseline = tuple(replace(activity, rpe=None) for activity in activities)
+    rated = build_daily_snapshot(Inputs(Profile(1, 180, 40), health, activities), day, "Europe/Berlin", 7.5)
+    unrated = build_daily_snapshot(Inputs(Profile(1, 180, 40), health, baseline), day, "Europe/Berlin", 7.5)
+    assert [session.load.value for session in rated.sessions] == [session.load.value for session in unrated.sessions]
+    assert rated.load.ratio.value == unrated.load.ratio.value
+
+
+def test_fifth_hr_backed_rating_enables_calibrated_load():
+    day = date(2026, 5, 28)
+    health = tuple(HealthDay(day - timedelta(days=offset), 60, 50, 7.5) for offset in range(29))
+    activities = tuple(MetricActivity(index + 1, day - timedelta(days=index), "football", 60, 120,
+                                      rpe=8 if index < 5 else None) for index in range(6))
+    four = tuple(replace(activity, rpe=None) if activity.id == 5 else activity for activity in activities)
+    four_snapshot = build_daily_snapshot(Inputs(Profile(1, 180, 40), health, four), day, "Europe/Berlin", 7.5)
+    five_snapshot = build_daily_snapshot(Inputs(Profile(1, 180, 40), health, activities), day, "Europe/Berlin", 7.5)
+    assert all("calibrated_srpe" not in session.load.provenance.method for session in four_snapshot.sessions)
+    assert any("calibrated_srpe" in session.load.provenance.method for session in five_snapshot.sessions)
+    assert five_snapshot.sessions[-1].load.value > four_snapshot.sessions[-1].load.value
 
 
 def test_hard_session_uses_rating_when_present():

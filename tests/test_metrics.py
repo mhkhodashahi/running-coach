@@ -334,3 +334,18 @@ def test_reader_planning_can_include_older_track_points(database):
                                                  point_lookback_days=None).activities if item.id == 4)
     assert default.points == ()
     assert len(planning.points) == 1
+
+
+def test_reader_keeps_older_rated_hr_stream_for_scale_calibration(database):
+    old_day = DAY - timedelta(days=40)
+    with closing(sqlite3.connect(database)) as connection:
+        connection.execute("CREATE TABLE activity_efforts(activity_id INTEGER PRIMARY KEY, rpe INTEGER)")
+        connection.execute("INSERT INTO activities(id,user_id,date,type,distance,duration,avg_hr) "
+                           "VALUES(4,1,?,'football',2,10,120)", (old_day.isoformat(),))
+        connection.execute("INSERT INTO activity_efforts(activity_id,rpe) VALUES(4,7)")
+        connection.execute("INSERT INTO activity_track_points(activity_id,point_index,elapsed_seconds,heart_rate) "
+                           "VALUES(4,0,0,140)")
+        connection.commit()
+    rated = next(item for item in read_inputs(database, 1, DAY, ZONE).activities if item.id == 4)
+    assert rated.rpe == 7
+    assert len(rated.points) == 1

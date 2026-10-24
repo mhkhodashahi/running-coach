@@ -42,7 +42,8 @@ def read_inputs(database: Path, user_id: int, as_of: date, timezone: str,
             if day > as_of:
                 continue
             points = []
-            if point_lookback_days is None or day >= as_of - timedelta(days=point_lookback_days - 1):
+            if (point_lookback_days is None or day >= as_of - timedelta(days=point_lookback_days - 1)
+                    or row["id"] in efforts):
                 for point in connection.execute("SELECT point_index, elapsed_seconds, heart_rate, timestamp FROM activity_track_points WHERE activity_id=? ORDER BY point_index", (row["id"],)):
                     stamp = datetime.fromisoformat(point["timestamp"]) if point["timestamp"] else None
                     if stamp is not None:

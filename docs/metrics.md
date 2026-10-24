@@ -228,14 +228,33 @@ sRPE = RPE * duration_minutes
 k = median(TRIMP / sRPE) over rated sessions with measured HR TRIMP and sRPE > 0
 ```
 
-At least five such sessions are required for athlete-specific calibration;
-until then `k = 0.5 TRIMP per sRPE unit` is the explicit provisional default.
-For football, volleyball, and gym, session load is `max(TRIMP, k * sRPE)`;
-if HR is missing, the calibrated sRPE value alone is used. Running keeps
-TRIMP. Unrated sessions keep TRIMP, or the planner's sport/intent median when
-TRIMP is unavailable. Excluded activities, mobility, and walking never get
-an effort prompt. The load provenance records whether HR, calibrated effort,
-or both supplied the result.
+At least five such sessions are required for athlete-specific calibration.
+Before then `k` is unavailable: sRPE changes no load, and all rated and
+unrated sessions stay on TRIMP (or the planner's existing median imputation
+when HR is missing). Ratings still inform hard-session detection and the
+`EFFORT_RPE` / `EFFORT_VS_HR` coach facts. The fifth usable HR-backed rating
+enables the median-derived `k`; there is no fallback factor.
+
+After global calibration is available, each of football, volleyball and gym
+also needs three **rated sessions with HR TRIMP > 0** before effort changes
+that sport's load. Before either threshold, both rated and unrated sessions
+of that sport use TRIMP only. Once eligible:
+
+```text
+rated final load = max(TRIMP, k * sRPE)
+m_sport = median(rated final load / TRIMP) for that sport's HR-backed ratings
+unrated final load = TRIMP * m_sport
+```
+
+The same `m_sport` is applied to every unrated session in the dated acute,
+chronic and weekly load windows, as well as the planner's historical load
+reference and estimates. A rated session without usable HR can use
+`k * sRPE` after the sport threshold; it cannot set `m_sport`. When TRIMP
+is missing for an unrated session, its load remains missing in the metrics
+engine and the planner uses its own median imputation. Running keeps TRIMP.
+Excluded activities, mobility, and walking never get an effort prompt.
+Load provenance says whether the number came from TRIMP, a sport multiplier,
+or rated effort. No historical activity or opinion row is rewritten.
 
 The planner uses the athlete's rated load-per-minute median for a team sport
 or gym after at least three rated sessions for that sport. Before that it

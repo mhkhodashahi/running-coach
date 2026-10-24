@@ -19,8 +19,7 @@ from coach.proposals import create_proposal, get_proposal, get_week, materialize
 from config import Settings, get_settings
 from llm.factory import get_llm_client
 from metrics import get_daily_snapshot
-from metrics.effort import calibrate
-from metrics.load import session_metrics
+from metrics.load import calibration_and_scales, session_metrics
 from metrics.reader import read_inputs
 from metrics.sports import sport_category
 from services.coach_facts import unsupported_text_numbers
@@ -571,14 +570,8 @@ def load_model(database: Path, user_id: int, start: date, settings: Settings) ->
         intents = {row[0]: row[1] for row in connection.execute(
             "SELECT id,planned_intent FROM activities WHERE user_id=? AND date<=?", (user_id, end.isoformat()))}
     inputs = read_inputs(database, user_id, end, settings.local_timezone, point_lookback_days=None)
-    hr_pairs = []
-    for activity in inputs.activities:
-        if activity.rpe is None or not activity.duration or activity.duration <= 0:
-            continue
-        base = session_metrics(replace(activity, rpe=None), inputs.profile, inputs.health, end, settings.local_timezone)
-        if base and base.load.value is not None:
-            hr_pairs.append((base.load.value, activity.rpe * activity.duration))
-    calibration = calibrate(tuple(hr_pairs))
+    calibration, multipliers = calibration_and_scales(inputs.activities, inputs.profile,
+                                                     inputs.health, end, settings.local_timezone)
     grouped: dict[tuple[str, str], list[float]] = {}
     sport_grouped: dict[str, list[float]] = {}
     rated_sport_grouped: dict[str, list[float]] = {}
@@ -587,7 +580,8 @@ def load_model(database: Path, user_id: int, start: date, settings: Settings) ->
     for activity in inputs.activities:
         if activity.duration is None or activity.duration <= 0:
             continue
-        item = session_metrics(activity, inputs.profile, inputs.health, end, settings.local_timezone, calibration)
+        item = session_metrics(activity, inputs.profile, inputs.health, end, settings.local_timezone,
+                               calibration, multipliers)
         if item is None:
             continue
         measured[activity.id] = item.load.value

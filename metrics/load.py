@@ -1,11 +1,13 @@
 """Session TRIMP, zone durations and coverage-aware load aggregation."""
 
+from collections.abc import Mapping
+from dataclasses import replace
 from datetime import date, datetime, time, timedelta
 from math import exp, isfinite
 from zoneinfo import ZoneInfo
 
 from metrics.baselines import maximum_hr, resting_hr_for_session, valid
-from metrics.effort import DEFAULT_TRIMP_PER_SRPE, Calibration, combined_load
+from metrics.effort import TEAM_SPORTS, Calibration, calibrate, combined_load, scaled_session_load, sport_multipliers
 from metrics.models import Activity, HealthDay, LoadRatio, Profile, Session, SportLoad, metric
 from metrics.models import Zone as ZoneResult
 from metrics.sports import SPORTS, sport_category
@@ -69,7 +71,8 @@ def banister_trimp(minutes: float, heart_rate: float, resting_hr: float, max_hr:
 
 
 def session_metrics(activity: Activity, profile: Profile, health: tuple[HealthDay, ...], as_of: date,
-                    timezone: str, calibration: Calibration | None = None) -> Session | None:
+                    timezone: str, calibration: Calibration | None = None,
+                    multipliers: Mapping[str, float] | None = None) -> Session | None:
     if activity.day > as_of or sport_category(activity.type, as_of) in ("excluded", "mobility"):
         return None
     session_day = activity.day
@@ -86,8 +89,8 @@ def session_metrics(activity: Activity, profile: Profile, health: tuple[HealthDa
         elif valid(activity.avg_hr, as_of) and valid(activity.duration, as_of):
             load = banister_trimp(activity.duration, activity.avg_hr, resting.value, maximum.value, session_day)
     sport = sport_category(activity.type, as_of)
-    load, effort_method = combined_load(sport, load, activity.rpe, activity.duration,
-                                        calibration or Calibration(DEFAULT_TRIMP_PER_SRPE, 0, "documented_default"))
+    load, effort_method = scaled_session_load(sport, load, activity.rpe, activity.duration,
+                                              calibration or calibrate(()), multipliers or {})
     if effort_method not in ("trimp", "missing_hr"):
         method += ";" + effort_method
     seconds_total = sum(seconds for seconds, _ in intervals)
@@ -105,6 +108,31 @@ def session_metrics(activity: Activity, profile: Profile, health: tuple[HealthDa
                    maximum, resting,
                    metric(seconds_total if intervals else None, "seconds", LOAD_SOURCES, session_day, session_day,
                           int(bool(intervals)), "observed_track_coverage"), tuple(zones))
+
+
+def calibration_and_scales(activities: tuple[Activity, ...], profile: Profile,
+                           health: tuple[HealthDay, ...], as_of: date,
+                           timezone: str) -> tuple[Calibration, dict[str, float]]:
+    """Use HR-backed rated sessions up to as_of to set both load scales."""
+    rated: list[tuple[str, float, int, float]] = []
+    for activity in activities:
+        if activity.day > as_of or activity.rpe is None or activity.duration is None or activity.duration <= 0:
+            continue
+        base = session_metrics(replace(activity, rpe=None), profile, health, as_of, timezone)
+        if base is None or base.load.value is None:
+            continue
+        rated.append((base.sport, base.load.value, activity.rpe, activity.duration))
+    calibration = calibrate(tuple((trimp, rpe * duration) for _, trimp, rpe, duration in rated))
+    if calibration.factor is None:
+        return calibration, {}
+    ratios = []
+    for sport, trimp, rpe, duration in rated:
+        if sport not in TEAM_SPORTS:
+            continue
+        final, _ = combined_load(sport, trimp, rpe, duration, calibration)
+        if final is not None:
+            ratios.append((sport, trimp, final))
+    return calibration, sport_multipliers(tuple(ratios))
 
 
 def daily_sport_loads(sessions: tuple[Session, ...], health: tuple[HealthDay, ...], as_of: date,
