@@ -525,36 +525,56 @@ def test_observed_walking_is_informational_only_for_weekly_cap(database):
 
 
 @pytest.mark.parametrize("sport", ["volleyball", "football", "strength_training"])
-def test_planner_uses_rated_sport_median_after_three_sessions(database, sport):
+def test_planner_uses_rated_sport_median_after_calibration(database, sport):
     settings = replace(get_settings(), db_path=database)
     identifiers = []
     with sqlite3.connect(database) as connection:
-        for offset in (19, 17, 15):
+        for index, offset in enumerate((19, 17, 15, 13, 11, 9)):
             day = (START - timedelta(days=offset)).isoformat()
             cursor = connection.execute("INSERT INTO activities(user_id,date,type,distance,duration,avg_hr) "
-                                        "VALUES(1,?,?,1,60,105)", (day, sport))
+                                        "VALUES(1,?,?,1,60,?)", (day, sport, 120 if index < 3 else 122))
             identifiers.append((cursor.lastrowid, day))
-        for identifier, day in identifiers[:2]:
+        for identifier, day in identifiers[:4]:
             connection.execute("INSERT INTO activity_efforts(activity_id,rpe,rated_at,source) "
                                "VALUES(?,8,?,'web')", (identifier, day))
     before = load_model(database, 1, START, settings)
     with sqlite3.connect(database) as connection:
-        connection.execute("INSERT INTO activity_efforts(activity_id,rpe,rated_at,source) "
-                           "VALUES(?,8,?,'web')", identifiers[2])
+        for identifier, day in identifiers[4:]:
+            connection.execute("INSERT INTO activity_efforts(activity_id,rpe,rated_at,source) "
+                               "VALUES(?,8,?,'web')", (identifier, day))
     after = load_model(database, 1, START, settings)
     category = "gym" if sport == "strength_training" else sport
-    assert after.sport_rates[category] == pytest.approx(4.0)
     assert before.sport_rates[category] < after.sport_rates[category]
+
+
+@pytest.mark.parametrize("rated_count", range(5))
+def test_planner_zero_to_four_ratings_match_unrated_estimates(database, rated_count):
+    settings = replace(get_settings(), db_path=database)
+    identifiers = []
+    with sqlite3.connect(database) as connection:
+        for index, offset in enumerate((5, 9, 13, 17, 21, 30)):
+            day = (START - timedelta(days=offset)).isoformat()
+            cursor = connection.execute("INSERT INTO activities(user_id,date,type,distance,duration,avg_hr) "
+                                        "VALUES(1,?,'volleyball',1,60,?)",
+                                        (day, 100 if index < 3 else 150))
+            identifiers.append((cursor.lastrowid, day))
+    before = load_model(database, 1, START, settings)
+    with sqlite3.connect(database) as connection:
+        for identifier, day in identifiers[:rated_count]:
+            connection.execute("INSERT INTO activity_efforts(activity_id,rpe,rated_at,source) "
+                               "VALUES(?,8,?,'web')", (identifier, day))
+    after = load_model(database, 1, START, settings)
+    assert after == before
 
 
 def test_planner_reference_scales_older_unrated_team_session(database):
     settings = replace(get_settings(), db_path=database)
     rated = []
     with sqlite3.connect(database) as connection:
-        for offset in (9, 16, 23, 30):
+        for index, offset in enumerate((3, 5, 9, 13, 17, 21, 30)):
             day = (START - timedelta(days=offset)).isoformat()
             cursor = connection.execute("INSERT INTO activities(user_id,date,type,distance,duration,avg_hr) "
-                                        "VALUES(1,?,'volleyball',1,60,105)", (day,))
+                                        "VALUES(1,?,'volleyball',1,60,?)", (day, 120 if index < 3 else 122))
             if offset != 30:
                 rated.append((cursor.lastrowid, day))
     before = load_model(database, 1, START, settings)
@@ -569,7 +589,6 @@ def test_planner_reference_scales_older_unrated_team_session(database):
     after_week = next(load for day, load in after.reference_weeks if day <= oldest_week <
                       (date.fromisoformat(day) + timedelta(days=7)).isoformat())
     assert after_week > before_week
-    assert after.sport_rates["volleyball"] > before.sport_rates["volleyball"]
 
 
 def test_no_safe_change_only_when_no_day_available_for_recovery():

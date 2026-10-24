@@ -680,8 +680,8 @@ def coaching_decisions_dataframe(session: Session, user_id: int) -> pd.DataFrame
     )
     df = pd.read_sql_query(query, session.bind, params={"user_id": user_id})
     if not df.empty:
-        for column in ("decision_date", "created_at"):
-            df[column] = pd.to_datetime(df[column])
+        df["decision_date"] = pd.to_datetime(df["decision_date"])
+        df["created_at"] = pd.to_datetime(df["created_at"], format="mixed")
     return df
 
 

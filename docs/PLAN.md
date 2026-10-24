@@ -114,7 +114,7 @@ Sequence depends on the missing target contract. Acceptance criteria below are c
 - Status: complete through 4c-c. Revision 0010 adds the latest activity rating and a one-prompt/one-reminder delivery marker; no existing activity or opinion is rewritten. sRPE is disabled until five usable HR-backed ratings calibrate it. Thereafter, load windows share a sport-specific scale after three HR-backed ratings for that sport; below either threshold they stay on TRIMP throughout.
 - Files: `db/migrations/versions/0010_activity_efforts.py`, `services/effort_service.py`, `metrics/effort.py`, load/decision/planner paths, Telegram and Streamlit activity controls, tests, and `docs/metrics.md`.
 - Acceptance: a new eligible synced session can be rated 0–10 in Telegram or the web app, changed later, and prompted at most once plus one twelve-hour reminder. Football, volleyball, and gym use calibrated sRPE alongside TRIMP; running remains TRIMP. Ratings feed hard-session detection, dated load snapshots, planner estimates, and cited coach facts. Working data remains unchanged until the owner runs the backup-first upgrade.
-- Risks: default calibration is provisional until five rated HR sessions; retrospective ratings can change a new decision. Telegram delivery depends on the bot/CLI being active.
+- Risks: effort load remains unavailable until five rated HR sessions; retrospective ratings can change a new decision after calibration. Telegram delivery depends on the bot/CLI being active.
 
 ### 5. Web UI
 

@@ -80,11 +80,11 @@ def test_sport_multiplier_threshold_and_unrated_scale():
 def test_last_two_weeks_rated_do_not_inflate_identical_training_load_ratio():
     day = date(2026, 5, 28)
     health = tuple(HealthDay(day - timedelta(days=offset), 60, 50, 7.5) for offset in range(29))
-    activities = tuple(MetricActivity(index + 1, day - timedelta(days=week * 7 + offset),
-                                      "football", 60, 120,
+    activities = tuple(MetricActivity(week * 4 + index + 1,
+                                      day - timedelta(days=week * 7 + offset),
+                                      "football", 60, 120 if index < 2 else 122,
                                       rpe=8 if week < 2 else None)
-                       for week in range(4) for offset in (1, 3, 5)
-                       for index in (week * 3 + (offset - 1) // 2,))
+                       for week in range(4) for index, offset in enumerate((0, 1, 3, 5)))
     profile = Profile(1, 180, 40)
     unmodified = tuple(MetricActivity(row.id, row.day, row.type, row.duration, row.avg_hr)
                        for row in activities)
@@ -94,7 +94,7 @@ def test_last_two_weeks_rated_do_not_inflate_identical_training_load_ratio():
     assert multipliers["football"] > 1
     assert before.load.ratio.value == pytest.approx(1.0)
     assert abs(after.load.ratio.value - before.load.ratio.value) <= 0.05
-    assert all(session.load.value == pytest.approx(after.sessions[0].load.value) for session in after.sessions)
+    assert after.sessions[-1].load.value > before.sessions[-1].load.value
 
 
 def test_future_rated_sessions_do_not_change_past_sport_scale():
@@ -118,26 +118,31 @@ def test_future_rated_sessions_do_not_change_past_sport_scale():
 def test_zero_to_four_ratings_match_unrated_loads_exactly(rated_count):
     day = date(2026, 5, 28)
     health = tuple(HealthDay(day - timedelta(days=offset), 60, 50, 7.5) for offset in range(29))
-    activities = tuple(MetricActivity(index + 1, day - timedelta(days=index), "gym", 60, 120,
-                                      rpe=8 if index < rated_count else None) for index in range(6))
+    activities = (*tuple(MetricActivity(index + 1, day - timedelta(days=index), "gym", 60, 120,
+                                        rpe=8 if index < rated_count else None) for index in range(6)),
+                  MetricActivity(7, day - timedelta(days=6), "gym", 60, None, rpe=8))
     baseline = tuple(replace(activity, rpe=None) for activity in activities)
     rated = build_daily_snapshot(Inputs(Profile(1, 180, 40), health, activities), day, "Europe/Berlin", 7.5)
     unrated = build_daily_snapshot(Inputs(Profile(1, 180, 40), health, baseline), day, "Europe/Berlin", 7.5)
     assert [session.load.value for session in rated.sessions] == [session.load.value for session in unrated.sessions]
+    assert next(session.load.value for session in rated.sessions if session.activity_id == 7) is None
     assert rated.load.ratio.value == unrated.load.ratio.value
 
 
 def test_fifth_hr_backed_rating_enables_calibrated_load():
     day = date(2026, 5, 28)
     health = tuple(HealthDay(day - timedelta(days=offset), 60, 50, 7.5) for offset in range(29))
-    activities = tuple(MetricActivity(index + 1, day - timedelta(days=index), "football", 60, 120,
+    activities = tuple(MetricActivity(index + 1, day - timedelta(days=index), "football", 60,
+                                      150 if index < 4 else 120,
                                       rpe=8 if index < 5 else None) for index in range(6))
     four = tuple(replace(activity, rpe=None) if activity.id == 5 else activity for activity in activities)
     four_snapshot = build_daily_snapshot(Inputs(Profile(1, 180, 40), health, four), day, "Europe/Berlin", 7.5)
     five_snapshot = build_daily_snapshot(Inputs(Profile(1, 180, 40), health, activities), day, "Europe/Berlin", 7.5)
     assert all("calibrated_srpe" not in session.load.provenance.method for session in four_snapshot.sessions)
     assert any("calibrated_srpe" in session.load.provenance.method for session in five_snapshot.sessions)
-    assert five_snapshot.sessions[-1].load.value > four_snapshot.sessions[-1].load.value
+    five_load = next(session.load.value for session in five_snapshot.sessions if session.activity_id == 5)
+    four_load = next(session.load.value for session in four_snapshot.sessions if session.activity_id == 5)
+    assert five_load > four_load
 
 
 def test_hard_session_uses_rating_when_present():

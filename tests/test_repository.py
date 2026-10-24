@@ -2,13 +2,32 @@ from __future__ import annotations
 
 from datetime import date
 
+import pandas as pd
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
 from db import repository
 from db.models import Base
 from services.import_service import GarminImportService
+
+
+def test_coaching_decisions_dataframe_parses_mixed_created_at_formats() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    with engine.begin() as connection:
+        connection.execute(text("INSERT INTO users(id,running_goal_time) VALUES(1,'03:59:59')"))
+        connection.execute(text(
+            "INSERT INTO coaching_decisions(user_id,decision_type,decision_date,summary,"
+            "risk_level,payload_json,created_at) VALUES"
+            "(1,'daily','2026-06-17','test','moderate','{}','2026-06-16T13:54:51.477821'),"
+            "(1,'daily','2026-06-16','test','moderate','{}','2026-06-16 13:54:51.477821')"
+        ))
+    with sessionmaker(bind=engine, future=True)() as session:
+        result = repository.coaching_decisions_dataframe(session, 1)
+    assert list(result["created_at"]) == [pd.Timestamp("2026-06-16 13:54:51.477821")] * 2
+    assert list(result["decision_date"]) == [pd.Timestamp("2026-06-17"), pd.Timestamp("2026-06-16")]
+    engine.dispose()
 
 
 def test_bulk_upsert_activities_updates_existing_external_activity() -> None:

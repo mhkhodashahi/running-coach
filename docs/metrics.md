@@ -257,8 +257,8 @@ Load provenance says whether the number came from TRIMP, a sport multiplier,
 or rated effort. No historical activity or opinion row is rewritten.
 
 The planner uses the athlete's rated load-per-minute median for a team sport
-or gym after at least three rated sessions for that sport. Before that it
-keeps the existing historical estimate. As ratings are added or edited,
+or gym only after global calibration and at least three rated sessions for
+that sport. Before that it keeps the existing historical estimate. As ratings are added or edited,
 dated snapshots and new daily decisions are recomputed; old opinion rows
 are never rewritten. A rated team session below 7 is not automatically hard,
 but a tempo/race intent or Z4+ share of at least 15% still makes it hard.

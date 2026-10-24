@@ -600,11 +600,11 @@ def load_model(database: Path, user_id: int, start: date, settings: Settings) ->
             rated_intent_grouped.setdefault((sport, intent), []).append(rated_rate)
     rates = {key: median(values) for key, values in grouped.items()}
     for key, values in rated_intent_grouped.items():
-        if key[0] in ("gym", "football", "volleyball") and len(values) >= 3:
+        if calibration.factor is not None and key[0] in ("gym", "football", "volleyball") and len(values) >= 3:
             rates[key] = median(values)
     sport_rates = {key: median(values) for key, values in sport_grouped.items()}
     for sport, values in rated_sport_grouped.items():
-        if sport in ("gym", "football", "volleyball") and len(values) >= 3:
+        if calibration.factor is not None and sport in ("gym", "football", "volleyball") and len(values) >= 3:
             sport_rates[sport] = median(values)
             for key in tuple(rates):
                 if key[0] == sport and len(rated_intent_grouped.get(key, ())) < 3:

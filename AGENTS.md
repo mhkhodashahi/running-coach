@@ -12,29 +12,29 @@ Read this file before every task. If a task conflicts with it, stop and say so.
 - Never change the database schema without a migration file. Never drop or rewrite user data. Ask before any destructive operation.
 - Never commit secrets. Garmin credentials, LLM API keys and the Telegram token live in `.env` only; `.env.example` lists the names with empty values.
 - Never put personal athlete data in tracked source: no ages, weights, injury notes, custom HR zones or names in prompts or code. Read them from the `users` table or config at runtime.
-- Docs you write are named after what they contain (`docs/milestone-3-results.md`), and never hold real athlete numbers; use `[redacted]` or invented examples.
+- Docs you write in the repo are named after what they contain (`docs/milestone-3-results.md`), and never hold real athlete numbers; use `[redacted]` or invented examples. Exception: when the owner asks for a private handoff file outside the repo (e.g. `~/pulse-handoff.md`), write the real values there and never commit or copy it into the repo.
 - Keep the existing data import (python-garminconnect, CSV, FIT) working. If you must change it, say why first.
 - Prefer small, readable modules over clever abstractions. Type hints everywhere. No new dependency without a one-line reason.
 
-## Current stack
+## Current stack (from the step 0 audit, 2026-10-21)
 
 - Language: Python (version per `pyproject.toml`). Licence: AGPL-3.0.
 - Web UI: Streamlit — `app/main.py`, `app/dashboard.py`, `app/pages/`, `ui/`. Activity detail and the coach opinion panel live in `app/pages/8_Activity_Detail.py`.
-- Database: SQLite at `db/running_coach.db` via SQLAlchemy (`db/models.py`, `db/repository.py`, `db/session.py`). Schema changes are Alembic revisions, applied only by `python -m scripts.upgrade_db` (backup-first). App startup checks the version and never migrates.
+- Database: SQLite at `db/running_coach.db` via SQLAlchemy (`db/models.py`, `db/repository.py`, `db/session.py`, `db/setup.py`). No versioned migrations yet: `create_all` plus ad hoc SQL in `db/setup.py`.
 - Garmin import: `services/garmin_client.py` (python-garminconnect), `services/garmin_normalization.py`, `services/import_service.py` (CSV), `utils/garmin_sync_cli.py`. FIT import: not found in code — see Decisions.
-- Metrics: new engine in `metrics/` (baselines, TRIMP load, load ratio, zones, readiness, `get_daily_snapshot`); legacy `analytics/performance.py`, `services/coaching_engine.py`, `services/hr_zones.py`.
+- Metrics today: `analytics/performance.py`, `services/coaching_engine.py`, `services/hr_zones.py`.
 - LLM: `llm/factory.py` (OpenAI and Ollama), `services/llm_workflow.py`, schemas in `llm/schemas.py`. Per-run opinion: `services/activity_coaching_service.py` → table `activity_coaching_insights`.
 - Delivery and jobs: `services/telegram_service.py`, `services/telegram_chatbot.py`, `utils/daily_digest_cli.py`, `utils/telegram_chat_cli.py`, `scripts/`, `launchd/` (local, ignored, machine-specific paths).
 - Tests and CI: pytest, ruff, compileall, gitleaks secret scan in `.github/workflows/`. Run the same three locally before finishing.
 
 ## Decisions
 
-- **UI:** stay on Streamlit for milestones 1–4. These are backend work and must not depend on the UI framework. The framework for milestone 5 is decided before it starts.
-- **Migrations:** Alembic; the first revision is a baseline of the runtime schema.
+- **UI (decided 24 Oct 2026):** the web UI is FastAPI + Jinja2 templates + HTMX in `web/`, server-rendered, no JS build step. Routes hold no business logic; they call the existing services. Charts are inline SVG generated in Python. Fonts (Barlow, Barlow Condensed, OFL) and htmx are self-hosted in `web/static/`; no CDN or Google Fonts requests. Streamlit stays as a back office until the new UI covers every page, then it is retired. Design reference: `docs/private/design-reference/` (git-ignored).
+- **Migrations:** use Alembic. It is the standard for SQLAlchemy, and the first revision is a baseline of the current runtime schema.
 - **Data you must not touch:** the unmodeled `body_scans` and `body_scan_insights` tables, legacy `users.marathon_*` columns, and the file `db/marathon_coach.db`. Keep them as they are until the owner decides otherwise.
 - **Old coach opinions:** never regenerated or rewritten automatically. They are read through the legacy mapping below.
 - **FIT import:** status pending. The owner believes it exists; the audit found none.
-- **Sports:** `metrics/sports.py` maps `activities.type` to running | volleyball | football | gym | other | excluded | mobility. Meditation and mobility are non-training (no load, not sessions). Walking is "other": it counts toward general metrics load but is never recommended; the weekly-plan load reference excludes walking and displays it separately. Only running, volleyball, football and gym are recommendable training sports.
+- **Sports:** `metrics/sports.py` maps `activities.type` to running | volleyball | football | gym | other | excluded. Meditation is excluded (no load, not a session). Walking is "other": it counts toward load but is never recommended. Only running, volleyball, football and gym are recommendable.
 - **Readiness v1** constants live in `metrics/readiness.py` and are tuned by the owner; do not change them unasked.
 - **Facts before words:** code, not the LLM, builds a facts pack for each session: rounded display values with IDs, the detected intent (from HR-zone distribution), and data-quality notes. The LLM judges and writes, and cites fact IDs; code turns those IDs into the stored `evidence`. The LLM never writes `data_notes`, never sets `intent.detected`, and never introduces a number that is not in the facts pack.
 - **Decision before words:** the daily intensity (rest | easy | hard) and the sport ranking are decided by code rules in `coach/decision.py` (constants in one place, tuned by the owner). The LLM only explains the decision and cannot change it.
