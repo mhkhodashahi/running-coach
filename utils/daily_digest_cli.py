@@ -9,7 +9,9 @@ from db import repository
 from db.session import session_scope
 from db.setup import init_db
 from services.coaching_workflow import CoachingWorkflowService
+from services.effort_service import dispatch_effort_prompts
 from services.import_service import GarminImportService
+from services.telegram_service import TelegramService
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -49,6 +51,9 @@ def main() -> None:
             send_message=bool(args.send_telegram),
             recipient=args.recipient or None,
         )
+
+    if not args.skip_sync:
+        dispatch_effort_prompts(settings, user.id, TelegramService(settings))
 
     print(decision.get("message_title", decision["email_subject"]))
     print(decision["summary"])

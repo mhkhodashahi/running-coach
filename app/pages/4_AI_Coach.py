@@ -1,4 +1,4 @@
-"""AI Coach page."""
+"""Coach page."""
 
 from __future__ import annotations
 
@@ -10,13 +10,44 @@ from config import get_settings
 from db import repository
 from db.session import session_scope
 from services.coaching_workflow import CoachingWorkflowService
+from services.training_chat_service import TrainingChatService
 from services.training_context_service import load_training_bundle
 from ui.components import render_coaching_card
+from ui.sidebar import render_sidebar_menu
 
-st.title("AI Coach")
+render_sidebar_menu()
+st.title("Coach")
 
-bundle = load_training_bundle()
+st.subheader("Ask the coach")
+chat_service = TrainingChatService()
+try:
+    chat_history = chat_service.history()
+except Exception:
+    chat_history = []
+for turn in chat_history:
+    with st.chat_message("user"):
+        st.write(turn["question"])
+    with st.chat_message("assistant"):
+        st.write(turn["answer"])
+for index, suggestion in enumerate(st.session_state.get("coach_last_follow_ups", ())):
+    if st.button(suggestion, key=f"coach_follow_up_{index}"):
+        st.session_state["coach_follow_up"] = suggestion
+        st.rerun()
+chat_question = st.chat_input("Ask about training, recovery, or an activity")
+follow_up = st.session_state.pop("coach_follow_up", None)
+if chat_question or follow_up:
+    with st.spinner("Checking your data..."):
+        chat_reply = chat_service.answer(chat_question or follow_up)
+    with st.chat_message("assistant"):
+        st.write(chat_reply.text)
+    st.session_state["coach_last_follow_ups"] = chat_reply.follow_ups
+    if chat_reply.used_llm:
+        st.rerun()
+
+st.divider()
+
 settings = get_settings()
+bundle = load_training_bundle()
 history = bundle.coaching_history.copy()
 
 if not history.empty:

@@ -2,28 +2,33 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from typing import Any
 
 import pandas as pd
-from sqlalchemy import delete, select, text
+from sqlalchemy import MetaData, Table, delete, func, inspect, select, text
 from sqlalchemy.orm import Session
 
 from config import get_settings
 from db.models import (
     Activity,
     ActivityCoachingInsight,
+    ActivityCoachingOpinionHistory,
     ActivityLap,
     ActivityTrackPoint,
     CoachingDecision,
     EmailDelivery,
+    GarminSyncStatus,
     Goal,
     HealthMetric,
     LLMMemory,
     NutritionEntry,
+    PlanSession,
+    PlanVersion,
     PredictionSnapshot,
     User,
 )
+from metrics.sports import sport_category
 
 
 def get_or_create_default_user(session: Session, default_user_id: int) -> User:
@@ -47,9 +52,37 @@ def get_or_create_default_user(session: Session, default_user_id: int) -> User:
         injury_notes=None,
         running_date=date(2026, 9, 27),
     )
+    # Runtime databases retain a required legacy column that is not mapped by User.
+    if "marathon_goal_time" in {column["name"] for column in inspect(session.connection()).get_columns("users")}:
+        table = Table("users", MetaData(), autoload_with=session.connection())
+        values = {column.name: getattr(user, column.name) for column in User.__table__.columns}
+        values["running_goal_time"] = user.running_goal_time or "03:59:59"
+        values["marathon_goal_time"] = values["running_goal_time"]
+        session.execute(table.insert().values(**values))
+        return session.get(User, default_user_id)
     session.add(user)
     session.flush()
     return user
+
+
+def get_last_garmin_sync(session: Session, user_id: int) -> datetime | None:
+    status = session.get(GarminSyncStatus, user_id)
+    return status.last_synced_at if status else None
+
+
+def latest_activity_date(session: Session, user_id: int) -> date | None:
+    return session.scalar(select(func.max(Activity.date)).where(Activity.user_id == user_id))
+
+
+def record_garmin_sync(session: Session, user_id: int) -> datetime:
+    synced_at = datetime.now(UTC).replace(tzinfo=None)
+    status = session.get(GarminSyncStatus, user_id)
+    if status is None:
+        session.add(GarminSyncStatus(user_id=user_id, last_synced_at=synced_at))
+    else:
+        status.last_synced_at = synced_at
+    session.flush()
+    return synced_at
 
 
 def _backfill_legacy_default_profile(user: User) -> None:
@@ -192,6 +225,7 @@ def bulk_upsert_activities(session: Session, rows: list[dict[str, Any]]) -> int:
     """Insert or update activity rows."""
 
     inserted = 0
+    touched: list[Activity] = []
     for row in rows:
         external_id = row.get("external_id")
         query = select(Activity).where(Activity.user_id == row["user_id"])
@@ -208,10 +242,39 @@ def bulk_upsert_activities(session: Session, rows: list[dict[str, Any]]) -> int:
             activity = Activity(**row)
             session.add(activity)
             inserted += 1
+            touched.append(activity)
             continue
 
         for field, value in row.items():
             setattr(activity, field, value)
+        touched.append(activity)
+    session.flush()
+    for activity in touched:
+        if session.scalar(select(PlanSession.id).where(
+                PlanSession.user_id == activity.user_id,
+                PlanSession.linked_activity_id == activity.id,
+        )) is not None:
+            continue
+        sport = sport_category(activity.type, activity.date)
+        if sport not in ("running", "gym", "football", "volleyball"):
+            continue
+        planned = session.scalars(select(PlanSession).where(
+            PlanSession.user_id == activity.user_id,
+            PlanSession.date == activity.date,
+            PlanSession.sport == sport,
+            PlanSession.status == "planned",
+            PlanSession.linked_activity_id.is_(None),
+        ).order_by(PlanSession.id)).first()
+        if planned is None:
+            continue
+        planned.status = "done"
+        planned.linked_activity_id = activity.id
+        planned.updated_at = datetime.now(UTC).replace(tzinfo=None)
+        version = session.get(PlanVersion, activity.user_id)
+        if version is None:
+            session.add(PlanVersion(user_id=activity.user_id, version=1))
+        else:
+            version.version += 1
     session.flush()
     return inserted
 
@@ -324,8 +387,12 @@ def upsert_activity_coaching_insight(
     prompt_context_json: str,
     model_provider: str | None,
     model_name: str | None,
+    schema_version: str | None = None,
+    prompt_version: str | None = None,
+    validation_notes: str | None = None,
+    archive_existing: bool = False,
 ) -> ActivityCoachingInsight:
-    """Create or replace the stored coach opinion for one activity."""
+    """Create or replace an opinion, archiving the prior row when requested."""
 
     insight = get_activity_coaching_insight(session, activity_id=activity_id, user_id=user_id)
     if insight is None:
@@ -337,17 +404,48 @@ def upsert_activity_coaching_insight(
             prompt_context_json=prompt_context_json,
             model_provider=model_provider,
             model_name=model_name,
+            schema_version=schema_version,
+            prompt_version=prompt_version,
+            validation_notes=validation_notes,
         )
         session.add(insight)
     else:
+        if archive_existing:
+            session.add(ActivityCoachingOpinionHistory(
+                activity_id=activity_id,
+                payload_json=insight.payload_json,
+                prompt_context_json=insight.prompt_context_json,
+                schema_version=insight.schema_version,
+                prompt_version=insight.prompt_version,
+                model_provider=insight.model_provider,
+                model_name=insight.model_name,
+                created_at=insight.created_at,
+                replaced_at=datetime.now(UTC).replace(tzinfo=None),
+            ))
         insight.summary = summary
         insight.payload_json = payload_json
         insight.prompt_context_json = prompt_context_json
         insight.model_provider = model_provider
         insight.model_name = model_name
-        insight.updated_at = datetime.utcnow()
+        insight.schema_version = schema_version
+        insight.prompt_version = prompt_version
+        insight.validation_notes = validation_notes
+        insight.created_at = datetime.now(UTC).replace(tzinfo=None)
+        insight.updated_at = insight.created_at
     session.flush()
     return insight
+
+
+def set_activity_planned_intent(session: Session, *, activity_id: int, user_id: int,
+                                planned_intent: str | None) -> None:
+    """Save an athlete-selected plan without touching the stored opinion."""
+    if planned_intent not in (None, "recovery", "easy", "steady", "tempo", "race"):
+        raise ValueError("Invalid planned intent")
+    activity = get_activity(session, activity_id=activity_id, user_id=user_id)
+    if activity is None:
+        raise ValueError("Activity not found")
+    activity.planned_intent = planned_intent
+    session.flush()
 
 
 def upsert_prediction_snapshot(
@@ -453,7 +551,7 @@ def activities_dataframe(session: Session, user_id: int) -> pd.DataFrame:
         """
         SELECT id, user_id, external_id, activity_name, date, type, distance, duration, pace,
                avg_hr, max_hr, cadence, elevation, training_effect,
-               aerobic_effect, anaerobic_effect, notes
+               aerobic_effect, anaerobic_effect, notes, planned_intent
         FROM activities
         WHERE user_id = :user_id
         ORDER BY date ASC
@@ -582,8 +680,8 @@ def coaching_decisions_dataframe(session: Session, user_id: int) -> pd.DataFrame
     )
     df = pd.read_sql_query(query, session.bind, params={"user_id": user_id})
     if not df.empty:
-        for column in ("decision_date", "created_at"):
-            df[column] = pd.to_datetime(df[column])
+        df["decision_date"] = pd.to_datetime(df["decision_date"])
+        df["created_at"] = pd.to_datetime(df["created_at"], format="mixed")
     return df
 
 

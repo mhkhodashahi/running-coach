@@ -102,8 +102,11 @@ def test_activity_coach_opinion_is_loaded_from_db_without_regeneration() -> None
         )
 
         result = ActivityCoachingService(llm_client=FailingLLM()).generate(session, user=user, activity_id=activity_id)
+        stored = repository.get_activity_coaching_insight(session, activity_id, user.id)
+        assert stored.payload_json == '{"overall_assessment": "Stored assessment"}'
+        assert stored.schema_version is None
 
-    assert result["overall_assessment"] == "Stored assessment"
+    assert result["assessment"] == "Stored assessment"
 
 
 def test_activity_coaching_prompt_uses_profile_and_required_analysis_categories() -> None:
@@ -174,29 +177,24 @@ def test_activity_coaching_prompt_uses_profile_and_required_analysis_categories(
         health_df=health,
         track_points=track_points,
         laps=pd.DataFrame(),
-        snapshot={"readiness": {"score": 72}, "weekly_mileage": {"7d": 32.0}},
+        snapshot={"readiness": {"score": 72}},
+        hr_zones=(("Invented Easy", 100, 130),),
     )
     system_prompt, user_prompt = build_activity_coaching_prompt(
         context,
         running_memory="# Coach Running Memory\n- Easy days stay easy.",
     )
 
-    assert "honest feedback, strengths, mistakes, pacing analysis" in system_prompt
-    assert "aerobic_efficiency_analysis" in system_prompt
-    assert "mental_performance_insights" in system_prompt
-    assert "Use the athlete_profile values" in system_prompt
-    assert "# Context Engineering" in system_prompt
-    assert "context_engineering.analysis_frame" in system_prompt
-    assert '"age": 35' in user_prompt
-    assert '"weight_kg": 75.0' in user_prompt
-    assert '"pace": "6:00"' in user_prompt
-    assert '"median_pace": "6:12"' in user_prompt
-    assert "pace_min_per_km" not in user_prompt
-    assert '"context_engineering"' in user_prompt
-    assert '"likely_workout_purpose"' in user_prompt
-    assert '"key_questions"' in user_prompt
-    assert "Zone 2 Easy/Aerobic" in user_prompt
-    assert "custom_zone_distribution" in user_prompt
+    assert "OpinionDraftV23" in system_prompt
+    assert "Code supplies detected_intent" in system_prompt
+    assert "Do not return those fields" in system_prompt
+    assert "Invented example" in system_prompt
+    assert '"display": "6:00 /km"' in user_prompt
+    assert '"display": "6:12 /km"' in user_prompt
+    assert '"athlete_profile"' not in user_prompt
+    assert '"selected_activity"' not in user_prompt
+    assert '"planned_intent": null' in user_prompt
+    assert "Invented Easy" not in user_prompt
     assert "<running_memory>" in user_prompt
     assert "Easy days stay easy." in user_prompt
 

@@ -4,7 +4,18 @@ from __future__ import annotations
 
 from datetime import UTC, date, datetime
 
-from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    Date,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -42,13 +53,30 @@ class User(Base):
     prediction_snapshots: Mapped[list[PredictionSnapshot]] = relationship(back_populates="user")
     email_deliveries: Mapped[list[EmailDelivery]] = relationship(back_populates="user")
     nutrition_entries: Mapped[list[NutritionEntry]] = relationship(back_populates="user")
+    garmin_sync_status: Mapped[GarminSyncStatus | None] = relationship(back_populates="user", uselist=False)
+    coach_chat_turns: Mapped[list[CoachChatTurn]] = relationship(back_populates="user")
+    coach_llm_calls: Mapped[list[CoachLLMCall]] = relationship(back_populates="user")
+
+
+class GarminSyncStatus(Base):
+    """Last completed Garmin sync for an athlete."""
+
+    __tablename__ = "garmin_sync_status"
+
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), primary_key=True)
+    last_synced_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+    user: Mapped[User] = relationship(back_populates="garmin_sync_status")
 
 
 class Activity(Base):
     """Training activity imported from Garmin or CSV."""
 
     __tablename__ = "activities"
-    __table_args__ = (UniqueConstraint("user_id", "external_id", name="uq_activities_user_external"),)
+    __table_args__ = (
+        UniqueConstraint("user_id", "external_id", name="uq_activities_user_external"),
+        CheckConstraint("planned_intent IN ('recovery','easy','steady','tempo','race')", name="ck_activities_planned_intent"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True, nullable=False)
@@ -67,12 +95,36 @@ class Activity(Base):
     aerobic_effect: Mapped[float | None] = mapped_column(Float)
     anaerobic_effect: Mapped[float | None] = mapped_column(Float)
     notes: Mapped[str | None] = mapped_column(Text)
+    planned_intent: Mapped[str | None] = mapped_column(String(16))
 
     user: Mapped[User] = relationship(back_populates="activities")
     track_points: Mapped[list[ActivityTrackPoint]] = relationship(back_populates="activity", cascade="all, delete-orphan")
     laps: Mapped[list[ActivityLap]] = relationship(back_populates="activity", cascade="all, delete-orphan")
     coaching_insights: Mapped[list[ActivityCoachingInsight]] = relationship(back_populates="activity", cascade="all, delete-orphan")
+    coaching_opinion_history: Mapped[list[ActivityCoachingOpinionHistory]] = relationship(back_populates="activity", cascade="all, delete-orphan")
     prediction_snapshots: Mapped[list[PredictionSnapshot]] = relationship(back_populates="activity", cascade="all, delete-orphan")
+
+
+class ActivityEffort(Base):
+    __tablename__ = "activity_efforts"
+    __table_args__ = (
+        CheckConstraint("rpe BETWEEN 0 AND 10", name="ck_activity_efforts_rpe"),
+        CheckConstraint("source IN ('web','telegram')", name="ck_activity_efforts_source"),
+    )
+
+    activity_id: Mapped[int] = mapped_column(ForeignKey("activities.id"), primary_key=True)
+    rpe: Mapped[int] = mapped_column(Integer, nullable=False)
+    rated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    source: Mapped[str] = mapped_column(String(16), nullable=False)
+    note: Mapped[str | None] = mapped_column(Text)
+
+
+class ActivityEffortPrompt(Base):
+    __tablename__ = "activity_effort_prompts"
+
+    activity_id: Mapped[int] = mapped_column(ForeignKey("activities.id"), primary_key=True)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime)
+    reminded_at: Mapped[datetime | None] = mapped_column(DateTime)
 
 
 class ActivityTrackPoint(Base):
@@ -177,6 +229,39 @@ class LLMMemory(Base):
     user: Mapped[User] = relationship(back_populates="llm_memories")
 
 
+class CoachChatTurn(Base):
+    """One answered coach question with bounded audit metadata."""
+
+    __tablename__ = "coach_chat_turns"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True, nullable=False)
+    question: Mapped[str] = mapped_column(Text, nullable=False)
+    answer: Mapped[str] = mapped_column(Text, nullable=False)
+    evidence_json: Mapped[str] = mapped_column(Text, nullable=False)
+    activity_ids_json: Mapped[str] = mapped_column(Text, nullable=False)
+    tool_calls_json: Mapped[str] = mapped_column(Text, nullable=False)
+    model_provider: Mapped[str] = mapped_column(String(32), nullable=False)
+    model_name: Mapped[str] = mapped_column(String(80), nullable=False)
+    prompt_version: Mapped[str] = mapped_column(String(80), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
+
+    user: Mapped[User] = relationship(back_populates="coach_chat_turns")
+
+
+class CoachLLMCall(Base):
+    """Count every provider request, including retries and failures."""
+
+    __tablename__ = "coach_llm_calls"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True, nullable=False)
+    local_day: Mapped[date] = mapped_column(Date, index=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
+
+    user: Mapped[User] = relationship(back_populates="coach_llm_calls")
+
+
 class ActivityCoachingInsight(Base):
     """Stored LLM coach opinion for one activity."""
 
@@ -191,11 +276,31 @@ class ActivityCoachingInsight(Base):
     prompt_context_json: Mapped[str] = mapped_column(Text, nullable=False)
     model_provider: Mapped[str | None] = mapped_column(String(32))
     model_name: Mapped[str | None] = mapped_column(String(80))
+    schema_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    prompt_version: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    validation_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow, onupdate=_utcnow)
 
     user: Mapped[User] = relationship(back_populates="activity_coaching_insights")
     activity: Mapped[Activity] = relationship(back_populates="coaching_insights")
+
+
+class ActivityCoachingOpinionHistory(Base):
+    __tablename__ = "activity_coaching_opinion_history"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    activity_id: Mapped[int] = mapped_column(ForeignKey("activities.id"), index=True, nullable=False)
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False)
+    prompt_context_json: Mapped[str] = mapped_column(Text, nullable=False)
+    schema_version: Mapped[str | None] = mapped_column(String(32))
+    prompt_version: Mapped[str | None] = mapped_column(String(80))
+    model_provider: Mapped[str | None] = mapped_column(String(32))
+    model_name: Mapped[str | None] = mapped_column(String(80))
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    replaced_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
+
+    activity: Mapped[Activity] = relationship(back_populates="coaching_opinion_history")
 
 
 class PredictionSnapshot(Base):
@@ -266,6 +371,115 @@ class CoachingDecision(Base):
     user: Mapped[User] = relationship(back_populates="coaching_decisions")
     goal: Mapped[Goal | None] = relationship(back_populates="coaching_decisions")
     email_deliveries: Mapped[list[EmailDelivery]] = relationship(back_populates="coaching_decision")
+
+
+class FixedCommitment(Base):
+    __tablename__ = "fixed_commitments"
+    __table_args__ = (UniqueConstraint("user_id", "weekday", "start_time", "sport",
+                                      name="uq_fixed_commitments_slot"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True, nullable=False)
+    weekday: Mapped[int] = mapped_column(Integer, nullable=False)
+    start_time: Mapped[str] = mapped_column(String(5), nullable=False)
+    sport: Mapped[str] = mapped_column(String(16), nullable=False)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    typical_duration_min: Mapped[int] = mapped_column(Integer, nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+
+class ProtectedHabit(Base):
+    __tablename__ = "protected_habits"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True, nullable=False)
+    sport: Mapped[str] = mapped_column(String(16), nullable=False)
+    intent: Mapped[str] = mapped_column(String(32), nullable=False)
+    duration_min: Mapped[int] = mapped_column(Integer, nullable=False)
+    per_week: Mapped[int] = mapped_column(Integer, nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+
+class PlanSession(Base):
+    __tablename__ = "plan_sessions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    date: Mapped[date] = mapped_column(Date, nullable=False)
+    sport: Mapped[str] = mapped_column(String(16), nullable=False)
+    intent: Mapped[str] = mapped_column(String(32), nullable=False)
+    duration_min: Mapped[int] = mapped_column(Integer, nullable=False)
+    hr_cap_bpm: Mapped[int | None] = mapped_column(Integer)
+    notes: Mapped[str | None] = mapped_column(Text)
+    origin: Mapped[str] = mapped_column(String(16), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="planned")
+    linked_activity_id: Mapped[int | None] = mapped_column(ForeignKey("activities.id"))
+    fixed_commitment_id: Mapped[int | None] = mapped_column(ForeignKey("fixed_commitments.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow, onupdate=_utcnow)
+
+
+class PlanMobilitySession(Base):
+    __tablename__ = "plan_mobility_sessions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    date: Mapped[date] = mapped_column(Date, nullable=False)
+    sport: Mapped[str] = mapped_column(String(16), nullable=False, default="mobility")
+    intent: Mapped[str] = mapped_column(String(32), nullable=False, default="recovery")
+    duration_min: Mapped[int] = mapped_column(Integer, nullable=False)
+    hr_cap_bpm: Mapped[int | None] = mapped_column(Integer)
+    notes: Mapped[str | None] = mapped_column(Text)
+    origin: Mapped[str] = mapped_column(String(16), nullable=False, default="coach")
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="planned")
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow, onupdate=_utcnow)
+
+
+class PlanVersion(Base):
+    __tablename__ = "plan_versions"
+
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), primary_key=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+
+class PlanSnapshot(Base):
+    __tablename__ = "plan_snapshots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True, nullable=False)
+    version_before: Mapped[int] = mapped_column(Integer, nullable=False)
+    version_after: Mapped[int] = mapped_column(Integer, nullable=False)
+    snapshot_json: Mapped[str] = mapped_column(Text, nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
+    undone_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
+class CoachProposal(Base):
+    __tablename__ = "coach_proposals"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True, nullable=False)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    base_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(24), nullable=False)
+    summary: Mapped[str] = mapped_column(Text, nullable=False)
+    facts_json: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
+
+
+class ProposalChange(Base):
+    __tablename__ = "proposal_changes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    proposal_id: Mapped[int] = mapped_column(ForeignKey("coach_proposals.id"), index=True, nullable=False)
+    change_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    session_json: Mapped[str] = mapped_column(Text, nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    fact_ids_json: Mapped[str] = mapped_column(Text, nullable=False)
+    decision: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
+    group_id: Mapped[str | None] = mapped_column(String(64))
 
 
 class EmailDelivery(Base):

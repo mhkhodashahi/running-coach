@@ -49,7 +49,9 @@ OLLAMA_MODEL=qwen3:14b
 
 # OpenAI
 OPENAI_API_KEY=
-OPENAI_MODEL=gpt-5-mini
+OPENAI_MODEL=gpt-6-luna
+ALLOW_REMOTE_LLM=
+REMOTE_ATHLETE_DATA_APPROVED=
 
 # Garmin Connect sync
 GARMIN_EMAIL=
@@ -69,6 +71,23 @@ TELEGRAM_CHAT_ID=
 Do not commit `.env`, Garmin token files, SQLite databases, logs, or personal exports. The `.gitignore` is set up for the common local outputs, but you should still run a secret scan before publishing forks or releases.
 
 ## Running The App
+
+The new server-rendered Today page runs locally with:
+
+```bash
+python -m scripts.upgrade_db --db db/running_coach.db
+python -m web
+```
+
+Open `http://127.0.0.1:8000`. `WEB_HOST` and `WEB_PORT` change the bind address
+and port. By default the web UI only binds to the local machine. Set
+`WEB_PASSWORD` in `.env` to require a signed-cookie login; a password is
+required before binding to a non-local address. Use HTTPS through a trusted
+reverse proxy for remote access. Today, its controls, and placeholder links
+are available now; other pages remain in Streamlit until web milestones 5b/5c.
+No fonts, scripts, or styles are fetched from a CDN.
+
+Streamlit remains the back office:
 
 ```bash
 streamlit run app/main.py
@@ -115,8 +134,14 @@ OpenAI:
 ```bash
 LLM_PROVIDER=openai
 OPENAI_API_KEY=your_openai_api_key
-OPENAI_MODEL=gpt-5-mini
+OPENAI_MODEL=gpt-6-luna
+ALLOW_REMOTE_LLM=true
+REMOTE_ATHLETE_DATA_APPROVED=true
 ```
+
+OpenAI uses the Responses API with response storage disabled. Set `LLM_PROVIDER=openai`
+to use it; Ollama remains the default. `OPENAI_MODEL` can also be set to
+`gpt-6.1-sol` or `gpt-6-astra` for more demanding coaching workloads.
 
 Ollama:
 
@@ -127,6 +152,14 @@ OLLAMA_MODEL=qwen3:14b
 ```
 
 If the configured model is unavailable, some workflows fall back to deterministic rule-based coaching. Ollama prompts are guarded by a local input-size estimate to avoid sending oversized requests.
+
+## Privacy and AI Providers
+
+Local Ollama runs on your machine and needs no remote approval; it is supported but can be slower and weaker than a remote model on detailed session opinions. For OpenAI (including the `chatgpt` provider alias), set both `ALLOW_REMOTE_LLM=true` and `REMOTE_ATHLETE_DATA_APPROVED=true` in your private `.env`. If either is absent, the client refuses before sending data.
+
+`COACH_DAILY_CALL_LIMIT` caps coach chat LLM requests per user and local day, including retries. Leave it empty for the default of 20; set a positive integer to change it.
+
+Per-activity opinions send the rounded facts pack, planned and detected intent, code-generated recording notes, and running memory to the selected provider. Other optional AI coaching and chat flows can send relevant activity, health, goal, and message context. With OpenAI selected, that content goes to OpenAI; with Ollama, it stays on the configured local Ollama server. API keys and Garmin credentials are not included in coaching prompts. OpenAI requests use `store=False`.
 
 ## Telegram Digest
 

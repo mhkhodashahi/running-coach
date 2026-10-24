@@ -57,11 +57,15 @@ def _window(df: pd.DataFrame, days: int, ref_day: pd.Timestamp, date_column: str
     return df[df[date_column] >= cutoff].copy()
 
 
-def weekly_mileage(activities_df: pd.DataFrame) -> dict[str, Any]:
+def weekly_mileage(
+    activities_df: pd.DataFrame,
+    reference_day: pd.Timestamp | None = None,
+) -> dict[str, Any]:
     runs = _running_activities(_safe_dataframe(activities_df))
-    ref_day = _reference_day(runs, pd.DataFrame())
-    last_7 = _window(runs, 7, ref_day)["distance"].sum() if not runs.empty else 0.0
-    last_28 = _window(runs, 28, ref_day)["distance"].sum() if not runs.empty else 0.0
+    ref_day = pd.Timestamp(reference_day).normalize() if reference_day is not None else pd.Timestamp.today().normalize()
+    runs_to_date = runs[runs["date"].dt.normalize() <= ref_day] if not runs.empty else runs
+    last_7 = _window(runs_to_date, 7, ref_day)["distance"].sum() if not runs_to_date.empty else 0.0
+    last_28 = _window(runs_to_date, 28, ref_day)["distance"].sum() if not runs_to_date.empty else 0.0
 
     weekly_series = pd.DataFrame(columns=["week", "distance"])
     if not runs.empty:
@@ -207,7 +211,7 @@ def fatigue_score(
     recent_health = _window(health, 7, ref_day)
     baseline_health = _window(health, 28, ref_day)
     recent_activities = _window(activities, 7, ref_day)
-    mileage = weekly_mileage(activities)
+    mileage = weekly_mileage(activities, ref_day)
     intensity = intensity_distribution(activities, user_max_hr)
 
     reasons: list[str] = []
@@ -344,7 +348,7 @@ def _training_endurance_penalty(
 ) -> tuple[float, float, float]:
     recent = _window(runs, 42, ref_day)
     longest_recent = float(recent["distance"].max()) if not recent.empty else 0.0
-    weekly_average = weekly_mileage(runs)["28d"] / 4 if not runs.empty else 0.0
+    weekly_average = weekly_mileage(runs, ref_day)["28d"] / 4 if not runs.empty else 0.0
 
     penalty = 1.0
     if weekly_average < 32:

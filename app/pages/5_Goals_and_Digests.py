@@ -11,9 +11,11 @@ from db import repository
 from db.session import session_scope
 from services.goal_service import GoalService
 from services.training_context_service import load_training_bundle
+from ui.sidebar import render_sidebar_menu
 from utils.formatting import format_goal_time, format_pace
 
-st.title("Goals and Digests")
+render_sidebar_menu()
+st.title("Goals")
 
 bundle = load_training_bundle()
 snapshot = bundle.snapshot

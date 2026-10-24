@@ -3,21 +3,24 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import date
 from typing import Any
 
 import pandas as pd
+from pydantic import ValidationError
 
-from analytics.performance import build_training_snapshot
 from config import Settings, get_settings
 from db import repository
+from db.models import ActivityEffort
 from db.session import session_scope
 from llm.factory import get_llm_client
-from llm.schemas import ActivityCoachInsightSchema
-from services.coaching_prompts import ELITE_ENDURANCE_COACH_CONTEXT
+from llm.schemas import ActivityCoachInsightSchema, CoachOpinionV2, CoachOpinionV23, OpinionDraftV23
+from metrics import get_daily_snapshot
+from services.coach_facts import IntentDecision, build_data_notes, build_facts, detect_intent
+from services.coach_opinion import assemble_opinion_v23, load_opinion, opinion_rule_errors
+from services.coaching_prompts import ACTIVITY_OPINION_V23_SYSTEM_PROMPT
 from services.goal_service import GoalService
-from services.llm_workflow import generate_structured_payload
 from services.running_coach_memory import (
     build_memory_entry_from_activity,
     load_running_memory,
@@ -26,13 +29,7 @@ from services.running_coach_memory import (
 )
 from utils.formatting import format_pace_short
 
-CUSTOM_HR_ZONES = [
-    ("Zone 1 Recovery", 92, 109),
-    ("Zone 2 Easy/Aerobic", 110, 128),
-    ("Zone 3 Steady/Aerobic", 129, 146),
-    ("Zone 4 Threshold", 147, 165),
-    ("Zone 5 VO2max/Max", 166, None),
-]
+PROMPT_VERSION = "opinion-v2.3"
 
 
 @dataclass(frozen=True)
@@ -102,189 +99,161 @@ class ActivityCoachingService:
         )
         self.goal_service = GoalService()
 
-    def generate(self, session, *, user: Any, activity_id: int) -> dict[str, Any]:
-        """Generate and store an LLM coach opinion once for one activity."""
-
+    def _prepare(self, session: Any, user: Any, activity_id: int) -> tuple[dict[str, Any], str, str | None]:
         activity = repository.get_activity(session, activity_id=activity_id, user_id=user.id)
         if activity is None:
             raise ValueError(f"Unknown activity id: {activity_id}")
-        existing = repository.get_activity_coaching_insight(session, activity_id=activity.id, user_id=user.id)
-        if existing is not None:
-            try:
-                return json.loads(existing.payload_json)
-            except json.JSONDecodeError as exc:
-                raise RuntimeError("Stored activity coach opinion is not valid JSON.") from exc
-
-        goal = self.goal_service.ensure_active_goal(session, user)
         activities = repository.activities_dataframe(session, user.id)
         health = repository.health_metrics_dataframe(session, user.id)
         track_points = repository.track_points_dataframe(session, activity.id)
         laps = repository.activity_laps_dataframe(session, activity.id)
-        readiness = can_generate_activity_coach_opinion(activity=activity, track_points=track_points, laps=laps)
-        if not readiness.allowed:
-            raise ValueError(readiness.reason)
-        snapshot = build_training_snapshot(user, activities, health, goal=goal)
-        running_memory = load_running_memory()
-        activity_date_text = str(activity.date)
-        activity_name = getattr(activity, "activity_name", None)
+        allowed = can_generate_activity_coach_opinion(activity=activity, track_points=track_points, laps=laps)
+        if not allowed.allowed:
+            raise ValueError(allowed.reason)
+        snapshot = get_daily_snapshot(activity.date, database=self.settings.db_path, user_id=user.id,
+                                      timezone=self.settings.local_timezone,
+                                      sleep_goal_hours=self.settings.sleep_goal_hours)
+        compact = _opinion_metrics_snapshot(snapshot, activity.id)
         context = build_activity_coaching_context(
-            user=user,
-            goal=goal,
-            activity=activity,
-            activities_df=activities,
-            health_df=health,
-            track_points=track_points,
-            laps=laps,
-            snapshot=snapshot,
+            user=user, goal=self.goal_service.ensure_active_goal(session, user), activity=activity,
+            activities_df=activities, health_df=health, track_points=track_points, laps=laps,
+            snapshot=compact, hr_zones=self.settings.hr_zones,
         )
-        system_prompt, user_prompt = build_activity_coaching_prompt(context, running_memory=running_memory)
-        result = generate_structured_payload(
-            llm_client=self.llm_client,
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            response_schema=ActivityCoachInsightSchema,
-            normalize=normalize_activity_coach_payload,
-            unavailable_message="Activity coaching model unavailable",
-        )
-        if result.error is not None:
-            raise result.error
-        normalized = result.payload
-        if not normalized["overall_assessment"]:
-            raise RuntimeError("The configured LLM did not return a usable activity analysis.")
+        rating = session.get(ActivityEffort, activity.id)
+        context["effort_rpe"] = rating.rpe if rating else None
+        activity_session = next((item for item in snapshot.sessions if item.activity_id == activity.id), None)
+        context["effort_low_zone_share"] = (sum(zone.percent.value or 0 for zone in activity_session.zones
+                                                if zone.name.startswith(("Z1", "Z2")))
+                                            if activity_session else None)
+        facts = build_facts(activity.id, context)
+        decision = detect_intent(facts, context["planned_intent"])
+        if decision is None:
+            raise ValueError("Cannot detect session intent without enough HR-zone evidence; sync activity detail first.")
+        context["facts_pack"] = facts
+        context["detected_intent"] = decision.intent
+        context["intent_fact_ids"] = list(decision.fact_ids)
+        context["data_notes"] = build_data_notes(laps.to_dict(orient="records"),
+                                                 track_points.to_dict(orient="records"), activity.distance)
+        return context, str(activity.date), getattr(activity, "activity_name", None)
 
+    def _request_opinion(self, context: dict[str, Any], running_memory: str | None) -> tuple[CoachOpinionV23, str | None]:
+        system_prompt, user_prompt = build_activity_coaching_prompt(context, running_memory)
+        facts = context["facts_pack"]
+        decision = IntentDecision(context["detected_intent"], tuple(context["intent_fact_ids"]))
+        for attempt in range(2):
+            try:
+                payload = self.llm_client.generate_json(system_prompt, user_prompt, response_schema=OpinionDraftV23)
+            except Exception as exc:
+                raise RuntimeError(f"Activity coaching model unavailable: {exc}") from exc
+            try:
+                draft = OpinionDraftV23.model_validate(payload)
+                opinion = assemble_opinion_v23(draft, facts, decision, context["planned_intent"], context["data_notes"])
+                rule_errors = opinion_rule_errors(opinion, context)
+                if rule_errors:
+                    raise ValueError("; ".join(rule_errors))
+                return opinion, None
+            except (ValidationError, ValueError) as exc:
+                if attempt:
+                    raise RuntimeError(f"Coach opinion validation failed after retry: {exc}") from exc
+                user_prompt += f"\nValidation errors: {exc}. Correct the cited facts and return the draft JSON only."
+        raise RuntimeError("Coach opinion validation failed after retry")
+
+    def _save(self, session: Any, user_id: int, activity_id: int, opinion: CoachOpinionV2,
+              context: dict[str, Any], notes: str | None, regenerate: bool) -> None:
+        existing = repository.get_activity_coaching_insight(session, activity_id=activity_id, user_id=user_id)
+        if existing is not None and not regenerate:
+            raise RuntimeError("An opinion was saved while generation was running; use Regenerate explicitly.")
         repository.upsert_activity_coaching_insight(
-            session,
-            user_id=user.id,
-            activity_id=activity.id,
-            summary=normalized["overall_assessment"],
-            payload_json=json.dumps(normalized, default=_json_default),
-            prompt_context_json=json.dumps(context, default=_json_default),
-            model_provider=self.settings.llm_provider,
-            model_name=_model_name(self.settings),
+            session, user_id=user_id, activity_id=activity_id, summary=opinion.assessment,
+            payload_json=opinion.model_dump_json(), prompt_context_json=json.dumps(context, default=_json_default),
+            model_provider=self.settings.llm_provider, model_name=_model_name(self.settings),
+            schema_version="2", prompt_version=PROMPT_VERSION, validation_notes=notes,
+            archive_existing=regenerate,
         )
-        try:
-            memory_entry = build_memory_entry_from_activity(
-                activity_date_text,
-                normalized | {"selected_activity_name": activity_name},
-            )
-            update_running_memory(entry=memory_entry)
-        except Exception:
-            pass
-        return normalized
 
-    def generate_for_activity(self, *, user_id: int, activity_id: int) -> dict[str, Any]:
-        """Generate and store an activity opinion without holding a DB session during the LLM call."""
+    def generate(self, session: Any, *, user: Any, activity_id: int, regenerate: bool = False) -> dict[str, Any]:
+        existing = repository.get_activity_coaching_insight(session, activity_id=activity_id, user_id=user.id)
+        if existing is not None and not regenerate:
+            return load_opinion(existing).model_dump()
+        context, activity_day, activity_name = self._prepare(session, user, activity_id)
+        opinion, notes = self._request_opinion(context, load_running_memory())
+        self._save(session, user.id, activity_id, opinion, context, notes, regenerate)
+        _update_activity_memory(activity_day, activity_name, opinion)
+        return opinion.model_dump()
 
+    def generate_for_activity(self, *, user_id: int, activity_id: int, regenerate: bool = False) -> dict[str, Any]:
+        """Generate only on an explicit call, outside a long-running database transaction."""
         with session_scope() as session:
             user = repository.get_or_create_default_user(session, user_id)
-            activity = repository.get_activity(session, activity_id=activity_id, user_id=user.id)
-            if activity is None:
-                raise ValueError(f"Unknown activity id: {activity_id}")
-            existing = repository.get_activity_coaching_insight(session, activity_id=activity.id, user_id=user.id)
-            if existing is not None:
-                try:
-                    return json.loads(existing.payload_json)
-                except json.JSONDecodeError as exc:
-                    raise RuntimeError("Stored activity coach opinion is not valid JSON.") from exc
-
-            goal = self.goal_service.ensure_active_goal(session, user)
-            activities = repository.activities_dataframe(session, user.id)
-            health = repository.health_metrics_dataframe(session, user.id)
-            track_points = repository.track_points_dataframe(session, activity.id)
-            laps = repository.activity_laps_dataframe(session, activity.id)
-            readiness = can_generate_activity_coach_opinion(activity=activity, track_points=track_points, laps=laps)
-            if not readiness.allowed:
-                raise ValueError(readiness.reason)
-            snapshot = build_training_snapshot(user, activities, health, goal=goal)
-            running_memory = load_running_memory()
-            activity_date_text = str(activity.date)
-            activity_name = getattr(activity, "activity_name", None)
-            context = build_activity_coaching_context(
-                user=user,
-                goal=goal,
-                activity=activity,
-                activities_df=activities,
-                health_df=health,
-                track_points=track_points,
-                laps=laps,
-                snapshot=snapshot,
-            )
-
-        system_prompt, user_prompt = build_activity_coaching_prompt(context, running_memory=running_memory)
-        result = generate_structured_payload(
-            llm_client=self.llm_client,
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            response_schema=ActivityCoachInsightSchema,
-            normalize=normalize_activity_coach_payload,
-            unavailable_message="Activity coaching model unavailable",
-        )
-        if result.error is not None:
-            raise result.error
-        normalized = result.payload
-        if not normalized["overall_assessment"]:
-            raise RuntimeError("The configured LLM did not return a usable activity analysis.")
-
+            existing = repository.get_activity_coaching_insight(session, activity_id=activity_id, user_id=user_id)
+            if existing is not None and not regenerate:
+                return load_opinion(existing).model_dump()
+            context, activity_day, activity_name = self._prepare(session, user, activity_id)
+        opinion, notes = self._request_opinion(context, load_running_memory())
         with session_scope() as session:
-            repository.upsert_activity_coaching_insight(
-                session,
-                user_id=user_id,
-                activity_id=activity_id,
-                summary=normalized["overall_assessment"],
-                payload_json=json.dumps(normalized, default=_json_default),
-                prompt_context_json=json.dumps(context, default=_json_default),
-                model_provider=self.settings.llm_provider,
-                model_name=_model_name(self.settings),
-            )
-        try:
-            memory_entry = build_memory_entry_from_activity(
-                activity_date_text,
-                normalized | {"selected_activity_name": activity_name},
-            )
-            update_running_memory(entry=memory_entry)
-        except Exception:
-            pass
-        return normalized
+            self._save(session, user_id, activity_id, opinion, context, notes, regenerate)
+        _update_activity_memory(activity_day, activity_name, opinion)
+        return opinion.model_dump()
 
 
 def build_activity_coaching_prompt(context: dict[str, Any], running_memory: str | None = None) -> tuple[str, str]:
-    """Build the structured per-workout coaching prompt."""
+    facts = context.get("facts_pack") or build_facts(context.get("selected_activity", {}).get("id", 0), context)
+    decision = context.get("detected_intent")
+    if decision is None:
+        detected = detect_intent(facts, context.get("planned_intent"))
+        decision = detected.intent if detected else None
+    prompt_input = {
+        "facts": facts,
+        "planned_intent": context.get("planned_intent"),
+        "detected_intent": decision,
+        "intent_fact_ids": context.get("intent_fact_ids", []),
+        "data_notes_from_code": context.get("data_notes", []),
+    }
+    return ACTIVITY_OPINION_V23_SYSTEM_PROMPT, f"{running_memory_block(running_memory)}\n{json.dumps(prompt_input, default=_json_default)}"
 
-    system_prompt = (
-        f"{ELITE_ENDURANCE_COACH_CONTEXT}\n\n"
-        "# Per-Workout Analysis Task\n"
-        "Analyze exactly one workout using the supplied athlete profile, active goal, selected activity, "
-        "recent training context, recovery metrics, lap data, and stream summaries.\n\n"
-        "# Running Memory\n"
-        "Use the running_memory block for durable coaching context. Prefer the selected activity and latest metrics when they conflict with older notes.\n\n"
-        "# Context Engineering\n"
-        "First decide what kind of workout this most likely was from selected_activity, notes, pace, HR, "
-        "training effect, lap pattern, and stream_analysis. Then judge whether the execution matched that likely purpose. "
-        "Use context_engineering.analysis_frame, context_engineering.data_quality, and context_engineering.key_questions "
-        "to focus your reasoning. Prioritize direct evidence from selected_activity, stream_analysis, lap_analysis, "
-        "same_day_or_latest_recovery, recent_running_context, and training_snapshot in that order.\n\n"
-        "You must analyze every workout deeply and give honest feedback, strengths, mistakes, pacing analysis, "
-        "aerobic efficiency analysis, recovery analysis, mental/performance insights, and training recommendations.\n\n"
-        "Use the athlete_profile values from the user prompt as the source of truth for age, sex, weight, max HR, "
-        "training availability, and injury notes. Do not use generic athlete assumptions when profile data is present.\n\n"
-        "# Output Contract\n"
-        "Return strict JSON only with keys: overall_assessment, what_was_good, mistakes_or_inefficiencies, "
-        "pacing_analysis, aerobic_efficiency_analysis, recovery_analysis, mental_performance_insights, "
-        "training_recommendations, brutally_honest_conclusion, evidence, confidence.\n"
-        "what_was_good, mistakes_or_inefficiencies, training_recommendations, and evidence must be arrays of strings. "
-        "confidence must be 0-100.\n\n"
-        "# Coaching Rules\n"
-        "- Do not blindly praise the workout.\n"
-        "- Do not just repeat Garmin metrics; interpret them like a coach.\n"
-        "- If the run looks too hard for an easy day, say so directly.\n"
-        "- If the athlete controlled the workout well, reward that discipline.\n"
-        "- Use the custom HR zones in the context, not Garmin default zones.\n"
-        "- If running mechanics data is missing, say it is unavailable instead of inventing it.\n"
-        "- Be specific about what to do in the next run or next 24-48 hours.\n"
-        "- Keep medical language conservative and do not diagnose."
-    )
-    user_prompt = f"{running_memory_block(running_memory)}\n{json.dumps(context, default=_json_default, indent=2)}"
-    return system_prompt, user_prompt
+
+def _opinion_metrics_snapshot(snapshot: Any, activity_id: int) -> dict[str, Any]:
+    """Bound model input while retaining dated metrics and their provenance."""
+    session = next((item for item in snapshot.sessions if item.activity_id == activity_id), None)
+    activity_session = None
+    if session is not None:
+        activity_session = {
+            "activity_id": session.activity_id,
+            "sport": session.sport,
+            "load": asdict(session.load),
+            "hrmax": asdict(session.hrmax),
+            "hr_zones": [{"zone": zone.name, "seconds": zone.seconds.value,
+                          "percent": zone.percent.value} for zone in session.zones],
+            "hr_zone_source": "metrics.session_metrics / activity_track_points.heart_rate",
+            "observed_seconds": session.observed_seconds.value,
+        }
+    return {
+        "as_of": snapshot.as_of,
+        "timezone": snapshot.timezone,
+        "baselines": [asdict(item) for item in snapshot.baselines],
+        "current_health": dict((name, asdict(value)) for name, value in snapshot.current_health),
+        "readiness": asdict(snapshot.readiness),
+        "load": asdict(snapshot.load),
+        "activity_session": activity_session,
+        "daily_sport_loads": [{"sport": item.sport, "load_trimp": item.load.value,
+                               "source": "metrics.daily_sport_loads"} for item in snapshot.sport_loads
+                              if item.period == "daily" and item.load.provenance.window_end == snapshot.as_of],
+    }
+
+
+def _update_activity_memory(activity_day: str, activity_name: str | None, opinion: CoachOpinionV2) -> None:
+    try:
+        entry = build_memory_entry_from_activity(activity_day, {
+            "selected_activity_name": activity_name,
+            "overall_assessment": opinion.assessment,
+            "what_was_good": [point.lead for point in opinion.worked],
+            "mistakes_or_inefficiencies": [point.lead for point in opinion.fix],
+            "training_recommendations": [item.text for item in opinion.recommendations],
+            "evidence": [f"{item.metric}: {item.value}" for item in opinion.evidence],
+        })
+        update_running_memory(entry=entry)
+    except Exception:
+        pass
 
 
 def build_activity_coaching_context(
@@ -297,6 +266,7 @@ def build_activity_coaching_context(
     track_points: pd.DataFrame,
     laps: pd.DataFrame,
     snapshot: dict[str, Any],
+    hr_zones: tuple[tuple[str, int, int | None], ...] = (),
 ) -> dict[str, Any]:
     """Build a compact data context for one activity."""
 
@@ -305,20 +275,11 @@ def build_activity_coaching_context(
     recent_median_pace = _recent_runs_median_pace(activities_df, activity.id)
     recent_runs = _recent_runs_context(activities_df, activity.id)
     health_payload = _health_context(health_df, activity_day)
-    stream_payload = _stream_context(track_points, float(_activity_field(activity, "distance") or 0.0))
+    stream_payload = _stream_context(track_points, float(_activity_field(activity, "distance") or 0.0), hr_zones)
     lap_payload = _laps_context(laps)
     return {
-        "context_engineering": _context_engineering_payload(
-            activity_payload=activity_payload,
-            recent_runs=recent_runs,
-            health_payload=health_payload,
-            stream_payload=stream_payload,
-            lap_payload=lap_payload,
-            selected_pace=float(_activity_field(activity, "pace"))
-            if _has_value(_activity_field(activity, "pace"))
-            else None,
-            median_pace=recent_median_pace,
-        ),
+        "planned_intent": _activity_field(activity, "planned_intent"),
+        "recent_median_pace": _format_pace_value(recent_median_pace),
         "athlete_profile": {
             "name": getattr(user, "name", None),
             "age": getattr(user, "age", None),
@@ -328,15 +289,9 @@ def build_activity_coaching_context(
             "max_hr": getattr(user, "max_hr", None),
             "training_days_per_week": getattr(user, "training_days_per_week", None),
             "injury_notes": getattr(user, "injury_notes", None),
-            "known_goals": [
-                "improve aerobic base",
-                "lose weight",
-                "improve 5K, 10K, and half running performance",
-                "build running durability while staying injury-free",
-            ],
         },
         "custom_heart_rate_zones": [
-            {"zone": zone, "lower_bpm": lower, "upper_bpm": upper} for zone, lower, upper in CUSTOM_HR_ZONES
+            {"zone": zone, "lower_bpm": lower, "upper_bpm": upper} for zone, lower, upper in hr_zones
         ],
         "active_goal": {
             "name": getattr(goal, "name", None),
@@ -351,82 +306,8 @@ def build_activity_coaching_context(
         "lap_analysis": lap_payload,
         "same_day_or_latest_recovery": health_payload,
         "recent_running_context": recent_runs,
-        "training_snapshot": _compact_snapshot(snapshot),
+        "metrics_snapshot": snapshot,
     }
-
-
-def _context_engineering_payload(
-    *,
-    activity_payload: dict[str, Any],
-    recent_runs: dict[str, Any],
-    health_payload: dict[str, Any],
-    stream_payload: dict[str, Any],
-    lap_payload: dict[str, Any],
-    selected_pace: float | None,
-    median_pace: float | None,
-) -> dict[str, Any]:
-    """Give the model an explicit reasoning frame for the selected workout."""
-
-    avg_hr = activity_payload.get("avg_hr")
-    median_hr = recent_runs.get("median_avg_hr")
-    likely_purpose = _likely_workout_purpose(activity_payload)
-    return {
-        "analysis_frame": {
-            "likely_workout_purpose": likely_purpose,
-            "compare_against_recent_runs": bool(recent_runs),
-            "use_custom_hr_zones": True,
-            "judge_easy_run_discipline": likely_purpose in {"easy/aerobic", "recovery", "base run"},
-            "assess_fatigue_resistance": bool(stream_payload.get("first_half") and stream_payload.get("second_half")),
-            "assess_lap_execution": bool(lap_payload.get("available")),
-        },
-        "data_quality": {
-            "has_stream_samples": bool(stream_payload.get("available")),
-            "has_laps": bool(lap_payload.get("available")),
-            "has_recovery_metrics": bool(health_payload),
-            "has_recent_run_baseline": bool(recent_runs.get("prior_run_count")),
-            "missing_mechanics": not bool(stream_payload.get("cadence_spm") or activity_payload.get("cadence_spm")),
-        },
-        "comparisons": {
-            "pace_vs_recent_median": _pace_delta_text(selected_pace, median_pace),
-            "avg_hr_vs_recent_median_bpm": round(float(avg_hr) - float(median_hr), 1)
-            if avg_hr is not None and median_hr is not None
-            else None,
-            "stream_hr_drift_bpm": stream_payload.get("hr_drift_bpm"),
-            "stream_pace_fade": stream_payload.get("pace_fade"),
-        },
-        "key_questions": [
-            "Did this workout match its likely purpose?",
-            "Was the pacing controlled or ego-driven?",
-            "Did HR stay in the right custom zones for the workout purpose?",
-            "Is there evidence of aerobic efficiency or HR drift?",
-            "Did recovery state support this effort?",
-            "What should the athlete do differently in the next similar session?",
-        ],
-    }
-
-
-def _likely_workout_purpose(activity: dict[str, Any]) -> str:
-    notes = f"{activity.get('activity_name', '')} {activity.get('notes', '')}".lower()
-    activity_type = str(activity.get("type") or "").lower()
-    avg_hr = activity.get("avg_hr")
-    distance = float(activity.get("distance_km") or 0.0)
-    if any(keyword in notes for keyword in ("recovery", "easy", "zone 2", "z2")):
-        return "easy/aerobic"
-    if any(keyword in notes for keyword in ("interval", "vo2", "speed", "repeat")):
-        return "VO2max/speed"
-    if any(keyword in notes for keyword in ("threshold", "tempo", "race pace")):
-        return "threshold/tempo"
-    if distance >= 16:
-        return "long run"
-    if "run" in activity_type and avg_hr is not None:
-        if float(avg_hr) <= 128:
-            return "easy/aerobic"
-        if float(avg_hr) <= 146:
-            return "steady/base run"
-        if float(avg_hr) <= 165:
-            return "threshold/tempo"
-        return "VO2max/hard"
-    return "general training"
 
 
 def _activity_payload(activity: Any) -> dict[str, Any]:
@@ -497,7 +378,8 @@ def _health_context(health: pd.DataFrame, activity_day: Any) -> dict[str, Any]:
     return _record_json(latest)
 
 
-def _stream_context(track_points: pd.DataFrame, activity_distance_km: float) -> dict[str, Any]:
+def _stream_context(track_points: pd.DataFrame, activity_distance_km: float,
+                    hr_zones: tuple[tuple[str, int, int | None], ...]) -> dict[str, Any]:
     if track_points.empty:
         return {"available": False, "reason": "No activity stream samples stored."}
 
@@ -523,8 +405,8 @@ def _stream_context(track_points: pd.DataFrame, activity_distance_km: float) -> 
                     "max": round(float(values.max()), 2),
                 }
 
-    if "heart_rate" in samples and samples["heart_rate"].notna().any():
-        summary["custom_zone_distribution"] = _custom_zone_distribution(samples)
+    if hr_zones and "heart_rate" in samples and samples["heart_rate"].notna().any():
+        summary["custom_zone_distribution"] = _custom_zone_distribution(samples, hr_zones)
 
     first_half, second_half = _split_stream_halves(samples, activity_distance_km)
     if not first_half.empty and not second_half.empty:
@@ -559,7 +441,7 @@ def _half_summary(samples: pd.DataFrame) -> dict[str, Any]:
     }
 
 
-def _custom_zone_distribution(samples: pd.DataFrame) -> list[dict[str, Any]]:
+def _custom_zone_distribution(samples: pd.DataFrame, zones: tuple[tuple[str, int, int | None], ...]) -> list[dict[str, Any]]:
     hr = samples.dropna(subset=["heart_rate"]).copy()
     if hr.empty:
         return []
@@ -571,7 +453,7 @@ def _custom_zone_distribution(samples: pd.DataFrame) -> list[dict[str, Any]]:
         hr["sample_seconds"] = seconds.where((seconds > 0) & (seconds <= 300), fallback_step)
     else:
         hr["sample_seconds"] = 1.0
-    hr["zone"] = hr["heart_rate"].apply(_custom_zone_for_hr)
+    hr["zone"] = hr["heart_rate"].apply(lambda value: _custom_zone_for_hr(value, zones))
     grouped = hr.groupby("zone", as_index=False)["sample_seconds"].sum()
     total = float(grouped["sample_seconds"].sum()) or 1.0
     grouped["minutes"] = grouped["sample_seconds"] / 60
@@ -582,8 +464,8 @@ def _custom_zone_distribution(samples: pd.DataFrame) -> list[dict[str, Any]]:
     ]
 
 
-def _custom_zone_for_hr(value: float) -> str:
-    for zone, lower, upper in CUSTOM_HR_ZONES:
+def _custom_zone_for_hr(value: float, zones: tuple[tuple[str, int, int | None], ...]) -> str:
+    for zone, lower, upper in zones:
         if value >= lower and (upper is None or value <= upper):
             return zone
     return "Below Zone 1"
@@ -596,32 +478,6 @@ def _laps_context(laps: pd.DataFrame) -> dict[str, Any]:
     for row in laps.head(30).to_dict(orient="records"):
         records.append(_activity_record_json(row))
     return {"available": True, "lap_count": int(len(laps)), "laps": records}
-
-
-def _compact_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
-    keys = ("weekly_mileage", "fatigue", "readiness", "recovery", "intensity", "efficiency", "vo2max", "prediction", "active_goal_projection")
-    compact: dict[str, Any] = {}
-    for key in keys:
-        value = snapshot.get(key)
-        if isinstance(value, dict):
-            compact[key] = {
-                inner_key: _format_context_value(inner_key, inner_value)
-                for inner_key, inner_value in value.items()
-                if not isinstance(inner_value, pd.DataFrame)
-            }
-        elif not isinstance(value, pd.DataFrame):
-            compact[key] = _format_context_value(key, value)
-    return compact
-
-
-def _format_context_value(key: str, value: Any) -> Any:
-    if isinstance(value, dict):
-        return {inner_key: _format_context_value(inner_key, inner_value) for inner_key, inner_value in value.items()}
-    if isinstance(value, list):
-        return [_format_context_value(key, item) for item in value]
-    if "pace" in str(key).lower():
-        return _format_pace_value(value)
-    return value
 
 
 def normalize_activity_coach_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -723,12 +579,6 @@ def _format_pace_value(value: Any) -> str | None:
     if numeric is None:
         return None
     return format_pace_short(numeric)
-
-
-def _pace_delta_text(value: float | None, baseline: float | None) -> str | None:
-    if value is None or baseline is None:
-        return None
-    return _pace_delta_text_from_delta(value - baseline)
 
 
 def _pace_delta_text_from_delta(delta: Any) -> str | None:

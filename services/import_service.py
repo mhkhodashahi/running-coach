@@ -6,8 +6,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO
 
+from sqlalchemy import text
+
 from config import get_settings
 from db import repository
+from services.effort_service import queue_new_activities
 from services.garmin_client import CSVGarminClient, GarminAPIClient, GarminClient
 from services.garmin_models import validate_laps, validate_track_points
 from services.prediction_snapshot_service import PredictionSnapshotService
@@ -90,7 +93,14 @@ class GarminImportService:
             days=days or settings.garmin_sync_days,
             health_days=health_days or settings.garmin_health_sync_days,
         )
+        before_ids = ({row[0] for row in session.execute(
+            text("SELECT id FROM activities WHERE user_id=:uid"), {"uid": user_id})}
+            if include_activities else set())
         activities_imported = repository.bulk_upsert_activities(session, activity_rows) if include_activities else 0
+        if activities_imported:
+            after_ids = {row[0] for row in session.execute(
+                text("SELECT id FROM activities WHERE user_id=:uid"), {"uid": user_id})}
+            queue_new_activities(session, after_ids - before_ids)
         track_points_imported = 0
         laps_imported = 0
         if include_activities and include_activity_details and activity_rows:
@@ -114,7 +124,7 @@ class GarminImportService:
                         validate_laps(payload["laps"]),
                     )
 
-        return ImportSummary(
+        summary = ImportSummary(
             activities_imported=activities_imported,
             health_rows_imported=repository.bulk_upsert_health_metrics(session, health_rows) if include_health else 0,
             track_points_imported=track_points_imported,
@@ -129,3 +139,5 @@ class GarminImportService:
                 else 0
             ),
         )
+        repository.record_garmin_sync(session, user_id)
+        return summary
