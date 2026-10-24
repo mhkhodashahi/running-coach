@@ -1,7 +1,8 @@
+{% from 'components/ui.html' import rpe_buttons %}
 <div id="rating-prompt" class="card rating-card">
 {% if unrated %}<form method="post" action="/today/rate" hx-post="/today/rate" hx-target="#rating-prompt" hx-swap="outerHTML">
   <input type="hidden" name="activity_id" value="{{ unrated.id }}">
   <div><strong>Rate your last session</strong><span class="subtle">{{ unrated.sport }} · {{ unrated.date }}</span></div>
-  <div class="rating-controls" role="group" aria-label="Effort from 0 to 10">{% for value in range(11) %}<button type="submit" name="rpe" value="{{ value }}"><strong>{{ value }}</strong><small>{% if value == 0 %}rest{% elif value == 3 %}moderate{% elif value == 5 %}hard{% elif value == 7 %}very hard{% elif value == 10 %}maximal{% else %}&nbsp;{% endif %}</small></button>{% endfor %}</div>
+  {{ rpe_buttons() }}
 </form>{% else %}<span class="subtle">All recent sessions rated.</span>{% endif %}
 </div>

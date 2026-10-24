@@ -1,10 +1,57 @@
 """Bounded, self-contained SVG charts for the Today view."""
 
+from collections import defaultdict
 from html import escape
+from typing import Any
 
 from web.formatting import short_date
 
 SPARKLINE_COLORS = {"heart": "var(--heart)", "sleep": "var(--sleep)", "muted": "var(--ink-muted)"}
+
+
+def heart_rate_chart(points: list[dict[str, Any]], zones: tuple[tuple[str, int, int | None], ...],
+                     max_hr: int | None, duration_min: float | None) -> dict[str, str] | None:
+    """Render at most one mean HR sample per 10 s; never send raw samples to the template."""
+    buckets: dict[int, list[float]] = defaultdict(list)
+    for point in points:
+        elapsed, hr = point.get("elapsed_seconds"), point.get("heart_rate")
+        if elapsed is not None and hr is not None and elapsed >= 0 and hr > 0:
+            buckets[int(elapsed // 10)].append(float(hr))
+    if len(buckets) < 2:
+        return None
+    samples = [(bucket * 10, sum(values) / len(values)) for bucket, values in sorted(buckets.items())]
+    if len(samples) > 1200:
+        stride = max(1, len(samples) // 1200)
+        samples = samples[::stride]
+    if not zones and max_hr:
+        fractions = ((0.5, 0.6), (0.6, 0.7), (0.7, 0.8), (0.8, 0.9), (0.9, 1.0))
+        zones = tuple((f"Z{index}", round(low * max_hr), round(high * max_hr))
+                      for index, (low, high) in enumerate(fractions, 1))
+    low = max(30, int(min(hr for _, hr in samples) // 10 * 10 - 10))
+    high = int(max(hr for _, hr in samples) // 10 * 10 + 20)
+    max_time = max(samples[-1][0], (duration_min or 0) * 60, 1)
+    def y(value: float) -> float:
+        return 180 - (value - low) / max(high - low, 1) * 150
+
+    bands = []
+    for index, (_, lower, upper) in enumerate(zones[:5], 1):
+        top = y(min(upper if upper is not None else high, high))
+        bottom = y(max(lower, low))
+        if bottom > top:
+            bands.append(f'<rect x="40" y="{top:.1f}" width="740" height="{bottom - top:.1f}" '
+                         f'fill="var(--zone-{index})" opacity="0.12"/>')
+    path = " ".join(f"{40 + elapsed / max_time * 740:.1f},{y(hr):.1f}" for elapsed, hr in samples)
+    peak = round(max(hr for _, hr in samples))
+    summary = f"Heart rate over {round(max_time / 60)} minutes; peak {peak} bpm."
+    axis = (f'<text x="4" y="30" class="axis-label">{high} bpm</text>'
+            f'<text x="4" y="181" class="axis-label">{low} bpm</text>'
+            f'<text x="40" y="205" class="axis-label">0:00</text>'
+            f'<text x="740" y="205" class="axis-label">{round(max_time / 60)} min</text>')
+    svg = ('<svg class="hr-chart" viewBox="0 0 800 215" role="img" '
+           f'aria-label="{escape(summary)}"><title>{escape(summary)}</title>' + "".join(bands) +
+           f'<polyline points="{path}" fill="none" stroke="var(--heart)" stroke-width="2" '
+           'vector-effect="non-scaling-stroke"/>' + axis + '</svg>')
+    return {"svg": svg, "summary": summary}
 
 
 def readiness_ring(value: float | None) -> str:

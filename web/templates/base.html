@@ -13,7 +13,7 @@
     <a class="brand" href="/">PULSE<span>COACH</span></a>
     <nav class="top-nav" aria-label="Main navigation">
       <a href="/" {% if request.url.path == '/' %}aria-current="page"{% endif %}>Today</a>
-      <a href="/activities">Activities</a><a href="/trends">Trends</a><a href="/coach">Coach</a><a href="/plan">Plan</a>
+      <a href="/activities" {% if request.url.path.startswith('/activities') %}aria-current="page"{% endif %}>Activities</a><a href="/trends">Trends</a><a href="/coach">Coach</a><a href="/plan">Plan</a>
     </nav>
     <div class="header-end"><span class="sync">{{ sync or 'Never synced' }}</span>
       <form action="/theme" method="post"><button class="icon-button" type="submit" name="theme" value="{% if request.cookies.get('theme') == 'day' %}night{% else %}day{% endif %}" title="Toggle theme" aria-label="Toggle theme">◐</button></form>
@@ -22,7 +22,7 @@
   <main id="main" class="page">{% block content %}{% endblock %}</main>
   <nav class="bottom-nav" aria-label="Mobile navigation">
     <a href="/" {% if request.url.path == '/' %}aria-current="page"{% endif %}><span aria-hidden="true">⌂</span>Today</a>
-    <a href="/activities"><span aria-hidden="true">≡</span>Activities</a>
+    <a href="/activities" {% if request.url.path.startswith('/activities') %}aria-current="page"{% endif %}><span aria-hidden="true">≡</span>Activities</a>
     <a href="/trends"><span aria-hidden="true">▥</span>Trends</a>
     <a href="/coach"><span aria-hidden="true">✧</span>Coach</a>
     <a href="/plan"><span aria-hidden="true">▦</span>Plan</a>

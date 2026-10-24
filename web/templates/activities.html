@@ -1,0 +1,14 @@
+{% extends 'base.html' %}
+{% from 'components/ui.html' import empty %}
+{% block title %}Activities{% endblock %}
+{% block content %}
+<div class="page-heading"><div><span class="eyebrow">TRAINING LOG</span><h1>Activities</h1></div></div>
+<form class="activity-filters" method="get" action="/activities" aria-label="Filter activities">
+  <label>Sport<select name="sport"><option value="">All sports</option>{% for value in ['running','volleyball','football','gym','other','walking'] %}<option value="{{ value }}" {% if sport_filter == value %}selected{% endif %}>{{ value|title }}</option>{% endfor %}</select></label>
+  <label>From<input type="date" name="start" value="{{ start }}"></label>
+  <label>To<input type="date" name="end" value="{{ end }}"></label>
+  <label class="walk-toggle"><input type="checkbox" name="show_walks" value="true" {% if show_walks %}checked{% endif %}> Show walks</label>
+  <button class="button button-secondary" type="submit">Apply filters</button>
+</form>
+<div id="activity-weeks">{% include 'components/activity_weeks.html' %}</div>
+{% endblock %}
