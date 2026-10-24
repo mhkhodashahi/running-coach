@@ -116,11 +116,23 @@ Sequence depends on the missing target contract. Acceptance criteria below are c
 - Acceptance: a new eligible synced session can be rated 0–10 in Telegram or the web app, changed later, and prompted at most once plus one twelve-hour reminder. Football, volleyball, and gym use calibrated sRPE alongside TRIMP; running remains TRIMP. Ratings feed hard-session detection, dated load snapshots, planner estimates, and cited coach facts. Working data remains unchanged until the owner runs the backup-first upgrade.
 - Risks: effort load remains unavailable until five rated HR sessions; retrospective ratings can change a new decision after calibration. Telegram delivery depends on the bot/CLI being active.
 
-### 5. Web UI
+### 5a. Web skeleton and Today
 
-- Files to touch: `app/main.py`, `app/dashboard.py`, relevant `app/pages/`, `ui/components.py`, `ui/sidebar.py`, `ui/charts.py`, and navigation/UI tests; add API/frontend files only if the target explicitly requires them.
-- Acceptance: a user can import/sync data, inspect dated metrics and their sources, open an activity and its saved opinion, chat with the coach, and return to goals from desktop/mobile; empty, stale, loading, and provider-unavailable states are understandable; existing workflows remain reachable.
-- Risks: a framework change or route rename can break stored/deep links; UI may imply that stale metrics are current; raw health data or prompts must not leak into logs or public assets.
+- Files: `web/`, `pyproject.toml`, `.env.example`, `README.md`, and web tests.
+- Acceptance: FastAPI starts only against an upgraded database; self-hosted responsive Today shows the stored daily decision, recovery, load, plan, recent activities, override and effort rating; optional password protects all personal views. Streamlit remains available.
+- Risks: today's decision can trigger an LLM request if the configured provider is enabled; personal values must never be put in tracked assets or screenshots.
+
+### 5b. Activities and Activity Detail
+
+- Files: `web/routes/`, `web/templates/`, `web/static/`, and web tests.
+- Acceptance: browse activities, open a saved opinion and rate a session on desktop and mobile; legacy opinions stay read-only.
+- Risks: route and link changes can break navigation; opinions must not regenerate automatically.
+
+### 5c. Trends, Coach and Plan
+
+- Files: `web/routes/`, `web/templates/`, `web/static/`, and web tests.
+- Acceptance: dated trends, coach chat and proposal-based planning cover the remaining primary workflows before Streamlit retirement.
+- Risks: stale metrics can look current; coach proposals must remain explicit and undoable.
 
 ### 6. Scheduler and Telegram
 

@@ -15,7 +15,12 @@ def init_db() -> None:
     """Require migration head without creating a database or changing its schema."""
     if engine.url.get_backend_name() != "sqlite" or not engine.url.database or engine.url.database == ":memory:":
         raise ValueError("Application initialization requires a file-backed SQLite database.")
-    database = Path(engine.url.database).expanduser().resolve()
+    require_current_database(Path(engine.url.database))
+
+
+def require_current_database(path: Path) -> None:
+    """Check a specific SQLite file without touching it or running migrations."""
+    database = path.expanduser().resolve()
     message = (
         "Database needs an upgrade. Stop all jobs, then run:\n"
         f"python -m scripts.upgrade_db --db {shlex.quote(str(database))}"

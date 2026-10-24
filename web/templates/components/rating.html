@@ -1,0 +1,7 @@
+<div id="rating-prompt" class="card rating-card">
+{% if unrated %}<form method="post" action="/today/rate" hx-post="/today/rate" hx-target="#rating-prompt" hx-swap="outerHTML">
+  <input type="hidden" name="activity_id" value="{{ unrated.id }}">
+  <label for="rpe"><strong>Rate your last session</strong><span>{{ unrated.sport }} · {{ unrated.date }}</span></label>
+  <div class="rating-controls"><select id="rpe" name="rpe" aria-label="Effort from 0 to 10">{% for value in range(11) %}<option value="{{ value }}" {% if value == 5 %}selected{% endif %}>{{ value }}{% if value == 0 %} · rest{% elif value == 3 %} · moderate{% elif value == 5 %} · hard{% elif value == 7 %} · very hard{% elif value == 10 %} · maximal{% endif %}</option>{% endfor %}</select><button class="button button-secondary" type="submit">Save rating</button></div>
+</form>{% else %}<span class="subtle">All recent sessions rated.</span>{% endif %}
+</div>

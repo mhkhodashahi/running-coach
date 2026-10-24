@@ -72,6 +72,23 @@ Do not commit `.env`, Garmin token files, SQLite databases, logs, or personal ex
 
 ## Running The App
 
+The new server-rendered Today page runs locally with:
+
+```bash
+python -m scripts.upgrade_db --db db/running_coach.db
+python -m web
+```
+
+Open `http://127.0.0.1:8000`. `WEB_HOST` and `WEB_PORT` change the bind address
+and port. By default the web UI only binds to the local machine. Set
+`WEB_PASSWORD` in `.env` to require a signed-cookie login; a password is
+required before binding to a non-local address. Use HTTPS through a trusted
+reverse proxy for remote access. Today, its controls, and placeholder links
+are available now; other pages remain in Streamlit until web milestones 5b/5c.
+No fonts, scripts, or styles are fetched from a CDN.
+
+Streamlit remains the back office:
+
 ```bash
 streamlit run app/main.py
 ```

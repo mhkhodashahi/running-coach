@@ -1,0 +1,34 @@
+{% from 'components/ui.html' import segmented, button %}
+<section id="coach-card" class="card coach-card" aria-labelledby="coach-heading">
+  <div class="coach-intro">
+    <div class="ring-wrap">{{ ring|safe }}</div>
+    <div class="coach-copy">
+      <span class="eyebrow">TODAY'S DECISION</span>
+      {% if decision.provisional %}
+      <span class="chip provisional-badge"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>Provisional · based on {{ based_on_label }}</span>
+      {% endif %}
+      <h2 id="coach-heading">{{ decision.headline }}</h2>
+      <p>{{ decision.explanation }}</p>
+    </div>
+  </div>
+  <div class="ranked-sports">
+    <h3>Recommended sessions</h3>
+    {% if recommendations %}
+    <ol>{% for item in recommendations %}
+      <li{% if loop.first %} class="top-pick"{% endif %}>
+        <div class="session-heading"><strong>{{ item.sport|title }}</strong><span>{{ item.session.intent|replace('_',' ')|title }} · {{ item.duration_label }}</span></div>
+        <p class="session-structure">{{ item.session.structure }}</p>
+        <p class="session-reason">{{ item.reason }}</p>
+      </li>
+    {% endfor %}</ol>
+    {% else %}<p class="subtle">{{ decision.optional or 'Rest today.' }}</p>{% endif %}
+    <p class="team-line">Football or volleyball: only with team training{% if team_rest_caution %}. Skip a fixed session or attend skills only{% endif %}.</p>
+  </div>
+  <div class="coach-bottom">
+    <div class="intensity-control"><span class="eyebrow">YOUR INTENSITY</span>
+      {{ segmented('Choose intensity', [('rest','Rest'),('easy','Easy'),('hard','Hard')], decision.athlete_choice or decision.intensity, '/today/choice', '#coach-card', decision.intensity) }}
+      {% if decision.athlete_choice %}<div class="override-note"><span>✓ Your choice</span><form method="post" action="/today/choice" hx-post="/today/choice" hx-target="#coach-card" hx-swap="outerHTML"><button type="submit" name="choice" value="clear">Back to coach</button></form></div>{% endif %}
+    </div>
+    <div class="coach-actions">{{ button('Ask the coach why', '/coach') }}{{ button('Plan my week', '/plan') }}</div>
+  </div>
+</section>

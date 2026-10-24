@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from coach.decision import (
+    IntensityDecision,
     PriorSession,
     decide_intensity,
     is_hard_session,
@@ -35,6 +36,10 @@ NOW = datetime(2026, 6, 30, tzinfo=ZoneInfo("Europe/Berlin"))
 def test_built_decision_and_old_cached_blank_copy_have_fallback(decision_db):
     decision = build_daily_decision(DAY, decision_db, 1, "Europe/Berlin", 7.5)
     assert decision.headline.strip() and decision.explanation.strip()
+    facts = {item["id"]: item["display"] for item in decision.facts}
+    for item in decision.sports:
+        if item["sport"] in ("running", "gym"):
+            assert facts[f"SPORT_{item['sport'].upper()}_REASON"] == item["reason"]
     old = replace(decision, headline="", explanation="", explanation_source="none")
     restored = with_fallback(old)
     assert restored.headline.strip() and restored.explanation == fallback_explanation(old)
@@ -97,7 +102,8 @@ def test_three_day_count_precedes_seven_day_tiebreaker():
     history = (session(50, "running"), session(60, "running"), session(70, "gym"))
     ranked = rank_sports("easy", history, NOW, 132)
     assert [item.sport for item in ranked] == ["gym", "running"]
-    assert "last 3 days" in ranked[0].reason
+    assert ranked[0].reason == "Last gym Sat."
+    assert " in the last " not in ranked[0].reason
     tie_3d = (session(50, "running"), session(60, "gym"), session(100, "running"))
     assert rank_sports("easy", tie_3d, NOW, 132)[0].sport == "gym"
 
@@ -108,8 +114,8 @@ def test_easy_duration_and_committed_team_priority():
     assert {item.session["duration_min"] for item in short} == {30}
     assert {item.session["duration_min"] for item in long} == {45}
     hard = rank_sports("hard", (), NOW, 130, readiness=90)
-    assert next(item.session["duration_min"] for item in hard if item.sport == "running") == 40
-    assert next(item.session["duration_min"] for item in hard if item.sport == "gym") == 30
+    assert next(item.session["duration_min"] for item in hard if item.sport == "running") == 48
+    assert next(item.session["duration_min"] for item in hard if item.sport == "gym") == 45
     committed = rank_sports("easy", (), NOW, 130, readiness=75, team_commitments=("football",))
     assert [item.sport for item in committed] == ["football", "running", "gym"]
     assert committed[0].session["intent"] == "skills only, no match play"
@@ -118,6 +124,29 @@ def test_easy_duration_and_committed_team_priority():
         {"sport": "volleyball", "label": "Only with team training today"},)
     assert team_options("rest", ("football",))[0]["label"] == "Skip team training or attend skills only"
     assert rank_sports("rest", (), NOW, 130, team_commitments=("football",)) == ()
+
+
+def test_session_structures_use_zone_targets_and_match_durations():
+    hard = rank_sports("hard", (), NOW, 132, z4_bounds_bpm=(152, 170))
+    run = next(item for item in hard if item.sport == "running")
+    gym = next(item for item in hard if item.sport == "gym")
+    assert run.session["structure"] == "10 min easy, 3 × 8 min at 152–170 bpm with 2 min easy, 10 min easy"
+    assert run.session["duration_min"] == 48
+    assert gym.session["structure"] == "strength, full body, 45 min"
+    assert gym.session["duration_min"] == 45
+    easy = next(item for item in rank_sports("easy", (), NOW, 132) if item.sport == "running")
+    assert easy.session["structure"] == "HR under 132 bpm"
+
+
+def test_reasons_name_last_session_without_raw_counts():
+    history = (session(30, "running", "easy"), session(60, "gym"))
+    ranked = rank_sports("easy", history, NOW, 132)
+    run = next(item for item in ranked if item.sport == "running")
+    gym = next(item for item in ranked if item.sport == "gym")
+    assert run.reason == "Last run Sun, easy."
+    assert gym.reason == "Last gym Sat."
+    no_history = rank_sports("easy", (), NOW, 132)
+    assert {item.reason for item in no_history} == {"No run this week.", "No gym this week."}
 
 
 def test_provisional_requires_complete_health_day():
@@ -230,6 +259,21 @@ def test_running_cap_uses_custom_second_zone_or_exclusive_default(decision_db):
         assert custom_run["session"]["hr_cap_bpm"] == 137
 
 
+def test_hard_structure_uses_configured_z4_bounds(decision_db, monkeypatch):
+    from services import daily_decision_service
+
+    monkeypatch.setattr(daily_decision_service, "decide_intensity",
+                        lambda *_: IntensityDecision("hard", "hard_allowed", ("READINESS", "LOAD_RATIO")))
+    default = build_daily_decision(DAY, decision_db, 1, "Europe/Berlin", 7.5)
+    configured = build_daily_decision(DAY, decision_db, 1, "Europe/Berlin", 7.5,
+                                      (("Z1", 95, 114), ("Z2", 115, 132), ("Z3", 133, 149),
+                                       ("Z4", 150, 165), ("Z5", 166, None)))
+    default_run = next(item for item in default.sports if item["sport"] == "running")
+    configured_run = next(item for item in configured.sports if item["sport"] == "running")
+    assert "152–170 bpm" in default_run["session"]["structure"]
+    assert "150–165 bpm" in configured_run["session"]["structure"]
+
+
 def test_llm_failure_falls_back_and_cannot_change_intensity(decision_db):
     class InvalidModel:
         calls = 0
@@ -270,6 +314,28 @@ def test_natural_fallback_for_each_rule(decision_db, rule, phrase):
     assert rule not in text
     assert "_" not in text
     assert "1_5" not in text
+    assert "last sync" not in text.lower()
+    assert "provisional" not in text.lower()
+
+
+def test_provisional_llm_does_not_receive_or_repeat_sync_details(decision_db):
+    class Model:
+        def generate_json(self, system, prompt, response_schema=None):
+            context = json.loads(prompt.splitlines()[0])
+            assert "provisional" not in context
+            assert "LAST_SYNC_TIME" not in {item["id"] for item in context["facts"]}
+            facts = {item["id"]: item["display"] for item in context["facts"]}
+            return {"headline": "Keep it easy.",
+                    "explanation": f"I see readiness {facts['READINESS']}. Load ratio is {facts['LOAD_RATIO']}.",
+                    "evidence_ids": ["READINESS", "LOAD_RATIO"],
+                    "follow_ups": ["How is recovery?", "What changed?"]}
+
+    original = build_daily_decision(DAY, decision_db, 1, "Europe/Berlin", 7.5)
+    provisional = replace(original, provisional=True, based_on="2026-06-28", last_sync_time="2026-06-29 09:00 CEST")
+    result = explain_decision(provisional, Model())
+    assert result.explanation_source == "llm"
+    assert provisional.based_on not in result.explanation
+    assert provisional.last_sync_time not in result.explanation
 
 
 def test_valid_explanation_cites_facts_but_cannot_change_code_decision(decision_db):

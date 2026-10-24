@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 import sqlite3
 from collections.abc import Callable
@@ -39,7 +40,7 @@ from services.fact_display import ratio as format_ratio
 from services.fact_display import score as format_score
 from services.hr_zones import heart_rate_zone_bounds
 
-PROMPT_VERSION = "daily-v2.2"
+PROMPT_VERSION = "daily-v2.3"
 SYSTEM_PROMPT = (
     "You are Pulse Coach. Explain the code's daily decision; never change its intensity or ranked sports. "
     "Speak as I to you. No diagnosis. Return exactly the JSON schema fields. "
@@ -47,7 +48,8 @@ SYSTEM_PROMPT = (
     "evidence_ids, and copy their display values exactly into the explanation. Never put IDs in prose. "
     "The explanation and headline are statements, never questions. Put questions only in follow_ups. "
     "The explanation must be 2 or 3 short sentences. Give 2 or 3 short, answerable follow-up questions. "
-    "Do not mention internal rules, scores, thresholds, dates or durations unless their exact display appears in facts."
+    "Do not mention internal rules, scores, thresholds, dates or durations unless their exact display appears in facts. "
+    "Never mention sync time, provisional status or the health day used; the UI displays those separately."
 )
 
 
@@ -177,10 +179,15 @@ def build_daily_decision(requested: date, database: Path, user_id: int, timezone
     z2_cap = None
     if hr_zones:
         z2_cap = hr_zones[1][2] if len(hr_zones) >= 2 else None
+        z4 = (hr_zones[3][1], hr_zones[3][2]) if len(hr_zones) >= 4 and hr_zones[3][2] is not None else None
     elif max_hr:
-        z2_cap = int(heart_rate_zone_bounds(int(max_hr))[1][2] - 1e-9)
+        bounds = heart_rate_zone_bounds(int(max_hr))
+        z2_cap = int(bounds[1][2] - 1e-9)
+        z4 = (math.ceil(bounds[3][1]), int(bounds[3][2] - 1e-9))
+    else:
+        z4 = None
     ranking = rank_sports(intensity.intensity, recent, now, z2_cap, readiness=readiness,
-                          team_commitments=scheduled_teams)
+                          team_commitments=scheduled_teams, z4_bounds_bpm=z4)
     hard_recent = max((item for item in recent if now - timedelta(hours=48) <= item.when < now and
                        is_hard_session(item)), key=lambda item: item.when, default=None)
     facts = [
@@ -223,6 +230,9 @@ def build_daily_decision(requested: date, database: Path, user_id: int, timezone
                   _fact("SPORT_WINDOW", "Sport ranking window", "7 days", "coach.decision.SPORT_WINDOW")))
     for item in ranking:
         sport = item.sport.upper()
+        if item.sport not in TEAM_SPORTS:
+            facts.append(_fact(f"SPORT_{sport}_REASON", f"{item.sport} recommendation reason",
+                               item.reason, "activities.date,type + detected_intent"))
         facts.append(_fact(f"SPORT_{sport}_DURATION", f"{item.sport} suggested duration",
                            f"{item.session['duration_min']} min", "coach.decision.session.duration_min"))
         cap = item.session["hr_cap_bpm"]
@@ -260,8 +270,6 @@ def fallback_explanation(decision: DailyDecision) -> str:
                            "are not all met."),
     }
     result = sentences[decision.rule]
-    if decision.provisional:
-        result += f" This is provisional, based on {decision.based_on}; last sync {decision.last_sync_time}."
     return result
 
 
@@ -288,6 +296,8 @@ def _validate_explanation(payload: Any, decision: DailyDecision) -> DecisionExpl
         raise ValueError("Headline and explanation must be statements; put questions in follow_ups")
     if any(re.search(rf"(?<![A-Za-z0-9_]){re.escape(fact_id)}(?![A-Za-z0-9_])", text) for fact_id in facts):
         raise ValueError("Fact ID in prose")
+    if re.search(r"\b(?:provisional|last sync|synced)\b", text, re.IGNORECASE) or decision.based_on in text:
+        raise ValueError("Sync and provisional details belong in the UI, not the explanation")
     unsupported = unsupported_text_numbers(text, list(facts.values()))
     if unsupported:
         raise ValueError("Unsupported numbers: " + ", ".join(unsupported))
@@ -315,11 +325,9 @@ def explain_decision(decision: DailyDecision, llm: Any | None = None,
     if llm is None:
         return replace(decision, headline=f"{decision.intensity.title()} today.", explanation=fallback,
                        evidence_ids=decision.rule_fact_ids, follow_ups=defaults, explanation_source="fallback")
-    explanation_fact_ids = {"READINESS", "LOAD_RATIO", "ILLNESS_FLAG", "HARD_LAST_48H",
-                            "BASED_ON_DATE", "LAST_SYNC_TIME", "HARD_LOOKBACK"}
+    explanation_fact_ids = {"READINESS", "LOAD_RATIO", "ILLNESS_FLAG", "HARD_LAST_48H", "HARD_LOOKBACK"}
     context = {"intensity": decision.intensity,
                "top_sport": decision.sports[0]["sport"] if decision.sports else None,
-               "provisional": decision.provisional,
                "facts": [fact for fact in decision.facts if fact["id"] in explanation_fact_ids and
                          (fact["id"] != "ILLNESS_FLAG" or decision.rule == "illness_signal")],
                "decision_basis": fallback_explanation(decision)}
@@ -331,9 +339,6 @@ def explain_decision(decision: DailyDecision, llm: Any | None = None,
                 count_request()
             response = llm.generate_json(SYSTEM_PROMPT, prompt, response_schema=DecisionExplanation)
             result = _validate_explanation(response, decision)
-            if decision.provisional and (decision.based_on not in result.explanation or
-                                         decision.last_sync_time not in result.explanation):
-                raise ValueError("Provisional explanation must name day used and last sync time")
             return replace(decision, headline=result.headline, explanation=result.explanation,
                            evidence_ids=tuple(result.evidence_ids), follow_ups=tuple(result.follow_ups),
                            explanation_source="llm")
