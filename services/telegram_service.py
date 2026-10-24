@@ -67,6 +67,25 @@ class TelegramService:
             raise RuntimeError(str(payload))
         return "sent", f"Sent to Telegram chat {chat_id}"
 
+    def send_rating_prompt(self, text: str, activity_id: int) -> None:
+        if not self.configured:
+            raise ValueError("Telegram settings are incomplete.")
+        buttons = [[{"text": str(value), "callback_data": f"rpe:{activity_id}:{value}"}
+                    for value in range(start, min(start + 6, 11))] for start in (0, 6)]
+        response = requests.post(
+            f"https://api.telegram.org/bot{self.settings.telegram_bot_token}/sendMessage",
+            json={"chat_id": self.settings.telegram_chat_id, "text": text,
+                  "reply_markup": {"inline_keyboard": buttons}}, timeout=30)
+        response.raise_for_status()
+        if not response.json().get("ok"):
+            raise RuntimeError("Telegram rejected the rating prompt")
+
+    def acknowledge_callback(self, callback_id: str, text: str) -> None:
+        response = requests.post(
+            f"https://api.telegram.org/bot{self.settings.telegram_bot_token}/answerCallbackQuery",
+            json={"callback_query_id": callback_id, "text": text}, timeout=30)
+        response.raise_for_status()
+
     def get_updates(self, offset: int | None = None, timeout: int = 30) -> list[dict]:
         """Fetch inbound Telegram updates using long polling."""
 
@@ -74,7 +93,7 @@ class TelegramService:
             raise ValueError("TELEGRAM_BOT_TOKEN is not configured.")
         params: dict[str, int | str] = {
             "timeout": int(timeout),
-            "allowed_updates": '["message"]',
+            "allowed_updates": '["message","callback_query"]',
         }
         if offset is not None:
             params["offset"] = int(offset)

@@ -8,7 +8,9 @@ from config import get_settings
 from db import repository
 from db.session import session_scope
 from db.setup import init_db
+from services.effort_service import dispatch_effort_prompts
 from services.import_service import GarminImportService
+from services.telegram_service import TelegramService
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -44,6 +46,9 @@ def main() -> None:
             include_activities=not args.health_only,
             include_health=True,
         )
+
+    if not args.health_only:
+        dispatch_effort_prompts(settings, user.id, TelegramService(settings))
 
     mode = "health-only sync" if args.health_only else "full sync"
     print(

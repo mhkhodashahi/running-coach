@@ -12,6 +12,7 @@ from pydantic import ValidationError
 
 from config import Settings, get_settings
 from db import repository
+from db.models import ActivityEffort
 from db.session import session_scope
 from llm.factory import get_llm_client
 from llm.schemas import ActivityCoachInsightSchema, CoachOpinionV2, CoachOpinionV23, OpinionDraftV23
@@ -118,6 +119,12 @@ class ActivityCoachingService:
             activities_df=activities, health_df=health, track_points=track_points, laps=laps,
             snapshot=compact, hr_zones=self.settings.hr_zones,
         )
+        rating = session.get(ActivityEffort, activity.id)
+        context["effort_rpe"] = rating.rpe if rating else None
+        activity_session = next((item for item in snapshot.sessions if item.activity_id == activity.id), None)
+        context["effort_low_zone_share"] = (sum(zone.percent.value or 0 for zone in activity_session.zones
+                                                if zone.name.startswith(("Z1", "Z2")))
+                                            if activity_session else None)
         facts = build_facts(activity.id, context)
         decision = detect_intent(facts, context["planned_intent"])
         if decision is None:

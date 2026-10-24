@@ -217,6 +217,33 @@ nor to the planned training total; expected walking (last 28 days / 4) is
 shown separately for information. Mobility is non-training, zero planned
 training TRIMP, and never ranked as a sport.
 
+## Effort Rating and Team Load
+
+The athlete's latest CR-10 effort rating is an integer from 0 to 10. The
+reference labels are 0 rest, 3 moderate, 5 hard, 7 very hard, and 10 maximal.
+The rating does not alter the logged activity or its recorded HR data.
+
+```text
+sRPE = RPE * duration_minutes
+k = median(TRIMP / sRPE) over rated sessions with measured HR TRIMP and sRPE > 0
+```
+
+At least five such sessions are required for athlete-specific calibration;
+until then `k = 0.5 TRIMP per sRPE unit` is the explicit provisional default.
+For football, volleyball, and gym, session load is `max(TRIMP, k * sRPE)`;
+if HR is missing, the calibrated sRPE value alone is used. Running keeps
+TRIMP. Unrated sessions keep TRIMP, or the planner's sport/intent median when
+TRIMP is unavailable. Excluded activities, mobility, and walking never get
+an effort prompt. The load provenance records whether HR, calibrated effort,
+or both supplied the result.
+
+The planner uses the athlete's rated load-per-minute median for a team sport
+or gym after at least three rated sessions for that sport. Before that it
+keeps the existing historical estimate. As ratings are added or edited,
+dated snapshots and new daily decisions are recomputed; old opinion rows
+are never rewritten. A rated team session below 7 is not automatically hard,
+but a tempo/race intent or Z4+ share of at least 15% still makes it hard.
+
 ## Readiness and Illness Flag
 
 All scoring constants and weights live in `metrics/readiness.py`.

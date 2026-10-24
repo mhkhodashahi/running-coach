@@ -195,6 +195,8 @@ class CoachTools:
                 "AND pace IS NOT NULL AND lower(type) LIKE '%run%' ORDER BY date DESC LIMIT 20",
                 (self.user_id, activity["date"], (date.fromisoformat(activity["date"]) - timedelta(days=60)).isoformat(),
                  activity_id))]
+            effort_row = connection.execute("SELECT rpe FROM activity_efforts WHERE activity_id=?",
+                                            (activity_id,)).fetchone()
         day = date.fromisoformat(activity["date"])
         snapshot = self._snapshot(day)
         buckets: dict[int, list[dict[str, Any]]] = {}
@@ -238,6 +240,10 @@ class CoachTools:
                                                     "avg_hr": half(points[middle:])["heart_rate"],
                                                     "avg_cadence": half(points[middle:])["cadence"]}},
             "metrics_snapshot": _opinion_metrics_snapshot(snapshot, activity_id),
+            "effort_rpe": effort_row[0] if effort_row else None,
+            "effort_low_zone_share": next((sum(zone.percent.value or 0 for zone in item.zones
+                                              if zone.name.startswith(("Z1", "Z2")))
+                                           for item in snapshot.sessions if item.activity_id == activity_id), None),
         }
         facts = [_fact(f"ACT_{activity_id}_{fact['id']}", fact["metric"], fact["display"],
                        fact["source"].replace("selected_activity", f"activities[{activity_id}]")[:160])

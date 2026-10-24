@@ -67,6 +67,20 @@ CADENCE_STREAM_MAX = 110.0
 CADENCE_LAP_MIN = 140.0
 GPS_TIME_GAP_SECONDS = 30.0
 GPS_DISTANCE_JUMP_KM = 0.2
+EFFORT_HIGH_RPE = 7
+EFFORT_LOW_RPE = 3
+EFFORT_LOW_ZONE_SHARE = 80.0
+EFFORT_HIGH_ZONE_SHARE = 50.0
+
+
+def effort_vs_hr(rpe: int | None, z1_z2_percent: float | None) -> str | None:
+    if rpe is None or z1_z2_percent is None:
+        return None
+    if rpe >= EFFORT_HIGH_RPE and z1_z2_percent >= EFFORT_LOW_ZONE_SHARE:
+        return "higher than HR suggests"
+    if rpe <= EFFORT_LOW_RPE and z1_z2_percent <= EFFORT_HIGH_ZONE_SHARE:
+        return "lower than HR suggests"
+    return "matches"
 
 
 def _pace_seconds(value: Any) -> int | None:
@@ -137,6 +151,18 @@ def build_facts(activity_id: int, context: Mapping[str, Any]) -> list[Fact]:
     _add(facts, "AVG_HR", "Average heart rate", _hr(selected.get("avg_hr")), "selected_activity.avg_hr")
     _add(facts, "MAX_HR", "Maximum heart rate", _hr(selected.get("max_hr")), "selected_activity.max_hr")
     _add(facts, "AVG_PACE", "Average pace", _pace(selected.get("pace")), "selected_activity.pace")
+    effort = context.get("effort_rpe")
+    zones = ((context.get("metrics_snapshot") or {}).get("zones") or {})
+    low_share = context.get("effort_low_zone_share")
+    if low_share is None and isinstance(zones, dict):
+        low_share = sum(float(zones.get(zone, 0) or 0) for zone in ("Z1", "Z2")) or None
+    if effort is not None:
+        _add(facts, "EFFORT_RPE", "Session effort", f"{int(effort)}/10", "activity_efforts.rpe")
+        mismatch = effort_vs_hr(int(effort), _number(low_share))
+        _add(facts, "EFFORT_VS_HR", "Effort versus HR",
+             f"rated {int(effort)}/10 while {_percent(low_share)} in Z1–Z2: {mismatch}"
+             if mismatch and _percent(low_share) else None,
+             "activity_efforts.rpe + metrics_snapshot.sessions.zones")
     for key, fact_id, metric in (("aerobic_effect", "AEROBIC_EFFECT", "Aerobic training effect"),
                                  ("anaerobic_effect", "ANAEROBIC_EFFECT", "Anaerobic training effect")):
         value = _number(selected.get(key))

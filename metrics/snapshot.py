@@ -1,5 +1,6 @@
 """Pure orchestration: immutable inputs in, dated metrics out."""
 
+from dataclasses import replace
 from datetime import date, timedelta
 from zoneinfo import ZoneInfo
 
@@ -23,7 +24,7 @@ def build_daily_snapshot(inputs: Inputs, as_of: date, timezone: str, sleep_goal_
     for row in activities:
         if row.rpe is None or row.duration is None or row.duration <= 0:
             continue
-        base = session_metrics(row, inputs.profile, health, as_of, timezone)
+        base = session_metrics(replace(row, rpe=None), inputs.profile, health, as_of, timezone)
         if base and base.load.value is not None:
             pairs.append((base.load.value, row.rpe * row.duration))
     calibration = calibrate(tuple(pairs))

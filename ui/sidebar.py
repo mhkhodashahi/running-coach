@@ -7,7 +7,9 @@ import streamlit as st
 from config import get_settings
 from db import repository
 from db.session import session_scope
+from services.effort_service import dispatch_effort_prompts
 from services.import_service import GarminImportService
+from services.telegram_service import TelegramService
 from services.training_context_service import bootstrap_app
 from ui.components import apply_dashboard_theme, render_sidebar_sync_status
 from utils.formatting import format_goal_time
@@ -131,7 +133,12 @@ def render_sidebar_menu() -> None:
                         f"{summary.laps_imported} laps, and "
                         f"{summary.health_rows_imported} health rows from Garmin."
                     )
-                    st.rerun()
+                    try:
+                        dispatch_effort_prompts(settings, user.id, TelegramService(settings))
+                    except Exception as exc:
+                        st.warning(f"Activities synced, but the effort prompt could not be sent: {exc}")
+                    else:
+                        st.rerun()
                 except Exception as exc:
                     st.error(f"Garmin sync failed: {exc}")
 

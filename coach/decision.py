@@ -35,6 +35,7 @@ class PriorSession:
     sport: str
     detected_intent: str | None = None
     z4_plus_percent: float | None = None
+    rpe: int | None = None
 
 
 @dataclass(frozen=True)
@@ -54,14 +55,17 @@ class RankedSport:
 
 
 def is_hard_session(session: PriorSession) -> bool:
-    return (session.sport in ("football", "volleyball") or
+    return ((session.rpe is not None and session.rpe >= 7) or
+            (session.rpe is None and session.sport in TEAM_SPORTS) or
             session.detected_intent in ("tempo", "race") or
             (session.z4_plus_percent is not None and session.z4_plus_percent >= HARD_Z4_SHARE))
 
 
 def session_cause(session: PriorSession) -> str:
     """Describe a recorded session without guessing whether team play was a match."""
-    if session.sport in TEAM_SPORTS:
+    if session.rpe is not None and session.rpe >= 7:
+        label = f"{session.sport} effort rated {session.rpe}/10"
+    elif session.sport in TEAM_SPORTS:
         label = f"{session.sport} session"
     elif session.detected_intent in ("tempo", "race"):
         label = f"{session.detected_intent} run"

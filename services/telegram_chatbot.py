@@ -10,8 +10,10 @@ from zoneinfo import ZoneInfo
 
 from coach.proposals import list_proposals, monday
 from config import Settings, get_settings
+from db.session import session_scope
 from db.setup import init_db
 from services.daily_decision_service import get_or_create_daily_decision
+from services.effort_service import dispatch_effort_prompts, rate_activity
 from services.telegram_service import TelegramService
 from services.training_chat_service import TrainingChatService
 from services.weekly_plan_service import get_weekly_plan
@@ -40,6 +42,24 @@ class TelegramTrainingChatBot:
         self.chat_service = chat_service or TrainingChatService(self.settings)
 
     def handle_update(self, update: dict) -> TelegramHandleResult:
+        callback = update.get("callback_query") or {}
+        if callback:
+            chat_id = str(((callback.get("message") or {}).get("chat") or {}).get("id") or "").strip()
+            if not self._authorized(chat_id):
+                return TelegramHandleResult(handled=True, authorized=False)
+            parts = str(callback.get("data") or "").split(":")
+            if len(parts) != 3 or parts[0] != "rpe" or not parts[1].isdigit() or not parts[2].isdigit():
+                return TelegramHandleResult(handled=False)
+            try:
+                with session_scope() as session:
+                    rate_activity(session, int(parts[1]), self.settings.default_user_id,
+                                  int(parts[2]), "telegram")
+            except ValueError as exc:
+                reply = str(exc)
+            else:
+                reply = f"Effort saved: {parts[2]}/10."
+            self.telegram_service.acknowledge_callback(str(callback.get("id") or ""), reply)
+            return TelegramHandleResult(handled=True, reply=reply)
         message = update.get("message") or {}
         chat = message.get("chat") or {}
         chat_id = str(chat.get("id") or "").strip()
@@ -67,6 +87,7 @@ class TelegramTrainingChatBot:
 
         offset: int | None = None
         while True:
+            dispatch_effort_prompts(self.settings, self.settings.default_user_id, self.telegram_service)
             updates = self.telegram_service.get_updates(offset=offset, timeout=poll_timeout)
             for update in updates:
                 update_id = update.get("update_id")

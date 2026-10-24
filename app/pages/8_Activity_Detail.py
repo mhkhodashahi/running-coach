@@ -11,13 +11,16 @@ from plotly.subplots import make_subplots
 
 from config import get_settings
 from db import repository
+from db.models import ActivityEffort
 from db.session import session_scope
+from metrics.sports import sport_category
 from services.activity_coaching_service import (
     ActivityCoachingService,
     can_generate_activity_coach_opinion,
     supports_activity_coach_opinion,
 )
 from services.coach_opinion import load_opinion
+from services.effort_service import CR10_LABELS, rate_activity
 from services.hr_zones import HR_ZONE_COLORS, heart_rate_zone_summary, supports_hr_zone_view
 from services.training_chat_service import TrainingChatService
 from services.training_context_service import load_training_bundle
@@ -661,6 +664,24 @@ median_hr = recent_runs["avg_hr"].dropna().median() if not recent_runs.empty els
 effort = _relative_effort(activity, getattr(bundle.user, "max_hr", None))
 
 _render_activity_hero(activity, effort)
+
+with session_scope() as rating_session:
+    saved_effort = rating_session.get(ActivityEffort, int(selected_id))
+    current_rpe = saved_effort.rpe if saved_effort else None
+if (sport_category(str(activity.get("type") or ""), activity["date"].date()) not in ("excluded", "mobility")
+        and str(activity.get("type") or "").strip().lower() != "walking"):
+    st.subheader("How hard was this session?")
+    score = st.select_slider("Effort (CR-10)", options=list(range(11)),
+                             value=current_rpe if current_rpe is not None else 3,
+                             format_func=lambda value: f"{value} · {CR10_LABELS.get(value, '')}".strip(" ·"),
+                             key=f"rpe_{selected_id}")
+    if st.button("Save effort", key=f"save_rpe_{selected_id}"):
+        try:
+            with session_scope() as rating_session:
+                rate_activity(rating_session, int(selected_id), int(bundle.user.id), int(score), "web")
+            st.success("Effort saved.")
+        except ValueError as exc:
+            st.error(str(exc))
 
 stats = st.columns(4)
 stats[0].metric("Average HR", format_metric_number(activity.get("avg_hr"), decimals=0, suffix=" bpm"), _context_delta(activity.get("avg_hr"), median_hr))

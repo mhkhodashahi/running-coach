@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
 from math import floor, inf
 from pathlib import Path
@@ -19,6 +19,7 @@ from coach.proposals import create_proposal, get_proposal, get_week, materialize
 from config import Settings, get_settings
 from llm.factory import get_llm_client
 from metrics import get_daily_snapshot
+from metrics.effort import calibrate
 from metrics.load import session_metrics
 from metrics.reader import read_inputs
 from metrics.sports import sport_category
@@ -570,25 +571,50 @@ def load_model(database: Path, user_id: int, start: date, settings: Settings) ->
         intents = {row[0]: row[1] for row in connection.execute(
             "SELECT id,planned_intent FROM activities WHERE user_id=? AND date<=?", (user_id, end.isoformat()))}
     inputs = read_inputs(database, user_id, end, settings.local_timezone, point_lookback_days=None)
+    hr_pairs = []
+    for activity in inputs.activities:
+        if activity.rpe is None or not activity.duration or activity.duration <= 0:
+            continue
+        base = session_metrics(replace(activity, rpe=None), inputs.profile, inputs.health, end, settings.local_timezone)
+        if base and base.load.value is not None:
+            hr_pairs.append((base.load.value, activity.rpe * activity.duration))
+    calibration = calibrate(tuple(hr_pairs))
     grouped: dict[tuple[str, str], list[float]] = {}
     sport_grouped: dict[str, list[float]] = {}
+    rated_sport_grouped: dict[str, list[float]] = {}
+    rated_intent_grouped: dict[tuple[str, str], list[float]] = {}
     measured: dict[int, float | None] = {}
     for activity in inputs.activities:
         if activity.duration is None or activity.duration <= 0:
             continue
-        item = session_metrics(activity, inputs.profile, inputs.health, end, settings.local_timezone)
+        item = session_metrics(activity, inputs.profile, inputs.health, end, settings.local_timezone, calibration)
         if item is None:
             continue
         measured[activity.id] = item.load.value
         if item.load.value is None:
             continue
         sport = sport_category(activity.type, end)
-        rate = item.load.value / activity.duration
+        base = session_metrics(replace(activity, rpe=None), inputs.profile, inputs.health,
+                               end, settings.local_timezone)
+        rate = (base.load.value if base and base.load.value is not None else item.load.value) / activity.duration
         intent = intents.get(activity.id) or ("training" if sport in ("football", "volleyball") else "easy")
         grouped.setdefault((sport, intent), []).append(rate)
         sport_grouped.setdefault(sport, []).append(rate)
+        if activity.rpe is not None:
+            rated_rate = item.load.value / activity.duration
+            rated_sport_grouped.setdefault(sport, []).append(rated_rate)
+            rated_intent_grouped.setdefault((sport, intent), []).append(rated_rate)
     rates = {key: median(values) for key, values in grouped.items()}
+    for key, values in rated_intent_grouped.items():
+        if key[0] in ("gym", "football", "volleyball") and len(values) >= 3:
+            rates[key] = median(values)
     sport_rates = {key: median(values) for key, values in sport_grouped.items()}
+    for sport, values in rated_sport_grouped.items():
+        if sport in ("gym", "football", "volleyball") and len(values) >= 3:
+            sport_rates[sport] = median(values)
+            for key in tuple(rates):
+                if key[0] == sport and len(rated_intent_grouped.get(key, ())) < 3:
+                    del rates[key]
     imputed = 0
     walking_total = 0.0
     reference_rows = []

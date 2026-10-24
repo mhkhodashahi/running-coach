@@ -5,7 +5,7 @@ from math import exp, isfinite
 from zoneinfo import ZoneInfo
 
 from metrics.baselines import maximum_hr, resting_hr_for_session, valid
-from metrics.effort import Calibration, combined_load
+from metrics.effort import DEFAULT_TRIMP_PER_SRPE, Calibration, combined_load
 from metrics.models import Activity, HealthDay, LoadRatio, Profile, Session, SportLoad, metric
 from metrics.models import Zone as ZoneResult
 from metrics.sports import SPORTS, sport_category
@@ -86,10 +86,10 @@ def session_metrics(activity: Activity, profile: Profile, health: tuple[HealthDa
         elif valid(activity.avg_hr, as_of) and valid(activity.duration, as_of):
             load = banister_trimp(activity.duration, activity.avg_hr, resting.value, maximum.value, session_day)
     sport = sport_category(activity.type, as_of)
-    if calibration is not None:
-        load, effort_method = combined_load(sport, load, activity.rpe, activity.duration, calibration)
-        if effort_method not in ("trimp", "missing_hr"):
-            method += ";" + effort_method
+    load, effort_method = combined_load(sport, load, activity.rpe, activity.duration,
+                                        calibration or Calibration(DEFAULT_TRIMP_PER_SRPE, 0, "documented_default"))
+    if effort_method not in ("trimp", "missing_hr"):
+        method += ";" + effort_method
     seconds_total = sum(seconds for seconds, _ in intervals)
     zones = []
     if maximum.value is not None:

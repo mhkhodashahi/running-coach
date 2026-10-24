@@ -123,7 +123,7 @@ class ActivityEffortPrompt(Base):
     __tablename__ = "activity_effort_prompts"
 
     activity_id: Mapped[int] = mapped_column(ForeignKey("activities.id"), primary_key=True)
-    sent_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime)
     reminded_at: Mapped[datetime | None] = mapped_column(DateTime)
 
 

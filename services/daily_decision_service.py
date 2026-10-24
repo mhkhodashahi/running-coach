@@ -104,8 +104,9 @@ def _session_time(connection: sqlite3.Connection, activity_id: int, day: date, t
 def _recent_sessions(connection: sqlite3.Connection, user_id: int, requested: date, timezone: str,
                      snapshot: Any) -> tuple[PriorSession, ...]:
     rows = connection.execute(
-        "SELECT a.id,a.date,a.type,a.planned_intent,i.payload_json FROM activities a "
+        "SELECT a.id,a.date,a.type,a.planned_intent,i.payload_json,e.rpe FROM activities a "
         "LEFT JOIN activity_coaching_insights i ON i.activity_id=a.id "
+        "LEFT JOIN activity_efforts e ON e.activity_id=a.id "
         "WHERE a.user_id=? AND a.date>=? AND a.date<=? ORDER BY a.date,a.id",
         (user_id, (requested - timedelta(days=7)).isoformat(), requested.isoformat()),
     ).fetchall()
@@ -131,7 +132,7 @@ def _recent_sessions(connection: sqlite3.Connection, user_id: int, requested: da
             elif z34 >= 60:
                 detected = "tempo"
         sessions.append(PriorSession(_session_time(connection, row["id"], date.fromisoformat(row["date"]), timezone),
-                                     sport, detected, z4_share))
+                                     sport, detected, z4_share, row["rpe"]))
     return tuple(sessions)
 
 

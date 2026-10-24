@@ -9,8 +9,10 @@ import pandas as pd
 import streamlit as st
 
 from config import get_settings
+from db.session import session_scope
 from services.coaching_engine import build_rule_recommendations
 from services.daily_decision_service import get_or_create_daily_decision, set_athlete_choice
+from services.effort_service import CR10_LABELS, rate_activity, unrated_activities
 from services.training_context_service import load_training_bundle
 from services.weekly_plan_service import todays_sessions
 from ui.charts import (
@@ -100,6 +102,21 @@ hero_motivation = "Understand recovery, energy, and training load first. Then de
 render_dashboard_hero(user.name, hero_motivation)
 
 render_today_status(snapshot)
+
+with session_scope() as rating_session:
+    recent_unrated = unrated_activities(rating_session, int(user.id), limit=1)
+    last_unrated = (recent_unrated[0].id, recent_unrated[0].type, recent_unrated[0].date) if recent_unrated else None
+if last_unrated:
+    activity_id, sport, activity_day = last_unrated
+    st.subheader("Rate your last session")
+    st.write(f"{sport.title()} · {activity_day}")
+    rating = st.select_slider("Effort (CR-10)", options=list(range(11)), value=3,
+                              format_func=lambda value: f"{value} · {CR10_LABELS.get(value, '')}".strip(" ·"),
+                              key=f"today_rpe_{activity_id}")
+    if st.button("Save effort", key=f"today_save_rpe_{activity_id}"):
+        with session_scope() as rating_session:
+            rate_activity(rating_session, activity_id, int(user.id), int(rating), "web")
+        st.rerun()
 
 st.subheader("Today's decision")
 try:

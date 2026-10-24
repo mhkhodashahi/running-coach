@@ -51,6 +51,7 @@ class Activity:
     duration: float | None
     avg_hr: float | None
     points: tuple[TrackPoint, ...] = ()
+    rpe: int | None = None
 
 
 @dataclass(frozen=True)

@@ -524,6 +524,29 @@ def test_observed_walking_is_informational_only_for_weekly_cap(database):
     assert all(day["rest"] for day in empty_week["days"])
 
 
+@pytest.mark.parametrize("sport", ["volleyball", "football", "strength_training"])
+def test_planner_uses_rated_sport_median_after_three_sessions(database, sport):
+    settings = replace(get_settings(), db_path=database)
+    identifiers = []
+    with sqlite3.connect(database) as connection:
+        for offset in (19, 17, 15):
+            day = (START - timedelta(days=offset)).isoformat()
+            cursor = connection.execute("INSERT INTO activities(user_id,date,type,distance,duration,avg_hr) "
+                                        "VALUES(1,?,?,1,60,105)", (day, sport))
+            identifiers.append((cursor.lastrowid, day))
+        for identifier, day in identifiers[:2]:
+            connection.execute("INSERT INTO activity_efforts(activity_id,rpe,rated_at,source) "
+                               "VALUES(?,8,?,'web')", (identifier, day))
+    before = load_model(database, 1, START, settings)
+    with sqlite3.connect(database) as connection:
+        connection.execute("INSERT INTO activity_efforts(activity_id,rpe,rated_at,source) "
+                           "VALUES(?,8,?,'web')", identifiers[2])
+    after = load_model(database, 1, START, settings)
+    category = "gym" if sport == "strength_training" else sport
+    assert after.sport_rates[category] == pytest.approx(4.0)
+    assert before.sport_rates[category] < after.sport_rates[category]
+
+
 def test_no_safe_change_only_when_no_day_available_for_recovery():
     fixed = [{**session(START + timedelta(days=day), sport="football", intent="match", minutes=90),
               "origin": "fixed", "status": "planned"} for day in range(7)]
