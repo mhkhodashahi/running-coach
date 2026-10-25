@@ -78,6 +78,27 @@ def _distance_metres(first: tuple[float, float], second: tuple[float, float]) ->
     return 6371000 * 2 * math.asin(min(1, math.sqrt(arc)))
 
 
+def comparison_efficiency(target_effort: float | None, candidate_effort: float | None,
+                          target_hr: float | None, candidate_hr: float | None,
+                          *, duration_based: bool) -> str:
+    """Only call a comparison more or less efficient when effort and HR agree."""
+    if None in (target_effort, candidate_effort, target_hr, candidate_hr):
+        return "similar"
+    effort_delta = candidate_effort - target_effort
+    hr_delta = candidate_hr - target_hr
+    if duration_based:
+        if effort_delta >= 0 and hr_delta < 0:
+            return "more efficient"
+        if effort_delta <= 0 and hr_delta > 0:
+            return "less efficient"
+    else:
+        if effort_delta <= 0 and hr_delta < 0:
+            return "more efficient"
+        if effort_delta >= 0 and hr_delta > 0:
+            return "less efficient"
+    return "similar"
+
+
 class CoachTools:
     """Only the documented activity, opinion and metric fields can leave this boundary."""
 
@@ -261,13 +282,17 @@ class CoachTools:
             day = date.fromisoformat(target["date"])
             lower = day - timedelta(days=120)
             category = sport_category(target["type"], day)
+            duration_based = category in ("volleyball", "football", "gym")
+            measure = "duration" if duration_based else "distance"
+            anchor = target[measure]
             rows = connection.execute(
-                "SELECT id, date, type, distance, pace, avg_hr FROM activities WHERE user_id=? AND date>=? AND date<? "
-                "AND distance BETWEEN ? AND ? ORDER BY date DESC, id DESC",
-                (self.user_id, lower.isoformat(), day.isoformat(), target["distance"] * .85,
-                 target["distance"] * 1.15)).fetchall()
+                f"SELECT id, date, type, distance, duration, pace, avg_hr FROM activities "
+                f"WHERE user_id=? AND date>=? AND date<? AND {measure} BETWEEN ? AND ? "
+                "ORDER BY date DESC, id DESC",
+                (self.user_id, lower.isoformat(), day.isoformat(), anchor * (.8 if duration_based else .85),
+                 anchor * (1.2 if duration_based else 1.15))).fetchall()
             start = self._start(connection, activity_id)
-            selected = [(row["id"], row["date"], row["pace"], row["avg_hr"],
+            selected = [(row["id"], row["date"], row["pace"], row["duration"], row["avg_hr"],
                          start is not None and (candidate := self._start(connection, row["id"])) is not None
                          and _distance_metres(start, candidate) <= 300)
                         for row in rows if sport_category(row["type"], date.fromisoformat(row["date"])) == category][:5]
@@ -286,7 +311,7 @@ class CoachTools:
                 target_facts.append(_fact(f"ACT_{activity_id}_{fact_id}", fact_id.replace("_", " ").title(),
                                           "No data", "metrics_snapshot.as_of / health_metrics.date"))
         sessions = []
-        for identifier, compared_day, candidate_pace, candidate_hr, same_route in selected:
+        for identifier, compared_day, candidate_pace, candidate_duration, candidate_hr, same_route in selected:
             activity = self.get_activity(identifier)
             daily = self.get_daily_snapshot(date.fromisoformat(compared_day))
             facts = [fact for fact in activity["facts"]
@@ -305,6 +330,10 @@ class CoachTools:
                 facts.append(_fact(f"COMPARE_{identifier}_PACE_DELTA", "Pace difference versus target",
                                    pace_difference((candidate_pace - target["pace"]) * 60),
                                    f"activities[{identifier}].pace - activities[{activity_id}].pace"))
+            if duration_based and candidate_duration is not None and target["duration"] is not None:
+                facts.append(_fact(f"COMPARE_{identifier}_DURATION_DELTA", "Duration difference versus target",
+                                   f"{round(candidate_duration - target['duration']):+d} min",
+                                   f"activities[{identifier}].duration - activities[{activity_id}].duration"))
             if candidate_hr is not None and target["avg_hr"] is not None:
                 facts.append(_fact(f"COMPARE_{identifier}_HR_DELTA", "HR difference versus target",
                                    heart_rate_difference(candidate_hr - target["avg_hr"]),
@@ -318,6 +347,12 @@ class CoachTools:
                 facts.append(_fact(f"COMPARE_{identifier}_EFFICIENCY", "Pace and HR efficiency versus target",
                                    f"{speed} at {effort}",
                                    f"activities[{identifier}].pace/avg_hr vs activities[{activity_id}].pace/avg_hr"))
+            label = comparison_efficiency(target["duration"] if duration_based else target["pace"],
+                                          candidate_duration if duration_based else candidate_pace,
+                                          target["avg_hr"], candidate_hr, duration_based=duration_based)
+            facts.append(_fact(f"COMPARE_{identifier}_EFFICIENCY_LABEL", "Efficiency versus target", label,
+                               f"activities[{identifier}].{measure}/avg_hr vs "
+                               f"activities[{activity_id}].{measure}/avg_hr"))
             facts.append(_fact(f"ACT_{identifier}_SAME_ROUTE", "Same start point", "yes" if same_route else "no",
                                "activity_track_points.start_coordinates (within 300 m)"))
             sessions.append({"activity_id": identifier, "date": compared_day, "facts": facts})

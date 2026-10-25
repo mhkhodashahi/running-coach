@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 import pytest
 from sqlalchemy import create_engine
 
-from coach.tools import CoachTools
+from coach.tools import CoachTools, comparison_efficiency
 from db.models import Base
 from services.activity_coaching_service import _opinion_metrics_snapshot
 from services.coach_facts import build_facts
@@ -86,9 +86,42 @@ def test_compare_sessions_sport_distance_window_and_same_route(coach_db):
     assert candidate["COMPARE_2_PACE_DELTA"] == "+9 s/km"
     assert candidate["COMPARE_2_HR_DELTA"] == "-5 bpm"
     assert candidate["COMPARE_2_EFFICIENCY"] == "slower at lower HR"
+    assert candidate["COMPARE_2_EFFICIENCY_LABEL"] == "similar"
     assert candidate["ACT_2_READINESS"] == "64/100"
     assert candidate["ACT_2_TODAY_SLEEP_DURATION"] == "7:30 h"
     assert candidate["ACT_2_HRV_VS_BASELINE"] == "+0.0%"
+
+
+@pytest.mark.parametrize("candidate_pace,candidate_hr,expected", [
+    (5.8, 130, "more efficient"), (6.2, 150, "less efficient"),
+    (5.8, 150, "similar"), (None, 130, "similar"),
+])
+def test_comparison_efficiency_labels(candidate_pace, candidate_hr, expected):
+    assert comparison_efficiency(6, candidate_pace, 140, candidate_hr,
+                                 duration_based=False) == expected
+
+
+def test_compare_team_sessions_by_duration_inclusive_twenty_percent(coach_db):
+    with sqlite3.connect(coach_db) as connection:
+        connection.executemany(
+            "INSERT INTO activities(id,user_id,date,type,distance,duration,pace,avg_hr) "
+            "VALUES(?,1,?,'volleyball',0,?,?,?)",
+            [(10, "2026-06-20", 100, None, 140), (11, "2026-06-19", 80, None, 135),
+             (12, "2026-06-18", 120, None, 145), (13, "2026-06-17", 79, None, 130),
+             (14, "2026-06-16", 121, None, 130)],
+        )
+    result = tools(coach_db).compare_sessions(10)
+    assert [item["activity_id"] for item in result["sessions"]] == [11, 12]
+    facts = {fact["id"]: fact["display"] for fact in result["sessions"][0]["facts"]}
+    assert facts["COMPARE_11_DURATION_DELTA"] == "-20 min"
+    assert facts["COMPARE_11_HR_DELTA"] == "-5 bpm"
+    assert facts["COMPARE_11_EFFICIENCY_LABEL"] == "similar"
+
+
+def test_duration_comparison_efficiency_requires_longer_at_lower_hr():
+    assert comparison_efficiency(90, 100, 140, 130, duration_based=True) == "more efficient"
+    assert comparison_efficiency(90, 80, 140, 150, duration_based=True) == "less efficient"
+    assert comparison_efficiency(90, 100, 140, 150, duration_based=True) == "similar"
 
 
 def test_activity_and_opinion_pack_share_display_values(coach_db):

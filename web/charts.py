@@ -2,6 +2,7 @@
 
 from collections import defaultdict
 from html import escape
+from math import ceil, floor
 from typing import Any
 
 from web.formatting import short_date
@@ -27,30 +28,41 @@ def heart_rate_chart(points: list[dict[str, Any]], zones: tuple[tuple[str, int, 
         fractions = ((0.5, 0.6), (0.6, 0.7), (0.7, 0.8), (0.8, 0.9), (0.9, 1.0))
         zones = tuple((f"Z{index}", round(low * max_hr), round(high * max_hr))
                       for index, (low, high) in enumerate(fractions, 1))
-    low = max(30, int(min(hr for _, hr in samples) // 10 * 10 - 10))
-    high = int(max(hr for _, hr in samples) // 10 * 10 + 20)
+    zone_lows = [bound for _, bound, _ in zones]
+    zone_highs = [bound for _, _, bound in zones if bound is not None]
+    low = max(20, floor((min([hr for _, hr in samples] + zone_lows or [60]) - 10) / 20) * 20)
+    high = ceil((max([hr for _, hr in samples] + zone_highs or [180]) + 10) / 20) * 20
     max_time = max(samples[-1][0], (duration_min or 0) * 60, 1)
     def y(value: float) -> float:
-        return 180 - (value - low) / max(high - low, 1) * 150
+        return 175 - (value - low) / max(high - low, 1) * 145
 
     bands = []
-    for index, (_, lower, upper) in enumerate(zones[:5], 1):
+    for index, (name, lower, upper) in enumerate(zones[:5], 1):
         top = y(min(upper if upper is not None else high, high))
         bottom = y(max(lower, low))
         if bottom > top:
-            bands.append(f'<rect x="40" y="{top:.1f}" width="740" height="{bottom - top:.1f}" '
+            bands.append(f'<rect x="45" y="{top:.1f}" width="660" height="{bottom - top:.1f}" '
                          f'fill="var(--zone-{index})" opacity="0.12"/>')
-    path = " ".join(f"{40 + elapsed / max_time * 740:.1f},{y(hr):.1f}" for elapsed, hr in samples)
+            bands.append(f'<text x="712" y="{(top + bottom) / 2 + 3:.1f}" class="axis-label">'
+                         f'{escape(name)}</text>')
+    path = " ".join(f"{45 + elapsed / max_time * 660:.1f},{y(hr):.1f}" for elapsed, hr in samples)
     peak = round(max(hr for _, hr in samples))
     summary = f"Heart rate over {round(max_time / 60)} minutes; peak {peak} bpm."
-    axis = (f'<text x="4" y="30" class="axis-label">{high} bpm</text>'
-            f'<text x="4" y="181" class="axis-label">{low} bpm</text>'
-            f'<text x="40" y="205" class="axis-label">0:00</text>'
-            f'<text x="740" y="205" class="axis-label">{round(max_time / 60)} min</text>')
+    grid = []
+    for bpm in range(low, high + 1, 20):
+        position = y(bpm)
+        grid.append(f'<line x1="45" y1="{position:.1f}" x2="705" y2="{position:.1f}" '
+                    'stroke="var(--line)" stroke-width="1"/>')
+        grid.append(f'<text x="2" y="{position + 3:.1f}" class="axis-label">{bpm}</text>')
+    tick_minutes = 5 if max_time < 1800 else 10
+    for minute in range(0, int(max_time // 60) + 1, tick_minutes):
+        x = 45 + minute * 60 / max_time * 660
+        grid.append(f'<text x="{x:.1f}" y="205" text-anchor="middle" class="axis-label">'
+                    f'{minute} min</text>')
     svg = ('<svg class="hr-chart" viewBox="0 0 800 215" role="img" '
-           f'aria-label="{escape(summary)}"><title>{escape(summary)}</title>' + "".join(bands) +
+           f'aria-label="{escape(summary)}"><title>{escape(summary)}</title>' + "".join(bands + grid) +
            f'<polyline points="{path}" fill="none" stroke="var(--heart)" stroke-width="2" '
-           'vector-effect="non-scaling-stroke"/>' + axis + '</svg>')
+           'vector-effect="non-scaling-stroke"/></svg>')
     return {"svg": svg, "summary": summary}
 
 

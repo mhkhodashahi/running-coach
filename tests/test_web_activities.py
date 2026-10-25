@@ -4,6 +4,7 @@ import json
 import sqlite3
 from dataclasses import replace
 from datetime import date, timedelta
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -11,6 +12,7 @@ from fastapi.testclient import TestClient
 from config import get_settings
 from db.migration_runner import upgrade_database
 from web.app import create_app
+from web.charts import heart_rate_chart
 
 DAY = date(2026, 10, 23)
 
@@ -79,7 +81,7 @@ def test_list_groups_filters_and_walks(browser):
     assert "/activities/106" not in html
     assert "4.2 km" in html and "28m" in html
     assert "3 sessions" in html
-    assert "✓ Opinion" in html
+    assert html.count("✓ Coach") == 2
     assert "TRIMP" in html or "Load: No data" in html
     walked = browser.get("/activities?show_walks=true").text
     assert "/activities/105" in walked and "/activities/106" not in walked
@@ -94,7 +96,7 @@ def test_list_load_more_paginates_twenty(browser, activity_db):
             connection.execute("INSERT INTO activities(id,user_id,date,type,distance,duration) "
                                "VALUES(?,1,?,'running',3,20)", (identifier, DAY.isoformat()))
     first = browser.get("/activities")
-    assert first.text.count('href="/activities/2') == 20
+    assert first.text.count('class="unrated-cell"') == 20
     assert 'hx-get="/activities?' in first.text
     second = browser.get("/activities?page=2", headers={"HX-Request": "true"})
     assert second.status_code == 200
@@ -122,6 +124,77 @@ def test_detail_renders_sports_opinions_and_missing_samples(browser, identifier,
         assert "No data" in response.text
     if identifier in (102, 103):
         assert "Avg pace" not in response.text
+
+
+def test_legacy_and_v2_opinions_mark_matching_rows_without_rewriting(browser, activity_db):
+    with sqlite3.connect(activity_db) as connection:
+        before = connection.execute("SELECT activity_id,payload_json FROM activity_coaching_insights "
+                                    "ORDER BY activity_id").fetchall()
+    for identifier, headline in ((101, "Controlled progression."), (102, "Keep this simple")):
+        detail = browser.get(f"/activities/{identifier}").text
+        assert headline in detail and "No coach opinion yet" not in detail
+        list_html = browser.get("/activities").text
+        row = list_html.split(f'href="/activities/{identifier}"', 1)[1].split("</tr>", 1)[0]
+        assert "✓ Coach" in row
+    with sqlite3.connect(activity_db) as connection:
+        assert connection.execute("SELECT activity_id,payload_json FROM activity_coaching_insights "
+                                  "ORDER BY activity_id").fetchall() == before
+
+
+def test_selected_effort_and_effort_vs_hr_stats(browser, activity_db):
+    with sqlite3.connect(activity_db) as connection:
+        connection.execute("INSERT INTO activity_efforts(activity_id,rpe,rated_at,source) "
+                           "VALUES(101,8,'2026-10-23 10:00','web')")
+    html = browser.get("/activities/101").text
+    assert 'name="rpe" value="8" aria-pressed="true"' in html
+    assert 'name="rpe" value="7" aria-pressed="false"' in html
+    assert "Effort vs HR" in html
+    stylesheet = (Path(__file__).resolve().parents[1] / "web/static/css/app.css").read_text()
+    assert '.rating-controls button[aria-pressed="true"]{border:2px solid var(--ink);font-weight:600' in stylesheet
+
+
+def test_suggestions_and_whole_session_lap_hidden(browser, activity_db):
+    with sqlite3.connect(activity_db) as connection:
+        connection.execute("INSERT INTO activity_laps(activity_id,lap_index,distance,duration,avg_hr) "
+                           "VALUES(102,1,0,90,130)")
+    run = browser.get("/activities/101").text
+    team = browser.get("/activities/102").text
+    assert "Compare with my best 5 km" in run
+    assert "Was this harder than it looked on HR?" in team
+    assert "<h2>Laps</h2>" not in team
+
+
+def test_hr_chart_has_five_or_ten_minute_ticks_twenty_bpm_grid_and_zone_names():
+    points = [{"elapsed_seconds": index * 10, "heart_rate": 120 + index % 30}
+              for index in range(120)]
+    zones = (("Z1", 100, 120), ("Z2", 120, 140), ("Z3", 140, 160),
+             ("Z4", 160, 180), ("Z5", 180, 200))
+    short = heart_rate_chart(points, zones, 200, 20)["svg"]
+    long = heart_rate_chart(points, zones, 200, 40)["svg"]
+    assert ">5 min</text>" in short and ">10 min</text>" in short
+    assert ">5 min</text>" not in long and ">10 min</text>" in long
+    assert ">120</text>" in short and ">140</text>" in short
+    assert ">Z1</text>" in short and ">Z5</text>" in short
+    assert "<title>Heart rate over" in short
+
+
+@pytest.mark.parametrize("activity_id,sport,duration,expected_delta", [
+    (102, "volleyball", 80, "-10 min"),
+    (103, "strength_training", 40, "-5 min"),
+])
+def test_team_and_gym_similar_rows_show_duration_hr_and_efficiency(
+        browser, activity_db, activity_id, sport, duration, expected_delta):
+    with sqlite3.connect(activity_db) as connection:
+        connection.execute("INSERT INTO activities(id,user_id,date,type,distance,duration,avg_hr) "
+                           "VALUES(?,1,?,?,0,?,?)",
+                           (activity_id + 100, (DAY - timedelta(days=50)).isoformat(), sport, duration, 120))
+    html = browser.get(f"/activities/{activity_id}").text
+    assert expected_delta.replace("-", "−") in html
+    assert "−10 bpm" in html
+    assert "similar" in html or "more efficient" in html
+    assert "Readiness —" in html
+    assert ("1h 20m" if activity_id == 102 else "40m") in html
+    assert "50:07 /km" not in html
 
 
 def test_intent_change_does_not_regenerate_or_rewrite_opinion(browser, activity_db, monkeypatch):
