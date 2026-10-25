@@ -81,14 +81,14 @@ def test_compare_sessions_sport_distance_window_and_same_route(coach_db):
                 if fact["id"] == "ACT_2_SAME_ROUTE")["display"] == "yes"
     target = {fact["id"]: fact["display"] for fact in result["target"]["facts"]}
     candidate = {fact["id"]: fact["display"] for fact in result["sessions"][0]["facts"]}
-    assert target["ACT_1_DATE"] == "20 June 2026"
-    assert candidate["ACT_2_DATE"] == "15 June 2026"
+    assert target["ACT_1_DATE"] == "Sat 20 Jun"
+    assert candidate["ACT_2_DATE"] == "Mon 15 Jun"
     assert candidate["COMPARE_2_PACE_DELTA"] == "+9 s/km"
     assert candidate["COMPARE_2_HR_DELTA"] == "-5 bpm"
     assert candidate["COMPARE_2_EFFICIENCY"] == "slower at lower HR"
     assert candidate["COMPARE_2_EFFICIENCY_LABEL"] == "similar"
     assert candidate["ACT_2_READINESS"] == "64/100"
-    assert candidate["ACT_2_TODAY_SLEEP_DURATION"] == "7:30 h"
+    assert candidate["ACT_2_TODAY_SLEEP_DURATION"] == "7h 30m"
     assert candidate["ACT_2_HRV_VS_BASELINE"] == "+0.0%"
 
 
@@ -154,7 +154,7 @@ def test_comparison_marks_missing_health_baselines_as_no_data(coach_db):
     facts = {fact["id"]: fact["display"] for fact in early["facts"]}
     assert facts["ACT_5_HRV_VS_BASELINE"] == "No data"
     assert facts["ACT_5_READINESS"] == "No data"
-    assert facts["ACT_5_TODAY_SLEEP_DURATION"] == "7:30 h"
+    assert facts["ACT_5_TODAY_SLEEP_DURATION"] == "7h 30m"
 
 
 def test_today_snapshot_marks_missing_health_and_names_last_sync(coach_db):
@@ -174,11 +174,30 @@ def test_today_snapshot_marks_missing_health_and_names_last_sync(coach_db):
     assert result["stale_today"] is True
     assert result["metrics_date"] == yesterday.isoformat()
     assert facts["FRESHNESS"] == "today's health data missing"
-    assert facts["BASED_ON_DATE"] == f"{yesterday.day} {yesterday:%B}"
+    assert facts["BASED_ON_DATE"] == f"{yesterday:%a} {yesterday.day} {yesterday:%b}"
     assert facts["LAST_SYNC_TIME"] == result["last_sync_time"]
     assert facts["READINESS"].endswith("/100")
     if result["load_ratio"] is not None:
         assert "LOAD_RATIO_STATUS" in facts
+
+
+def test_get_trends_is_bounded_read_only_and_uses_last_health_day(coach_db):
+    today = datetime.now(ZoneInfo("Europe/Berlin")).date()
+    with sqlite3.connect(coach_db) as connection:
+        for offset in range(1, 31):
+            connection.execute("INSERT INTO health_metrics(user_id,date,resting_hr,hrv,sleep_duration) "
+                               "VALUES(1,?,?,?,?)", ((today - timedelta(days=offset)).isoformat(),
+                               55, 60, 7.5))
+    tool = tools(coach_db)
+    result = tool.call("get_trends", {"range_days": 28})
+    facts = {fact["id"]: fact for fact in result["facts"]}
+    assert result["latest_health_date"] == (today - timedelta(days=1)).isoformat()
+    assert facts["TRENDS_AS_OF"]["display"] == f"{today - timedelta(days=1):%a} " \
+           f"{(today - timedelta(days=1)).day} {today - timedelta(days=1):%b}"
+    assert facts["HRV_LATEST"]["display"] == "60 ms"
+    assert facts["SLEEP_DURATION_LATEST"]["display"] == "7h 30m"
+    with pytest.raises(ValueError, match="7, 28 or 90"):
+        tool.call("get_trends", {"range_days": 365})
 
 
 def test_list_activities_filters_sport_and_limits_scope(coach_db):

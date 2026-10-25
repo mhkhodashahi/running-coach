@@ -65,6 +65,11 @@ Facts: [{"id":"AVG_PACE","metric":"Average pace","display":"6:10 /km","source":"
 Draft: {"headline":"I see a steady finish, not an easy effort.","conclusion":"Keep easy days easier.","assessment":"I see 38.0% in Z3+ time, consistent with a steady run.","verdicts":[{"aspect":"Pacing","rating":"good","word":"Negative split"},{"aspect":"Intensity vs plan","rating":"watch","word":"Steady effort"},{"aspect":"Aerobic stimulus","rating":"good","word":"Useful work"},{"aspect":"HR control","rating":"watch","word":"Rose late"}],"worked":[{"lead":"You started conservatively at 6:25 /km.","detail":"That gave you room to build."},{"lead":"You finished with a negative split.","detail":"The pacing was controlled."}],"fix":[{"lead":"If this was meant as an easy run, cap your HR at 139 bpm.","detail":"Keep the effort under Z2."}],"sections":{"pacing":"The conservative first kilometre was 6:25 /km before the negative split.","aerobic":"Z3+ time reached 38.0%.","recovery":"The load ratio is above safe range 0.8–1.3; keep the next effort easy.","mental":""},"recommendations":[{"text":"For the next easy run, cap HR at 139 bpm for 30 min.","action":"add_to_plan","session":{"sport":"running","intent":"easy","duration_min":30,"hr_cap_bpm":139},"evidence_ids":["ZONE_Z2_UPPER_BPM","PLAN_DURATION_MIN"]}],"evidence_ids":["AVG_PACE","FIRST_FULL_KM_PACE","Z3_PLUS_SHARE","SPLIT_PATTERN","ZONE_Z2_UPPER_BPM","PLAN_DURATION_MIN","LOAD_RATIO_STATUS"]}
 Return JSON only."""
 
+ACTIVITY_OPINION_V24_SYSTEM_PROMPT = ACTIVITY_OPINION_V23_SYSTEM_PROMPT.replace(
+    "Mention the goal only in recommendations.",
+    "Mention the goal only in recommendations, by its type and distance (for example, your 10K goal). "
+    "Never use the goal's stored name. Copy the GOAL fact display when referring to it.")
+
 
 def _goal_payload(goal: Any | None) -> dict[str, Any]:
     if goal is None:

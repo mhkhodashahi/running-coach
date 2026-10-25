@@ -44,10 +44,13 @@ def load_opinion(row: Any) -> CoachOpinionV2:
     except (TypeError, ValueError):
         confidence = 0
     conclusion = str(payload.get("brutally_honest_conclusion") or "")
+    sentence = re.match(r"(.{0,140}?[.!?])(?:\s+|$)(.*)", conclusion, re.DOTALL)
+    first, rest = (sentence.group(1), sentence.group(2)) if sentence else (conclusion[:140], conclusion[140:])
+    legacy_headline = first.strip() if conclusion else ""
     mapped = {
-        "headline": str(payload.get("headline") or conclusion or payload.get("overall_assessment") or ""),
+        "headline": str(payload.get("headline") or legacy_headline or payload.get("overall_assessment") or ""),
         "confidence": "high" if confidence >= 70 else "medium" if confidence >= 40 else "low",
-        "conclusion": conclusion,
+        "conclusion": rest.strip() if not payload.get("headline") else conclusion,
         "assessment": str(payload.get("overall_assessment") or ""),
         "worked": points("what_was_good"),
         "fix": points("mistakes_or_inefficiencies"),
@@ -151,6 +154,19 @@ def opinion_rule_errors(opinion: CoachOpinionV2, context: dict[str, Any]) -> tup
                           *(item.aspect + " " + item.word for item in opinion.verdicts)]).casefold()
     if any(term and term in judgement for term in goal_terms):
         errors.append("long-term goal belongs only in recommendations")
+    if context.get("prompt_version") == "opinion-v2.4":
+        recommendations = " ".join(item.text for item in opinion.recommendations).casefold()
+        stored_name = str(goal.get("name") or "").casefold().strip()
+        if stored_name and stored_name in recommendations:
+            errors.append("refer to the goal by type and distance, never its stored name")
+        if re.search(r"\bgoal\b", recommendations):
+            goal_fact = next((fact["display"] for fact in context.get("facts_pack") or []
+                              if fact["id"] == "GOAL"), None)
+            goal_distance = goal.get("target_distance_km")
+            if goal_fact is None and goal_distance is not None:
+                goal_fact = f"your {float(goal_distance):g}K goal"
+            if goal_fact and goal_fact.casefold() not in recommendations:
+                errors.append("goal reference must use its type and distance")
     if isinstance(opinion, CoachOpinionV23):
         facts = {fact["id"]: fact["display"] for fact in context.get("facts_pack") or []}
         if laps.get("available") or stream.get("available"):

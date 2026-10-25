@@ -8,12 +8,14 @@ import sqlite3
 import statistics
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
 from coach.plan import monday
+from config import get_settings
 from metrics import get_daily_snapshot
 from metrics.readiness import LOWER_LOAD, UPPER_LOAD
 from metrics.sports import sport_category
@@ -30,7 +32,9 @@ from services.fact_display import (
     percent,
     ratio,
     score,
+    short_date,
 )
+from services.trend_facts import trend_facts
 
 MAX_FACTS = 80
 MAX_LAPS = 30
@@ -38,8 +42,8 @@ MAX_SAMPLES = 60
 MAX_LIST = 30
 MAX_TEXT = 500
 MAX_OUTPUT_CHARS = 16000
-TOOL_NAMES = ("get_daily_snapshot", "get_activity", "compare_sessions", "list_activities", "get_opinion",
-              "plan_week")
+TOOL_NAMES = ("get_daily_snapshot", "get_trends", "get_activity", "compare_sessions", "list_activities",
+              "get_opinion", "plan_week")
 
 
 @contextmanager
@@ -102,15 +106,18 @@ def comparison_efficiency(target_effort: float | None, candidate_effort: float |
 class CoachTools:
     """Only the documented activity, opinion and metric fields can leave this boundary."""
 
-    def __init__(self, database: Path, user_id: int, timezone: str, sleep_goal_hours: float) -> None:
+    def __init__(self, database: Path, user_id: int, timezone: str, sleep_goal_hours: float,
+                 hr_zones: tuple[tuple[str, int, int | None], ...] = ()) -> None:
         self.database = database
         self.user_id = user_id
         self.timezone = timezone
         self.sleep_goal_hours = sleep_goal_hours
+        self.hr_zones = hr_zones
 
     def _snapshot(self, day: date):
         return get_daily_snapshot(day, database=self.database, user_id=self.user_id,
-                                  timezone=self.timezone, sleep_goal_hours=self.sleep_goal_hours)
+                                  timezone=self.timezone, sleep_goal_hours=self.sleep_goal_hours,
+                                  hr_zones=self.hr_zones)
 
     def get_daily_snapshot(self, day: date) -> dict[str, Any]:
         with _readonly(self.database) as connection:
@@ -125,13 +132,13 @@ class CoachTools:
         stale_today = day == today and latest_health != day.isoformat()
         metrics_day = date.fromisoformat(latest_health) if stale_today and latest_health else day
         snapshot = self._snapshot(metrics_day)
-        facts: list[Fact] = [_fact("SNAPSHOT_DATE", "Snapshot date", day.isoformat(), "metrics_snapshot.as_of")]
-        facts.append(_fact("HEALTH_DATA_DATE", "Latest health date", latest_health or "No data",
+        facts: list[Fact] = [_fact("SNAPSHOT_DATE", "Snapshot date", short_date(day), "metrics_snapshot.as_of")]
+        facts.append(_fact("HEALTH_DATA_DATE", "Latest health date", short_date(latest_health) if latest_health else "No data",
                            "health_metrics.date"))
         sync_display = "never synced"
         if sync_row:
             synced_at = datetime.fromisoformat(sync_row[0]).replace(tzinfo=UTC)
-            sync_display = synced_at.astimezone(ZoneInfo(self.timezone)).strftime("%Y-%m-%d %H:%M %Z")
+            sync_display = synced_at.astimezone(ZoneInfo(self.timezone)).strftime("%H:%M")
         facts.append(_fact("LAST_SYNC_TIME", "Last Garmin sync", sync_display,
                            "garmin_sync_status.last_synced_at"))
         facts.append(_fact("FRESHNESS", "Health data freshness",
@@ -139,7 +146,7 @@ class CoachTools:
                            "health data available" if latest_health == day.isoformat() else
                            "no health data on requested date", "health_metrics.date + metrics_snapshot.as_of"))
         if metrics_day != day:
-            facts.append(_fact("BASED_ON_DATE", "Metrics based on date", f"{metrics_day.day} {metrics_day:%B}",
+            facts.append(_fact("BASED_ON_DATE", "Metrics based on date", short_date(metrics_day),
                                "health_metrics.date"))
         for key, metric, formatter, source in (
             ("READINESS", snapshot.readiness.score, score, "metrics_snapshot.readiness.score.value"),
@@ -187,6 +194,36 @@ class CoachTools:
                          "latest_health_date": latest_health, "last_sync_time": sync_display,
                          "stale_today": stale_today, "facts": facts[:MAX_FACTS],
                          "illness_flag": flag, "load_ratio": snapshot.load.ratio.value})
+
+    def get_trends(self, range_days: int) -> dict[str, Any]:
+        """Read the same endpoint and baseline facts used by the Trends page."""
+        if range_days not in (7, 28, 90):
+            raise ValueError("Choose 7, 28 or 90 days")
+        today = datetime.now(ZoneInfo(self.timezone)).date()
+        start = today - timedelta(days=range_days - 1)
+        with _readonly(self.database) as connection:
+            endpoints = connection.execute(
+                "SELECT MIN(date),MAX(date) FROM health_metrics WHERE user_id=? AND date BETWEEN ? AND ?",
+                (self.user_id, start.isoformat(), today.isoformat())).fetchone()
+        latest_day = date.fromisoformat(endpoints[1]) if endpoints[1] else None
+        first_day = date.fromisoformat(endpoints[0]) if endpoints[0] else None
+        if latest_day is None:
+            return {"range_days": range_days, "facts": [], "latest_health_date": None}
+        latest = self._snapshot(latest_day)
+        first = self._snapshot(first_day) if first_day and first_day != latest_day else None
+        current = self._snapshot(today)
+        week = monday(today).isoformat()
+        week_loads = [session.load.value for session in current.sessions if session.day >= week
+                      and session.sport not in ("walking", "excluded", "mobility")]
+        weekly_load = sum(week_loads) if week_loads and all(value is not None for value in week_loads) else None
+        from coach.planning import load_model
+
+        settings = replace(get_settings(), db_path=self.database, default_user_id=self.user_id,
+                           local_timezone=self.timezone, sleep_goal_hours=self.sleep_goal_hours)
+        model = load_model(self.database, self.user_id, monday(today) + timedelta(days=7), settings)
+        facts = trend_facts(latest, model.previous_weekly_average, weekly_load, first, range_days)
+        return _bounded({"range_days": range_days, "facts": facts[:MAX_FACTS],
+                         "latest_health_date": latest_day.isoformat()})
 
     def _activity(self, connection: sqlite3.Connection, activity_id: int) -> sqlite3.Row:
         row = connection.execute("SELECT id, user_id, date, type, distance, duration, pace, avg_hr, max_hr, "
@@ -302,7 +339,7 @@ class CoachTools:
         health = ("READINESS", "TODAY_SLEEP_DURATION", "HRV_VS_BASELINE")
         target_facts = [fact for fact in target_activity["facts"]
                         if fact["id"].removeprefix(f"ACT_{activity_id}_") in keep]
-        target_facts.append(_fact(f"ACT_{activity_id}_DATE", "Session date", f"{day.day} {day:%B %Y}",
+        target_facts.append(_fact(f"ACT_{activity_id}_DATE", "Session date", short_date(day),
                                   f"activities[{activity_id}].date"))
         target_facts += [dict(fact, id=f"ACT_{activity_id}_{fact['id']}") for fact in target_daily["facts"]
                          if fact["id"] in health]
@@ -318,7 +355,7 @@ class CoachTools:
                      if fact["id"].removeprefix(f"ACT_{identifier}_") in keep]
             candidate_date = date.fromisoformat(compared_day)
             facts.append(_fact(f"ACT_{identifier}_DATE", "Session date",
-                               f"{candidate_date.day} {candidate_date:%B %Y}",
+                               short_date(candidate_date),
                                f"activities[{identifier}].date"))
             facts += [dict(fact, id=f"ACT_{identifier}_{fact['id']}") for fact in daily["facts"]
                       if fact["id"] in health]
@@ -376,8 +413,11 @@ class CoachTools:
             if sport is not None and sport != category:
                 continue
             identifier = row["id"]
-            facts = [_fact(f"ACT_{identifier}_DISTANCE", "Distance", f"{row['distance']:.1f} km",
-                           f"activities[{identifier}].distance")]
+            facts = [_fact(f"ACT_{identifier}_DATE", "Session date", short_date(row["date"]),
+                           f"activities[{identifier}].date")]
+            if row["distance"] is not None:
+                facts.append(_fact(f"ACT_{identifier}_DISTANCE", "Distance", f"{row['distance']:.1f} km",
+                                   f"activities[{identifier}].distance"))
             if row["pace"] is not None:
                 facts.append(_fact(f"ACT_{identifier}_AVG_PACE", "Average pace",
                                    pace(row["pace"]), f"activities[{identifier}].pace"))
@@ -423,13 +463,13 @@ class CoachTools:
                     sessions.append({"date": (start_date + timedelta(days=row["weekday"])).isoformat(),
                                      "sport": row["sport"], "intent": row["kind"],
                                      "duration_min": row["typical_duration_min"], "origin": "fixed"})
-        facts = [_fact("PLAN_WEEK_START", "Plan week start", start_date.isoformat(), "plan_sessions.date"),
+        facts = [_fact("PLAN_WEEK_START", "Plan week start", short_date(start_date), "plan_sessions.date"),
                  _fact("PLAN_VERSION", "Plan version", str(version[0] if version else 0),
                        "plan_versions.version")]
         items = []
         for index, session in enumerate(sorted(sessions, key=lambda item: item["date"])[:30]):
             day = session["date"]
-            facts.append(_fact(f"PLAN_DAY_{index}", "Planned session", f"{day}: {session['sport']} "
+            facts.append(_fact(f"PLAN_DAY_{index}", "Planned session", f"{short_date(day)}: {session['sport']} "
                                f"{session['intent']}", "plan_sessions"))
             facts.append(_fact(f"PLAN_DAY_{index}_DURATION", "Planned duration",
                                f"{session['duration_min']} min", "plan_sessions.duration_min"))
@@ -442,6 +482,8 @@ class CoachTools:
             raise ValueError("Unknown coach tool")
         if name == "get_daily_snapshot":
             return self.get_daily_snapshot(date.fromisoformat(arguments["date"]))
+        if name == "get_trends":
+            return self.get_trends(int(arguments["range_days"]))
         if name in {"get_activity", "compare_sessions", "get_opinion"}:
             return getattr(self, name)(int(arguments["activity_id"]))
         if name == "plan_week":

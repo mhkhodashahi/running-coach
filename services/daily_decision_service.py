@@ -153,11 +153,12 @@ def build_daily_decision(requested: date, database: Path, user_id: int, timezone
             sync_display = (stamp.replace(tzinfo=UTC) if stamp.tzinfo is None else stamp).astimezone(
                 ZoneInfo(timezone)).strftime("%Y-%m-%d %H:%M %Z")
         snapshot = get_daily_snapshot(based_on, database=database, user_id=user_id,
-                                      timezone=timezone, sleep_goal_hours=sleep_goal_hours)
+                                      timezone=timezone, sleep_goal_hours=sleep_goal_hours, hr_zones=hr_zones)
         # The date-only activity fallback is midnight; no later activity can influence an earlier decision.
         session_snapshot = (snapshot if based_on == requested else
                             get_daily_snapshot(requested, database=database, user_id=user_id,
-                                               timezone=timezone, sleep_goal_hours=sleep_goal_hours))
+                                               timezone=timezone, sleep_goal_hours=sleep_goal_hours,
+                                               hr_zones=hr_zones))
         sessions = _recent_sessions(connection, user_id, requested, timezone, session_snapshot)
         user = connection.execute("SELECT max_hr,age FROM users WHERE id=?", (user_id,)).fetchone()
         fixed_teams = connection.execute(
@@ -168,10 +169,11 @@ def build_daily_decision(requested: date, database: Path, user_id: int, timezone
         planned_teams = connection.execute("SELECT sport FROM plan_sessions WHERE user_id=? AND date=? "
                                            "AND sport IN ('football','volleyball') AND status='planned'",
                                            (user_id, requested.isoformat())).fetchall()
-        running_goal = connection.execute(
-            "SELECT 1 FROM goals WHERE user_id=? AND is_active=1 "
-            "AND goal_type IN ('running_pb','marathon_pb','5k_pb','10k_pb','half_marathon_pb') LIMIT 1",
-            (user_id,)).fetchone() is not None
+        active_goal = connection.execute(
+            "SELECT goal_type,target_distance_km FROM goals WHERE user_id=? AND is_active=1 LIMIT 1",
+            (user_id,)).fetchone()
+        running_goal = bool(active_goal and active_goal[0] in
+                            ('running_pb', 'marathon_pb', '5k_pb', '10k_pb', 'half_marathon_pb'))
     now = datetime.combine(requested + timedelta(days=1), time.min, ZoneInfo(timezone))
     scheduled_teams = tuple(dict.fromkeys(row[0] for row in (*fixed_teams, *planned_teams)))
     recent = tuple(item for item in sessions if item.when < now)
@@ -207,6 +209,10 @@ def build_daily_decision(requested: date, database: Path, user_id: int, timezone
         _fact("BASED_ON_DATE", "Health day used", based_on.isoformat(), "health_metrics.date"),
         _fact("LAST_SYNC_TIME", "Last Garmin sync", sync_display, "garmin_sync_status.last_synced_at"),
     ]
+    if active_goal:
+        facts.append(_fact("ACTIVE_GOAL", "Active goal",
+                           f"{active_goal[1]:g} km {active_goal[0].replace('_', ' ')}",
+                           "goals.goal_type,target_distance_km"))
     for sport in RECOMMENDABLE_SPORTS:
         count = sum(now - SPORT_WINDOW <= item.when < now and item.sport == sport for item in recent)
         last_sport = max((item for item in recent if now - timedelta(hours=24) <= item.when < now and

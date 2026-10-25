@@ -1,13 +1,13 @@
 [project]
 name = "running-coach"
 version = "0.1.0"
-description = "Local Streamlit running coach for Garmin-style training data"
+description = "Local training dashboard and coach for Garmin-style data"
 readme = "README.md"
 license = { file = "LICENSE" }
 authors = [
     { name = "Mohammad and Running Coach contributors" },
 ]
-keywords = ["running", "garmin", "streamlit", "coaching", "sqlite", "llm"]
+keywords = ["running", "garmin", "fastapi", "coaching", "sqlite", "llm"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: End Users/Desktop",
@@ -32,10 +32,10 @@ dependencies = [
     "python-dotenv>=1.0.1,<2.0.0",
     "requests>=2.32.0,<3.0.0",
     "sqlalchemy>=2.0.36,<3.0.0",
-    "streamlit>=1.43.0,<2.0.0",
 ]
 
 [project.optional-dependencies]
+legacy-streamlit = ["streamlit>=1.43.0,<2.0.0"] # Reversible access to the retired Streamlit back office.
 dev = [
     "httpx==0.28.1", # FastAPI TestClient HTTP transport.
     "pytest>=8.3.0,<9.0.0",
@@ -53,14 +53,12 @@ Issues = "https://github.com/mhkhodashahi/running-coach/issues"
 
 [tool.poetry]
 packages = [
-    { include = "app" },
     { include = "analytics" },
     { include = "db" },
     { include = "llm" },
     { include = "metrics" },
     { include = "services" },
     { include = "scripts" },
-    { include = "ui" },
     { include = "utils" },
     { include = "web" },
 ]
@@ -76,6 +74,7 @@ pythonpath = ["."]
 [tool.ruff]
 line-length = 120
 target-version = "py311"
+extend-exclude = ["legacy/streamlit"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]

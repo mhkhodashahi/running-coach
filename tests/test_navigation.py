@@ -1,38 +1,21 @@
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 
 
-def test_default_navigation_pages_do_not_include_removed_surfaces() -> None:
-    from app.main import navigation_specs
-
-    page_paths = [spec.path for spec in navigation_specs()]
-
-    assert page_paths == [
-        "dashboard.py",
-        "pages/1_Activities.py",
-        "pages/2_Recovery.py",
-        "pages/3_Goal_Achievement_Readiness.py",
-        "pages/4_AI_Coach.py",
-        "pages/6_Plan.py",
-        "pages/5_Goals_and_Digests.py",
-        "pages/7_Quality_Sessions.py",
-    ]
+def test_default_navigation_includes_settings_and_all_primary_pages() -> None:
+    source = Path("web/templates/base.html").read_text()
+    for destination in ("/", "/activities", "/trends", "/coach", "/plan", "/settings"):
+        assert source.count(f'href="{destination}"') >= 2
 
 
-def test_activity_details_stays_registered_without_sidebar_link() -> None:
-    from app.main import build_pages
-
-    pages = build_pages()
-
-    assert len(pages) == 9
-    assert pages[-1].visibility == "hidden"
-
-
-def test_streamlit_navigation_excludes_removed_pages() -> None:
-    main_source = Path("app/main.py").read_text()
-
-    assert "Performance Dashboard" not in main_source
-    assert "pages/6_Analysis.py" not in main_source
-    assert not Path("app/pages/6_Analysis.py").exists()
-    assert not Path("app/performance_dashboard.html").exists()
+def test_active_python_never_imports_retired_ui() -> None:
+    for folder in ("web", "services", "coach", "metrics", "analytics", "db", "llm", "utils", "scripts", "tests"):
+        for path in Path(folder).rglob("*.py"):
+            tree = ast.parse(path.read_text())
+            imports = [node.module for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)]
+            imports += [alias.name for node in ast.walk(tree) if isinstance(node, ast.Import)
+                        for alias in node.names]
+            assert all(name and name.split(".")[0] not in {"app", "ui", "legacy"}
+                       for name in imports), path

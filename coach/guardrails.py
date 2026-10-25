@@ -8,8 +8,10 @@ from dataclasses import dataclass
 HARD_ADVICE = re.compile(r"\b(?:train hard|hard session|intervals?|tempo|race|sprints?|vo2max|threshold)\b", re.I)
 DIAGNOSIS = re.compile(r"\b(?:you (?:have|likely have|are suffering from)|diagnos(?:is|ed with)|"
                        r"(?:covid|flu|anemia|anaemia|myocarditis|overtraining syndrome))\b", re.I)
-PLAN_CHANGE = re.compile(r"\b(?:change|move|edit|update|reschedule|cancel|delete|add to)\b.{0,50}"
-                         r"\b(?:plan|schedule|goal|settings?|saturday)\b", re.I)
+PLAN_CHANGE = re.compile(
+    r"\b(?:change|move|edit|update|reschedule|cancel|delete|add|swap|make)\b.{0,70}"
+    r"\b(?:plan|schedule|session|workout|run|gym|saturday|monday|tuesday|wednesday|"
+    r"thursday|friday|sunday|tomorrow|next week)\b", re.I)
 
 
 @dataclass(frozen=True)

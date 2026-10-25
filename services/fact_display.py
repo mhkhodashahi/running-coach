@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import re
+from datetime import date, datetime
 from typing import Any
 
 
@@ -40,7 +41,16 @@ def hours(value: Any) -> str | None:
     if number is None or number < 0:
         return None
     minutes = round(number * 60)
-    return f"{minutes // 60}:{minutes % 60:02d} h"
+    return f"{minutes // 60}h {minutes % 60:02d}m"
+
+
+def short_date(value: date | str) -> str:
+    day = date.fromisoformat(value[:10]) if isinstance(value, str) else value
+    return f"{day:%a} {day.day} {day:%b}"
+
+
+def clock_time(value: datetime) -> str:
+    return value.strftime("%H:%M")
 
 
 def heart_rate(value: Any) -> str | None:

@@ -57,11 +57,14 @@ def read_inputs(database: Path, user_id: int, as_of: date, timezone: str,
 
 
 def get_daily_snapshot(as_of: date, *, database: Path | None = None, user_id: int | None = None,
-                       timezone: str | None = None, sleep_goal_hours: float | None = None) -> DailySnapshot:
+                       timezone: str | None = None, sleep_goal_hours: float | None = None,
+                       hr_zones: tuple[tuple[str, int, int | None], ...] | None = None) -> DailySnapshot:
     from config import get_settings
 
     settings = get_settings()
     zone = timezone if timezone is not None else settings.local_timezone
     identifier = user_id if user_id is not None else settings.default_user_id
     inputs = read_inputs(database if database is not None else settings.db_path, identifier, as_of, zone)
-    return build_daily_snapshot(inputs, as_of, zone, sleep_goal_hours if sleep_goal_hours is not None else settings.sleep_goal_hours)
+    return build_daily_snapshot(inputs, as_of, zone,
+                                sleep_goal_hours if sleep_goal_hours is not None else settings.sleep_goal_hours,
+                                settings.hr_zones if hr_zones is None else hr_zones)

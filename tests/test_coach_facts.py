@@ -12,6 +12,7 @@ from services.coach_facts import (
     unsupported_text_numbers,
 )
 from services.fact_display import duration, heart_rate, hours, pace, percent, ratio, score
+from services.workout_laps import interpret_laps
 
 
 def context() -> dict:
@@ -65,12 +66,24 @@ def as_map(facts):
     return {fact["id"]: fact for fact in facts}
 
 
+def test_custom_zone_facts_match_configured_inclusive_bounds():
+    data = context()
+    data["custom_heart_rate_zones"] = [
+        {"zone": f"Z{index}", "lower_bpm": lower, "upper_bpm": lower + 19 if index < 5 else None}
+        for index, lower in enumerate((100, 120, 140, 160, 180), 1)
+    ]
+    facts = as_map(build_facts(10, data))
+    assert facts["ZONE_Z2_UPPER_BPM"]["display"] == "139 bpm"
+    assert facts["Z3_UPPER_BPM"]["display"] == "159 bpm"
+    assert facts["ZONE_Z2_UPPER_BPM"]["source"] == "custom_heart_rate_zones"
+
+
 def test_shared_display_formatters():
     assert pace(6.375) == "6:22 /km"
     assert heart_rate(143.6) == "144 bpm"
     assert percent(31.25) == "31.2%"
     assert duration(62.5) == "1:02 h"
-    assert hours(7.5) == "7:30 h"
+    assert hours(7.5) == "7h 30m"
     assert ratio(1.256) == "1.26"
     assert score(72.6) == "73/100"
     assert score(72.64, decimals=1) == "72.6/100"
@@ -111,8 +124,8 @@ def test_build_facts_formats_session_zones_kilometres_and_snapshot():
     assert facts["HRV_VS_BASELINE"]["display"] == "-7.7%"
     assert facts["RHR_BASELINE"]["display"] == "50 bpm"
     assert facts["RHR_VS_BASELINE"]["display"] == "-2 bpm"
-    assert facts["SLEEP_CURRENT"]["display"] == "7:30 h"
-    assert facts["SLEEP_VS_BASELINE"]["display"] == "+0:30 h"
+    assert facts["SLEEP_CURRENT"]["display"] == "7h 30m"
+    assert facts["SLEEP_VS_BASELINE"]["display"] == "+0h 30m"
     assert facts["LOAD_RATIO"]["display"] == "1.16"
     assert facts["LOAD_RATIO_STATUS"]["display"] == "in safe range 0.8–1.3"
     assert [facts[f"READINESS_{name}_SCORE"]["display"] for name in ("HRV", "RHR", "SLEEP", "LOAD")] == [
@@ -245,8 +258,66 @@ def test_data_notes_gps_only_for_observed_time_or_distance_gap(change):
 
 
 def test_data_notes_accepts_small_distance_already_in_km():
-    notes = build_data_notes([{"distance": 0.0032, "duration": 0.03}], [], 5.0)
+    notes = build_data_notes([{"distance": 1.0, "duration": 6.0},
+                              {"distance": 0.0032, "duration": 0.03}], [], 1.0)
     assert notes == ["Partial lap: 3.20 m. Excluded from full-km analysis."]
+
+
+def test_stride_workout_uses_rep_facts_and_never_calls_intermediate_reps_partial():
+    laps = [{"lap_index": 1, "distance": 1.0, "duration": 6.0, "pace": 6.0, "avg_hr": 120}]
+    for number in range(4):
+        laps.extend(({"lap_index": number * 2 + 2, "distance": 80.0, "duration": 0.333,
+                      "pace": 0.004, "avg_hr": 145, "lap_type": "lap"},
+                     {"lap_index": number * 2 + 3, "distance": 0.14, "duration": 0.9,
+                      "pace": 6.43, "avg_hr": 125, "lap_type": "lap"}))
+    workout = interpret_laps(laps, running=True, session_pace=6.0, session_hr=130)
+    assert workout.structured and workout.rep_count == 4
+    assert workout.summary.startswith("4 × 20 s efforts")
+    assert [lap.label for lap in workout.laps[1:3]] == ["work", "recovery"]
+    assert workout.laps[0].label == "warm-up"
+    assert not any(lap.partial for lap in workout.laps)
+    data = context()
+    data["selected_activity"]["pace"] = "6:00"
+    data["lap_analysis"]["laps"] = laps
+    facts = as_map(build_facts(10, data))
+    assert facts["REP_COUNT"]["display"] == "4"
+    assert facts["REP_AVG_HR"]["display"] == "145 bpm"
+    assert facts["RECOVERY_AVG_HR"]["display"] == "125 bpm"
+    assert facts["WARMUP_LAP_COUNT"]["display"] == "1"
+    assert "PARTIAL_LAP_DISTANCE" not in facts
+    assert build_data_notes(laps, [], 1.88) == []
+
+
+def test_partial_only_last_auto_split_and_explicit_lap_type_wins():
+    laps = [{"distance": 1.0, "duration": 6, "pace": 6},
+            {"distance": .08, "duration": .333, "pace": 4},
+            {"distance": 1.0, "duration": 6, "pace": 6}]
+    workout = interpret_laps(laps, running=True, session_pace=6)
+    assert workout.structured and not any(lap.partial for lap in workout.laps)
+    laps[1]["lap_type"] = "recovery"
+    assert interpret_laps(laps, running=True, session_pace=6).laps[1].label == "recovery"
+
+
+def test_structured_laps_after_final_rep_are_cool_down():
+    laps = [{"distance": .4, "duration": 2.6, "pace": 6.5},
+            {"distance": .1, "duration": .4, "pace": 4.0},
+            {"distance": .2, "duration": 1.3, "pace": 6.5}]
+    workout = interpret_laps(laps, running=True, session_pace=6.0)
+    assert [lap.label for lap in workout.laps] == ["warm-up", "work", "cool-down"]
+    data = context()
+    data["selected_activity"]["pace"] = "6:00"
+    data["lap_analysis"]["laps"] = laps
+    facts = as_map(build_facts(10, data))
+    assert facts["COOLDOWN_LAP_COUNT"]["display"] == "1"
+
+
+def test_longer_interval_distance_stored_in_metres_is_normalized():
+    laps = [{"distance": 1.0, "duration": 6.0, "pace": 6.0},
+            {"distance": 300.0, "duration": 1.4, "pace": .005, "avg_hr": 150},
+            {"distance": .2, "duration": 1.3, "pace": 6.5, "avg_hr": 125}]
+    workout = interpret_laps(laps, running=True, session_pace=6.0, session_hr=130)
+    assert workout.structured and workout.laps[1].distance_km == pytest.approx(.3)
+    assert workout.laps[1].pace_min_km == pytest.approx(1.4 / .3)
 
 
 def test_numeric_claims_need_display_value_with_spacing_normalized():

@@ -3,24 +3,12 @@
 from __future__ import annotations
 
 import json
-import math
 from urllib.parse import quote_plus, urlencode
 
 import pandas as pd
 import streamlit as st
 from streamlit.components.v1 import html
-
-
-def downsample_route(route: pd.DataFrame, max_points: int = 650) -> pd.DataFrame:
-    """Keep map payloads small while preserving the finish point."""
-
-    if len(route) <= max_points:
-        return route
-    step = max(len(route) // max_points, 1)
-    sampled = route.iloc[::step].copy()
-    if sampled.index[-1] != route.index[-1]:
-        sampled = pd.concat([sampled, route.tail(1)])
-    return sampled
+from services.route_geometry import downsample_route, encode_polyline, route_heading_degrees
 
 
 def google_maps_directions_url(route: pd.DataFrame) -> str:
@@ -34,30 +22,6 @@ def google_maps_directions_url(route: pd.DataFrame) -> str:
         f"&destination={end['latitude']:.6f},{end['longitude']:.6f}"
         "&travelmode=walking"
     )
-
-
-def encode_polyline(points: list[dict[str, float]]) -> str:
-    """Encode lat/lng points using Google's polyline algorithm."""
-
-    encoded = []
-    previous_lat = 0
-    previous_lng = 0
-
-    for point in points:
-        lat = int(round(float(point["lat"]) * 100000))
-        lng = int(round(float(point["lng"]) * 100000))
-        for value in (lat - previous_lat, lng - previous_lng):
-            shifted = value << 1
-            if value < 0:
-                shifted = ~shifted
-            while shifted >= 0x20:
-                encoded.append(chr((0x20 | (shifted & 0x1F)) + 63))
-                shifted >>= 5
-            encoded.append(chr(shifted + 63))
-        previous_lat = lat
-        previous_lng = lng
-
-    return "".join(encoded)
 
 
 def google_static_route_map_url(route: pd.DataFrame, api_key: str, *, maptype: str = "satellite") -> str:
@@ -84,22 +48,6 @@ def google_static_route_map_url(route: pd.DataFrame, api_key: str, *, maptype: s
         safe=":,|",
     )
     return f"https://maps.googleapis.com/maps/api/staticmap?{query}"
-
-
-def route_heading_degrees(points: list[dict[str, float]]) -> float:
-    """Return compass heading from first route point to final route point."""
-
-    if len(points) < 2:
-        return 0.0
-
-    start = points[0]
-    end = points[-1]
-    lat1 = math.radians(start["lat"])
-    lat2 = math.radians(end["lat"])
-    delta_lng = math.radians(end["lng"] - start["lng"])
-    y = math.sin(delta_lng) * math.cos(lat2)
-    x = (math.cos(lat1) * math.sin(lat2)) - (math.sin(lat1) * math.cos(lat2) * math.cos(delta_lng))
-    return (math.degrees(math.atan2(y, x)) + 360) % 360
 
 
 def render_activity_route_map(

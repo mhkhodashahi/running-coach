@@ -134,6 +134,19 @@ Sequence depends on the missing target contract. Acceptance criteria below are c
 - Acceptance: dated trends, coach chat and proposal-based planning cover the remaining primary workflows before Streamlit retirement.
 - Risks: stale metrics can look current; coach proposals must remain explicit and undoable.
 
+### 5d. Settings and Streamlit retirement
+
+- Files: `web/`, `config.py`, `services/`, `legacy/streamlit/`, `pyproject.toml`, `README.md`, tests, and `docs/milestone-5d-parity.md`.
+- Acceptance: Settings covers profile, custom HR zones, sleep goal, goal management, Garmin sync, CSV import and read-only coach configuration; every old feature has an owner disposition in the parity document. Streamlit remains startable as an optional legacy extra, but is absent from the default run path.
+- Risks: editing local configuration must preserve credentials and file permissions; sync and import must not run during page rendering; old data remains intact.
+
+### Later
+
+- Goal readiness and prediction as a Trends Goal card.
+- Weekly kilometres and long-run progression in Trends Running.
+- Key Sessions as a Quality sessions filter on Activities.
+- Coach digest controls and history in milestone 6.
+
 ### 6. Scheduler and Telegram
 
 - Files to touch: `utils/daily_digest_cli.py`, `utils/garmin_sync_cli.py`, `utils/telegram_chat_cli.py`, `services/coaching_workflow.py`, `services/telegram_service.py`, `services/telegram_chatbot.py`, `scripts/`, `launchd/`, `tests/test_telegram_chat.py`, and scheduler tests.

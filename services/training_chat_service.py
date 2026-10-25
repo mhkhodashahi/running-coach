@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from dataclasses import dataclass
 from typing import Any
@@ -46,13 +47,15 @@ class TrainingChatService:
         return TrainingChatReply(_telegram_limit(result.answer + suffix), True, evidence,
                                  result.activity_ids, result.follow_ups, result.tool_calls)
 
-    def history(self, user_id: int | None = None, limit: int = 20) -> list[dict[str, str]]:
+    def history(self, user_id: int | None = None, limit: int = 20) -> list[dict[str, Any]]:
         database = self.settings.db_path
         with sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True) as connection:
-            rows = connection.execute("SELECT question, answer, created_at FROM coach_chat_turns "
+            rows = connection.execute("SELECT question,answer,evidence_json,activity_ids_json,created_at "
+                                      "FROM coach_chat_turns "
                                       "WHERE user_id=? ORDER BY id DESC LIMIT ?",
                                       (user_id or self.settings.default_user_id, min(max(limit, 1), 30))).fetchall()
-        return [{"question": row[0], "answer": row[1], "created_at": row[2]} for row in reversed(rows)]
+        return [{"question": row[0], "answer": row[1], "evidence": json.loads(row[2]),
+                 "activity_ids": json.loads(row[3]), "created_at": row[4]} for row in reversed(rows)]
 
 
 def _telegram_limit(text: str, limit: int = 3900) -> str:

@@ -19,7 +19,7 @@ from llm.schemas import ActivityCoachInsightSchema, CoachOpinionV2, CoachOpinion
 from metrics import get_daily_snapshot
 from services.coach_facts import IntentDecision, build_data_notes, build_facts, detect_intent
 from services.coach_opinion import assemble_opinion_v23, load_opinion, opinion_rule_errors
-from services.coaching_prompts import ACTIVITY_OPINION_V23_SYSTEM_PROMPT
+from services.coaching_prompts import ACTIVITY_OPINION_V24_SYSTEM_PROMPT
 from services.goal_service import GoalService
 from services.running_coach_memory import (
     build_memory_entry_from_activity,
@@ -29,7 +29,7 @@ from services.running_coach_memory import (
 )
 from utils.formatting import format_pace_short
 
-PROMPT_VERSION = "opinion-v2.3"
+PROMPT_VERSION = "opinion-v2.4"
 
 
 @dataclass(frozen=True)
@@ -112,7 +112,8 @@ class ActivityCoachingService:
             raise ValueError(allowed.reason)
         snapshot = get_daily_snapshot(activity.date, database=self.settings.db_path, user_id=user.id,
                                       timezone=self.settings.local_timezone,
-                                      sleep_goal_hours=self.settings.sleep_goal_hours)
+                                      sleep_goal_hours=self.settings.sleep_goal_hours,
+                                      hr_zones=self.settings.hr_zones)
         compact = _opinion_metrics_snapshot(snapshot, activity.id)
         context = build_activity_coaching_context(
             user=user, goal=self.goal_service.ensure_active_goal(session, user), activity=activity,
@@ -123,13 +124,14 @@ class ActivityCoachingService:
         context["effort_rpe"] = rating.rpe if rating else None
         activity_session = next((item for item in snapshot.sessions if item.activity_id == activity.id), None)
         context["effort_low_zone_share"] = (sum(zone.percent.value or 0 for zone in activity_session.zones
-                                                if zone.name.startswith(("Z1", "Z2")))
+                                                if zone.name.startswith(("Below Z1", "Z1", "Z2")))
                                             if activity_session else None)
         facts = build_facts(activity.id, context)
         decision = detect_intent(facts, context["planned_intent"])
         if decision is None:
             raise ValueError("Cannot detect session intent without enough HR-zone evidence; sync activity detail first.")
         context["facts_pack"] = facts
+        context["prompt_version"] = PROMPT_VERSION
         context["detected_intent"] = decision.intent
         context["intent_fact_ids"] = list(decision.fact_ids)
         context["data_notes"] = build_data_notes(laps.to_dict(orient="records"),
@@ -209,7 +211,7 @@ def build_activity_coaching_prompt(context: dict[str, Any], running_memory: str 
         "intent_fact_ids": context.get("intent_fact_ids", []),
         "data_notes_from_code": context.get("data_notes", []),
     }
-    return ACTIVITY_OPINION_V23_SYSTEM_PROMPT, f"{running_memory_block(running_memory)}\n{json.dumps(prompt_input, default=_json_default)}"
+    return ACTIVITY_OPINION_V24_SYSTEM_PROMPT, f"{running_memory_block(running_memory)}\n{json.dumps(prompt_input, default=_json_default)}"
 
 
 def _opinion_metrics_snapshot(snapshot: Any, activity_id: int) -> dict[str, Any]:

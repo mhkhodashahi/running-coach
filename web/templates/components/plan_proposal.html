@@ -1,0 +1,26 @@
+{% macro card(proposal, week) %}
+<article class="card proposal {% if proposal.status == 'stale' %}proposal-stale{% endif %}">
+  <div class="proposal-heading"><h4>{{ proposal.summary }}</h4><span class="status-chip">{{ proposal.status|replace('_',' ')|title }}</span></div>
+  {% if proposal.status == 'pending' %}
+    <form method="post" action="/plan/proposals/{{ proposal.id }}/apply">
+      <div class="proposal-groups">
+        {% for group in proposal.groups %}
+          <label class="proposal-group"><input type="checkbox" name="group_ids" value="{{ group.id }}" checked>
+            <span><strong>{{ group.title }}</strong>
+              {% if group.changes|length > 1 %}<span class="subtle">{{ group.changes|length }} linked changes</span>{% endif %}
+              {% for change in group.changes %}<span class="subtle">{{ change.reason }}</span>{% endfor %}
+              {% if group.evidence %}<span class="proposal-evidence">{% for fact in group.evidence %}<span class="chip" title="{{ fact.source }}">{{ fact.metric }}: {{ fact.display }}</span>{% endfor %}</span>{% endif %}
+            </span>
+          </label>
+        {% endfor %}
+      </div>
+      <p class="projection"><strong>If applied:</strong> {{ '%.0f'|format(proposal.projected_total) if proposal.projected_total is not none else 'No data' }} / {{ '%.0f'|format(week.cap) if week.cap is not none else 'No cap' }} TRIMP</p>
+      <div class="proposal-actions"><button class="button button-primary" type="submit">Apply selected changes</button></div>
+    </form>
+    <div class="proposal-actions"><form method="post" action="/plan/proposals/{{ proposal.id }}/apply"><button class="button button-secondary" type="submit">Apply nothing</button></form><form method="post" action="/plan/proposals/{{ proposal.id }}/dismiss"><button class="button button-secondary" type="submit">Dismiss</button></form></div>
+    <form class="revision-form" method="post" action="/plan/proposals/{{ proposal.id }}/revise"><label for="revision-{{ proposal.id }}">Request revision</label><input id="revision-{{ proposal.id }}" name="revision" maxlength="500" required placeholder="Tell the coach what to change"><button class="button button-secondary" type="submit">Request revision</button></form>
+  {% elif proposal.status == 'stale' %}
+    <p class="subtle">The plan changed since this proposal was made. It cannot be applied.</p><form method="post" action="/plan/proposals/{{ proposal.id }}/fresh"><button class="button button-secondary" type="submit">Request a fresh proposal</button></form>
+  {% endif %}
+</article>
+{% endmacro %}

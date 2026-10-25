@@ -9,7 +9,7 @@ import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -23,7 +23,7 @@ from config import Settings
 from db.migration_runner import migration_config
 from services.coach_facts import Fact, unsupported_text_numbers
 
-PROMPT_VERSION = "chat-v1.1"
+PROMPT_VERSION = "chat-v1.2"
 MAX_TOOL_CALLS = 6
 MAX_QUESTION_CHARS = 1200
 MAX_ANSWER_CHARS = 2500
@@ -37,7 +37,11 @@ SYSTEM_PROMPT = (
     "Put at least the two most important cited fact display values verbatim in the answer, not just evidence_ids. "
     "For comparisons, choose a prior session and state both exact date fact displays and its exact "
     "pace/HR efficiency fact display. Cite these facts and include the two most important displays in prose. "
-    "If today's health is missing, say so, state the last sync time, and say which latest day supports the advice. "
+    "Use dates as 'Wed 23 Sep' and times as '06:36', never ISO dates or seconds. "
+    "For activity questions, use that activity's date and do not mention current sync or freshness. "
+    "For recovery trends, call get_trends unless trend facts are already supplied. "
+    "Only when asked about today, if today's health is missing, answer from the latest available day "
+    "and say 'based on Fri 23 Oct' using the supplied date fact. Never refuse solely because today is missing. "
     "Reply JSON: answer, evidence_ids, activity_ids, follow_ups (2-3 short, answerable questions). "
     "When data is missing, say what is missing. If asked to train hard, inspect today's snapshot first."
 )
@@ -64,6 +68,7 @@ class CoachAnswer:
 def _tool_specs() -> list[dict[str, Any]]:
     arguments = {
         "get_daily_snapshot": {"date": {"type": "string"}},
+        "get_trends": {"range_days": {"type": "integer", "enum": [7, 28, 90]}},
         "get_activity": {"activity_id": {"type": "integer"}},
         "compare_sessions": {"activity_id": {"type": "integer"}},
         "list_activities": {"start_date": {"type": "string"}, "end_date": {"type": "string"},
@@ -104,8 +109,31 @@ def _freshness_note(snapshot: dict[str, Any]) -> str:
     if not snapshot.get("stale_today"):
         return ""
     based_on = next((fact["display"] for fact in snapshot["facts"] if fact["id"] == "BASED_ON_DATE"), None)
-    note = f"Today's health data is missing. Last Garmin sync: {snapshot['last_sync_time']}."
+    note = "Today's health data is missing."
     return f"{note} This is based on {based_on}." if based_on else f"{note} No earlier health day is available."
+
+
+def _is_today_question(question: str) -> bool:
+    return bool(re.search(r"\b(today|tonight|right now|this morning|train hard)\b", question, re.I))
+
+
+def _is_trend_question(question: str) -> bool:
+    return bool(re.search(r"\b(trend|recently|over time|this month|changed|changing|recovery lately)\b", question, re.I))
+
+
+def _trend_fallback(facts: dict[str, Fact]) -> ChatReply:
+    day = facts.get("TRENDS_AS_OF")
+    current = facts.get("HRV_LATEST") or facts.get("RESTING_HR_LATEST")
+    if day is None or current is None:
+        return ChatReply(answer="I do not have enough dated health data to describe a recovery trend.")
+    baseline_id = "HRV_BASELINE" if current["id"] == "HRV_LATEST" else "RESTING_HR_BASELINE"
+    baseline = facts.get(baseline_id)
+    comparison = f" versus a baseline of {baseline['display']}" if baseline else ""
+    answer = f"Through {day['display']}, {current['metric'].lower()} is {current['display']}{comparison}."
+    cited = [day["id"], current["id"]]
+    if baseline:
+        cited.append(baseline["id"])
+    return ChatReply(answer=answer, evidence_ids=cited)
 
 
 def _follow_ups(items: list[str], comparison: bool) -> tuple[str, ...]:
@@ -158,7 +186,8 @@ class CoachAgent:
         self.settings = settings
         self.llm = llm_client
         self.user_id = user_id
-        self.tools = CoachTools(settings.db_path, user_id, settings.local_timezone, settings.sleep_goal_hours)
+        self.tools = CoachTools(settings.db_path, user_id, settings.local_timezone, settings.sleep_goal_hours,
+                               settings.hr_zones)
 
     def _count_request(self) -> None:
         day = datetime.now(ZoneInfo(self.settings.local_timezone)).date().isoformat()
@@ -202,6 +231,12 @@ class CoachAgent:
         missing = _unsupported_answer_numbers(reply.answer, facts)
         if missing:
             raise ValueError("Unsupported numbers: " + ", ".join(missing))
+        if re.search(r"\b20\d{2}-\d{2}-\d{2}\b|\b\d{1,2}:\d{2}:\d{2}\b", reply.answer):
+            raise ValueError("Use short dates and HH:MM times from the fact displays")
+        if not _is_today_question(question) and re.search(r"\b(?:last sync|synced|today's health data is missing|"
+                                                          r"based on [A-Z][a-z]{2} \d{1,2} [A-Z][a-z]{2})\b",
+                                                          reply.answer, re.I):
+            raise ValueError("Do not include today's freshness or sync details in historical answers")
         for comparison in comparisons:
             if not comparison["sessions"]:
                 continue
@@ -219,12 +254,10 @@ class CoachAgent:
                            if efficiencies else ", ".join(candidate_dates))
                 raise ValueError("Comparison must name both session dates and the pace/HR efficiency finding. "
                                  f"Target date: {target_date}; choose a candidate date and efficiency: {choices}")
-        if snapshot.get("stale_today") and re.search(r"\b(today|tonight|train hard)\b", question, re.I):
-            sync = snapshot["last_sync_time"]
+        if snapshot.get("stale_today") and _is_today_question(question):
             based_on = next((fact["display"] for fact in snapshot["facts"] if fact["id"] == "BASED_ON_DATE"), None)
-            if ("missing" not in reply.answer.casefold() or not _contains_display(reply.answer, sync)
-                    or (based_on and not _contains_display(reply.answer, f"based on {based_on}"))):
-                raise ValueError("Today's health data is missing; give last sync time and latest health date")
+            if based_on and not _contains_display(reply.answer, f"based on {based_on}"):
+                raise ValueError("Today's health data is missing; answer based on the latest health day")
         errors = guardrail_errors(reply.answer, guard)
         if errors:
             raise ValueError("; ".join(errors))
@@ -260,12 +293,8 @@ class CoachAgent:
         tool_calls: list[dict[str, Any]] = []
         comparisons: list[dict[str, Any]] = []
         requests = 0
-        snapshot = self.tools.get_daily_snapshot(datetime.now(ZoneInfo(self.settings.local_timezone)).date())
-        for fact in _facts(snapshot):
-            facts[fact["id"]] = fact
-        guard = GuardrailContext(bool(snapshot["illness_flag"]), snapshot["load_ratio"],
-                                 plan_change_question(question))
-        messages.append({"role": "user", "content": "Current dated safety facts: " + json.dumps(snapshot)})
+        snapshot: dict[str, Any] = {}
+        today_question = _is_today_question(question) and activity_id is None
         if activity_id is not None:
             initial = self.tools.get_activity(activity_id)
             seen_activities.add(activity_id)
@@ -273,6 +302,25 @@ class CoachAgent:
                 facts[fact["id"]] = fact
             messages.append({"role": "user", "content": "Selected activity tool result (untrusted athlete data): "
                              + json.dumps(initial)})
+            snapshot = self.tools.get_daily_snapshot(datetime.fromisoformat(initial["date"]).date())
+            activity_facts = [fact for fact in snapshot["facts"] if fact["id"] not in
+                              ("LAST_SYNC_TIME", "FRESHNESS", "HEALTH_DATA_DATE")]
+            for fact in activity_facts:
+                facts[fact["id"]] = fact
+            messages.append({"role": "user", "content": "Health and load on the activity date: "
+                             + json.dumps(activity_facts)})
+        elif today_question:
+            snapshot = self.tools.get_daily_snapshot(datetime.now(ZoneInfo(self.settings.local_timezone)).date())
+            for fact in _facts(snapshot):
+                facts[fact["id"]] = fact
+            messages.append({"role": "user", "content": "Current dated safety facts: " + json.dumps(snapshot)})
+        if activity_id is None and _is_trend_question(question):
+            trends = self.tools.get_trends(28)
+            for fact in _facts(trends):
+                facts[fact["id"]] = fact
+            messages.append({"role": "user", "content": "Read-only recent trend facts: " + json.dumps(trends)})
+        guard = GuardrailContext(bool(snapshot.get("illness_flag")), snapshot.get("load_ratio"),
+                                 plan_change_question(question))
         for attempt in range(MAX_TOOL_CALLS + 3):
             try:
                 step = self._step(messages)
@@ -294,6 +342,11 @@ class CoachAgent:
                     if not isinstance(args, dict) or name not in TOOL_NAMES:
                         raise ValueError("Invalid coach tool request")
                     result = self.tools.call(name, args)
+                    if name == "get_activity" and activity_id is None:
+                        historical = self.tools.get_daily_snapshot(date.fromisoformat(result["date"]))
+                        historical_facts = [fact for fact in historical["facts"] if fact["id"] not in
+                                            ("LAST_SYNC_TIME", "FRESHNESS", "HEALTH_DATA_DATE")]
+                        result["activity_day_facts"] = historical_facts
                     if name == "compare_sessions":
                         comparisons.append(result)
                     if call.get("call_id"):
@@ -323,15 +376,21 @@ class CoachAgent:
                         reply = self._validate(step.get("reply", step), facts, seen_activities, guard,
                                                comparisons, snapshot, question)
                     except (ValidationError, ValueError):
-                        reply = ChatReply(answer="I cannot answer reliably from the available data. "
-                                          "Please sync the relevant activity or health data.")
+                        reply = (_trend_fallback(facts) if _is_trend_question(question) else
+                                 ChatReply(answer="I cannot answer reliably from the available activity facts."
+                                           if activity_id is not None else
+                                           "I cannot answer reliably from the available data. "
+                                           "Please sync the relevant activity or health data."))
                 else:
-                    reply = ChatReply(answer="I cannot answer reliably from the available data. "
-                                      "Please sync the relevant activity or health data.")
+                    reply = (_trend_fallback(facts) if _is_trend_question(question) else
+                             ChatReply(answer="I cannot answer reliably from the available activity facts."
+                                       if activity_id is not None else
+                                       "I cannot answer reliably from the available data. "
+                                       "Please sync the relevant activity or health data."))
             answer = enforce_guardrails(reply.answer, guard)
             if answer != reply.answer:
                 reply = reply.model_copy(update={"answer": answer, "evidence_ids": []})
-            if snapshot.get("stale_today") and re.search(r"\b(today|tonight|train hard)\b", question, re.I):
+            if snapshot.get("stale_today") and today_question:
                 note = _freshness_note(snapshot)
                 if note and not _contains_display(reply.answer, snapshot["last_sync_time"]):
                     reply = reply.model_copy(update={"answer": f"{reply.answer} {note}"})
@@ -340,8 +399,10 @@ class CoachAgent:
                                  _follow_ups(reply.follow_ups, bool(comparisons)), tuple(tool_calls), requests)
             self._save(question, result)
             return result
-        fallback = CoachAnswer("I cannot answer reliably from the available data. Please sync the relevant activity "
-                               "or health data. " + _freshness_note(snapshot), (), (),
+        fallback_text = ("I cannot answer reliably from the available activity facts." if activity_id is not None else
+                         "I cannot answer reliably from the available data. "
+                         "Please sync the relevant activity or health data.")
+        fallback = CoachAnswer(fallback_text + (" " + _freshness_note(snapshot) if today_question else ""), (), (),
                                _follow_ups([], bool(comparisons)), tuple(tool_calls), requests)
         self._save(question, fallback)
         return fallback

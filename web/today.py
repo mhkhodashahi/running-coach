@@ -47,7 +47,8 @@ def today_context(settings: Settings, *, day: date, llm: Any = None) -> dict[str
     user_id = settings.default_user_id
     decision = get_or_create_daily_decision(day, settings=settings, user_id=user_id, llm=llm)
     snapshot = get_daily_snapshot(date.fromisoformat(decision.based_on), database=settings.db_path, user_id=user_id,
-                                  timezone=settings.local_timezone, sleep_goal_hours=settings.sleep_goal_hours)
+                                  timezone=settings.local_timezone, sleep_goal_hours=settings.sleep_goal_hours,
+                                  hr_zones=settings.hr_zones)
     current = {name: item.value for name, item in snapshot.current_health}
     baselines = {(item.field, item.days): item.mean.value for item in snapshot.baselines}
     sync = sync_label(settings, day)

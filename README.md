@@ -1,6 +1,6 @@
 # Running Coach
 
-Running Coach is a local-first Streamlit app for reviewing Garmin-style running data, recovery metrics, goals, predictions, and optional LLM coaching. It stores data in SQLite on your machine and can work with mock CSV data, Garmin Connect sync, OpenAI, Ollama, Telegram, and Google Maps.
+Pulse Coach is a local-first web app for reviewing Garmin-style training data, recovery metrics, goals, and optional LLM coaching. It stores data in SQLite on your machine and supports CSV import, Garmin Connect sync, OpenAI, Ollama and Telegram.
 
 This project is not affiliated with Garmin, Strava, OpenAI, Telegram, or Google. It is not medical advice.
 
@@ -14,9 +14,9 @@ you to make the corresponding source code available to users of that service.
 
 ## Features
 
-- Streamlit dashboard for weekly mileage, readiness, recovery, VO2max, predicted finish, and goal progress
+- Server-rendered Today, Activities, Trends, Coach, Plan and Settings pages
 - Garmin-style CSV import and optional live Garmin Connect sync
-- Activity detail page with route maps, laps, stream data, HR zones, similar activities, and stored per-run coach opinions
+- Activity detail page with laps, stream data, HR zones, similar activities, and stored per-run coach opinions
 - Goal tracking for 5K, 10K, half, and custom running targets
 - Deterministic training analytics and prediction snapshots after imported or synced runs
 - Daily and weekly coaching digests with optional Telegram delivery
@@ -30,14 +30,17 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
 cp .env.example .env
-streamlit run app/main.py
+python -m scripts.upgrade_db --db db/running_coach.db
+python -m web
 ```
 
-On first launch, the app creates `db/running_coach.db` and loads the bundled mock CSV data if no activities or health metrics exist yet.
+The web app checks the database version on startup and never migrates it. Run the backup-first upgrade command before starting it.
 
 ## Configuration
 
 Edit `.env` after copying `.env.example`.
+Settings can update only `HR_ZONES` and `SLEEP_GOAL_HOURS` in this local file.
+It preserves other keys and restricts `.env` permissions to the owner.
 
 ```bash
 # LLM provider: ollama, openai, or chatgpt
@@ -83,28 +86,13 @@ Open `http://127.0.0.1:8000`. `WEB_HOST` and `WEB_PORT` change the bind address
 and port. By default the web UI only binds to the local machine. Set
 `WEB_PASSWORD` in `.env` to require a signed-cookie login; a password is
 required before binding to a non-local address. Use HTTPS through a trusted
-reverse proxy for remote access. Today, its controls, and placeholder links
-are available now; other pages remain in Streamlit until web milestones 5b/5c.
+reverse proxy for remote access. Profile, zones, sleep goal, goals, Garmin sync
+and CSV import are in Settings. Features deferred or dropped from the old UI are
+listed in `docs/milestone-5d-parity.md`.
 No fonts, scripts, or styles are fetched from a CDN.
 
-Streamlit remains the back office:
-
-```bash
-streamlit run app/main.py
-```
-
-The dashboard sidebar can import activity/health CSV files or sync recent Garmin data when credentials are configured.
-
-## Streamlit Pages
-
-- `Dashboard`: weekly/monthly running progress, recent run log, active goal projection, prediction trend, Garmin sync, and profile management
-- `Activities`: imported and synced activity table
-- `Recovery`: sleep, HRV, resting HR, body battery, stress, and recovery charts
-- `Goal Achievement Readiness`: active-goal confidence, pace gap, and scenario planning
-- `AI Coach`: daily or weekly coaching digest generation and Telegram preview
-- `Goals and Digests`: goal management and digest history
-- `Quality Sessions`: quality-workout detection, workload chart, and session table
-- `Activity Detail`: single-activity view with route, effort stats, prediction after the run, notes, and one-time stored LLM coach opinion
+The old Streamlit interface is optional; its startup instructions are in
+`legacy/streamlit/README.md`.
 
 ## Garmin Sync
 
@@ -203,7 +191,7 @@ Run checks:
 
 ```bash
 python -m ruff check .
-python -m compileall -q app analytics db llm services ui utils tests
+python -m compileall -q .
 python -m pytest
 ```
 
@@ -212,13 +200,13 @@ CI runs the same ruff, syntax, and pytest checks.
 ## Project Structure
 
 ```text
-app/        Streamlit entry point, dashboard, and pages
+web/        FastAPI routes, templates and self-hosted static assets
 analytics/  Training and recovery analytics
 data/       Mock CSV data and local-only generated memory files
 db/         SQLAlchemy models, SQLite setup, and repository helpers
 llm/        OpenAI and Ollama clients plus response schemas
 services/   Garmin import, coaching, goals, Telegram, and prediction services
-ui/         Plotly chart builders and Streamlit components
+legacy/streamlit/  Optional, retired Streamlit UI
 utils/      CLI workflows and formatting helpers
 tests/      Unit and integration-style regression tests
 ```

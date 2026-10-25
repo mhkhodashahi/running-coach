@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 
 from config import get_settings
 from db.migration_runner import upgrade_database
+from web.activities import evidence_source_label
 from web.app import create_app
 from web.charts import heart_rate_chart
 
@@ -162,6 +163,53 @@ def test_suggestions_and_whole_session_lap_hidden(browser, activity_db):
     assert "Compare with my best 5 km" in run
     assert "Was this harder than it looked on HR?" in team
     assert "<h2>Laps</h2>" not in team
+
+
+def test_evidence_labels_are_readable_and_legacy_is_plain_list(browser):
+    run = browser.get("/activities/101").text
+    legacy = browser.get("/activities/102").text
+    assert '<details class="opinion-evidence">' in run
+    assert 'title="activity_laps.avg_hr"' in run
+    assert "Laps</td>" in run
+    assert '<ul class="legacy-evidence">' in legacy
+    assert '<details class="opinion-evidence">' not in legacy
+
+
+@pytest.mark.parametrize("source,label", [
+    ("lap_analysis.laps[0].avg_hr", "Lap 1"),
+    ("stream_analysis.first_half.avg_hr", "First half"),
+    ("metrics_snapshot.activity_session.hr_zones[1].percent", "Heart-rate zones"),
+    ("metrics_snapshot.readiness.score.value", "Readiness"),
+    ("metrics_snapshot.load.ratio.value", "Load ratio"),
+    ("services.hr_zones.heart_rate_zone_bounds", "Your zones"),
+    ("active_goal.goal_type", "Active goal"),
+])
+def test_evidence_source_labels(source, label):
+    assert evidence_source_label(source) == label
+
+
+def test_nonrunning_opinion_action_is_hidden(browser):
+    for identifier, sport in ((102, "volleyball"), (103, "gym")):
+        html = browser.get(f"/activities/{identifier}").text
+        assert f"Coach opinions for {sport} are coming soon" in html
+        assert "Get coach opinion</button>" not in html
+
+
+def test_structured_stride_laps_render_as_work_and_recovery(browser, activity_db):
+    with sqlite3.connect(activity_db) as connection:
+        connection.execute("INSERT INTO activities(id,user_id,date,type,distance,duration,pace,avg_hr) "
+                           "VALUES(120,1,?,'running',2,15,6,130)", (DAY.isoformat(),))
+        laps = [(1, 1.0, 6, 6, 120), (2, 80.0, .333, .004, 145),
+                (3, .14, .9, 6.43, 125), (4, 82.0, .333, .004, 146),
+                (5, .14, .9, 6.43, 126)]
+        for index, distance, duration, lap_pace, hr in laps:
+            connection.execute("INSERT INTO activity_laps(activity_id,lap_index,lap_type,distance,duration,pace,avg_hr) "
+                               "VALUES(120,?,'lap',?,?,?,?)", (index, distance, duration, lap_pace, hr))
+    html = browser.get("/activities/120").text
+    assert "<h2>Laps</h2>" in html
+    assert "2 × 20 s efforts" in html
+    assert ">Work</td>" in html and ">Recovery</td>" in html
+    assert "80.00 m" in html and "Partial · excluded" not in html
 
 
 def test_hr_chart_has_five_or_ten_minute_ticks_twenty_bpm_grid_and_zone_names():

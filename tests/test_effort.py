@@ -154,8 +154,11 @@ def test_hard_session_uses_rating_when_present():
     assert is_hard_session(PriorSession(when, "football", "tempo", rpe=2))
     assert is_hard_session(PriorSession(when, "football", z4_plus_percent=15, rpe=2))
     assert effort_vs_hr(8, 80) == "higher than HR suggests"
-    assert effort_vs_hr(3, 50) == "lower than HR suggests"
-    assert effort_vs_hr(5, 80) == "matches"
+    assert effort_vs_hr(2, 50) == "lower than HR suggests"
+    assert effort_vs_hr(5, 80) == "higher than HR suggests"
+    assert effort_vs_hr(3, 50) == "matches"
+    assert effort_vs_hr(4, 80) == "matches"
+    assert effort_vs_hr(5, 79.9) == "matches"
 
 
 def test_activity_facts_include_effort_and_code_mismatch():
@@ -163,7 +166,7 @@ def test_activity_facts_include_effort_and_code_mismatch():
                             "effort_rpe": 8, "effort_low_zone_share": 80})
     by_id = {item["id"]: item for item in facts}
     assert by_id["EFFORT_RPE"]["display"] == "8/10"
-    assert "80.0% in Z1–Z2: higher than HR suggests" in by_id["EFFORT_VS_HR"]["display"]
+    assert "80.0% at or below Z2: higher than HR suggests" in by_id["EFFORT_VS_HR"]["display"]
 
 
 def test_prompt_once_reminder_once_and_rating_change(tmp_path):

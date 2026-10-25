@@ -36,7 +36,9 @@ from services.fact_display import (
 from services.fact_display import (
     score as _score,
 )
+from services.fact_display import short_date as _short_date
 from services.hr_zones import heart_rate_zone_bounds
+from services.workout_laps import interpret_laps
 
 
 class Fact(TypedDict):
@@ -67,8 +69,8 @@ CADENCE_STREAM_MAX = 110.0
 CADENCE_LAP_MIN = 140.0
 GPS_TIME_GAP_SECONDS = 30.0
 GPS_DISTANCE_JUMP_KM = 0.2
-EFFORT_HIGH_RPE = 7
-EFFORT_LOW_RPE = 3
+EFFORT_HIGH_RPE = 5
+EFFORT_LOW_RPE = 2
 EFFORT_LOW_ZONE_SHARE = 80.0
 EFFORT_HIGH_ZONE_SHARE = 50.0
 
@@ -103,23 +105,11 @@ def _full_km_laps(laps: list[dict[str, Any]]) -> list[tuple[int, dict[str, Any]]
 
 
 def _partial_lap_metres(laps: list[dict[str, Any]], total_km: float | None) -> tuple[int, float] | None:
-    completed_km = 0.0
-    for index, lap in enumerate(laps):
-        distance = _number(lap.get("distance"))
-        if distance is None or distance <= 0:
-            continue
-        if distance < PARTIAL_LAP_MAX_METRES / 1000:
-            if distance * 1000 >= PARTIAL_LAP_MIN_METRES:
-                return index, distance * 1000
-            continue
-        duration = _number(lap.get("duration"))
-        if (total_km is not None and completed_km >= total_km - 0.1
-                and distance < PARTIAL_LAP_MAX_METRES and duration is not None and duration < 1):
-            if distance >= PARTIAL_LAP_MIN_METRES:
-                return index, distance
-            continue
-        if FULL_KM_MIN <= distance <= FULL_KM_MAX:
-            completed_km += distance
+    workout = interpret_laps(laps, running=True)
+    if workout.laps and workout.laps[-1].partial:
+        metres = (workout.laps[-1].distance_km or 0) * 1000
+        if metres >= PARTIAL_LAP_MIN_METRES:
+            return len(workout.laps) - 1, metres
     return None
 
 
@@ -137,7 +127,7 @@ def build_facts(activity_id: int, context: Mapping[str, Any]) -> list[Fact]:
     if selected.get("id") is not None and selected["id"] != activity_id:
         raise ValueError("Activity context does not match activity_id")
     facts: list[Fact] = []
-    _add(facts, "ACTIVITY_DATE", "Activity date", str(selected.get("date")) if selected.get("date") else None,
+    _add(facts, "ACTIVITY_DATE", "Activity date", _short_date(selected["date"]) if selected.get("date") else None,
          "selected_activity.date")
     distance = _number(selected.get("distance_km"))
     _add(facts, "DISTANCE", "Distance", f"{distance:.1f} km" if distance is not None else None,
@@ -155,12 +145,12 @@ def build_facts(activity_id: int, context: Mapping[str, Any]) -> list[Fact]:
     zones = ((context.get("metrics_snapshot") or {}).get("zones") or {})
     low_share = context.get("effort_low_zone_share")
     if low_share is None and isinstance(zones, dict):
-        low_share = sum(float(zones.get(zone, 0) or 0) for zone in ("Z1", "Z2")) or None
+        low_share = sum(float(zones.get(zone, 0) or 0) for zone in ("Below Z1", "Z1", "Z2")) or None
     if effort is not None:
         _add(facts, "EFFORT_RPE", "Session effort", f"{int(effort)}/10", "activity_efforts.rpe")
         mismatch = effort_vs_hr(int(effort), _number(low_share))
         _add(facts, "EFFORT_VS_HR", "Effort versus HR",
-             f"rated {int(effort)}/10 while {_percent(low_share)} in Z1–Z2: {mismatch}"
+             f"rated {int(effort)}/10 while {_percent(low_share)} at or below Z2: {mismatch}"
              if mismatch and _percent(low_share) else None,
              "activity_efforts.rpe + metrics_snapshot.sessions.zones")
     for key, fact_id, metric in (("aerobic_effect", "AEROBIC_EFFECT", "Aerobic training effect"),
@@ -170,13 +160,36 @@ def build_facts(activity_id: int, context: Mapping[str, Any]) -> list[Fact]:
 
     _add(facts, "RECENT_MEDIAN_PACE", "Recent median pace", _pace(context.get("recent_median_pace")),
          "recent_median_pace")
-    goal_name = (context.get("active_goal") or {}).get("name")
-    _add(facts, "GOAL", "Long-term goal", str(goal_name) if goal_name else None, "active_goal.name")
+    goal = context.get("active_goal") or {}
+    goal_type = str(goal.get("goal_type") or "").lower()
+    goal_distance = _number(goal.get("target_distance_km"))
+    if goal_distance is None:
+        goal_distance = {"5k_pb": 5, "10k_pb": 10, "half_pb": 21.1,
+                         "running_pb": 42.2}.get(goal_type)
+    goal_kind = (f"{goal_distance:g}K" if goal_distance is not None else
+                 goal_type.replace("_", " ").strip())
+    _add(facts, "GOAL", "Long-term goal", f"your {goal_kind} goal" if goal_kind else None,
+         "active_goal.goal_type + active_goal.target_distance_km")
     planned = context.get("planned_intent")
     _add(facts, "PLAN_INTENT", "Planned intent", str(planned) if planned else None, "planned_intent")
 
     stream = context.get("stream_analysis") or {}
     laps = list((context.get("lap_analysis") or {}).get("laps") or [])
+    workout = interpret_laps(laps, running="run" in str(selected.get("type") or "running").lower(),
+                             session_pace=selected.get("pace"), session_hr=selected.get("avg_hr"))
+    if workout.structured:
+        warmups = sum(lap.label == "warm-up" for lap in workout.laps)
+        cooldowns = sum(lap.label == "cool-down" for lap in workout.laps)
+        _add(facts, "WARMUP_LAP_COUNT", "Warm-up laps", str(warmups) if warmups else None,
+             "lap_analysis.laps[*].lap_type + pace + avg_hr")
+        _add(facts, "COOLDOWN_LAP_COUNT", "Cool-down laps", str(cooldowns) if cooldowns else None,
+             "lap_analysis.laps[*].lap_type + pace + avg_hr")
+        _add(facts, "REP_COUNT", "Work repetitions", str(workout.rep_count) if workout.rep_count else None,
+             "lap_analysis.laps[*].lap_type + pace + avg_hr")
+        _add(facts, "REP_AVG_PACE", "Average rep pace", workout.rep_pace, "lap_analysis.laps[*].pace")
+        _add(facts, "REP_AVG_HR", "Average rep heart rate", workout.rep_hr, "lap_analysis.laps[*].avg_hr")
+        _add(facts, "RECOVERY_AVG_HR", "Recovery heart rate", workout.recovery_hr,
+             "lap_analysis.laps[*].avg_hr")
     cadence = stream.get("cadence_spm") or {}
     cadence_multiplier = _cadence_multiplier(cadence.get("avg"), laps)
     for key in ("avg", "min", "max"):
@@ -261,20 +274,26 @@ def build_facts(activity_id: int, context: Mapping[str, Any]) -> list[Fact]:
                  "metrics_snapshot.activity_session.hr_zones.percent")
     hrmax = _number((session.get("hrmax") or {}).get("value"))
     if hrmax is not None and hrmax > 0:
-        bounds = heart_rate_zone_bounds(round(hrmax))
+        custom = context.get("custom_heart_rate_zones") or []
+        bounds = ([(zone["zone"], float(zone["lower_bpm"]),
+                    float(zone["upper_bpm"] + 1) if zone["upper_bpm"] is not None else float("inf"))
+                   for zone in custom] if len(custom) == 5 else heart_rate_zone_bounds(round(hrmax)))
+        bounds_source = ("custom_heart_rate_zones" if len(custom) == 5 else
+                         "services.hr_zones.heart_rate_zone_bounds + metrics_snapshot.activity_session.hrmax.value")
         for zone_name, lower, upper in bounds:
             zone_id = zone_name.split()[0]
             _add(facts, f"ZONE_{zone_id}_LOWER_BPM", f"{zone_id} lower heart rate", _hr(math.ceil(lower)),
-                 "services.hr_zones.heart_rate_zone_bounds + metrics_snapshot.activity_session.hrmax.value")
+                 bounds_source)
             upper_display = "no upper bpm limit" if math.isinf(upper) else _hr(math.ceil(upper) - 1)
             _add(facts, f"ZONE_{zone_id}_UPPER_BPM", f"{zone_id} upper heart rate", upper_display,
-                 "services.hr_zones.heart_rate_zone_bounds + metrics_snapshot.activity_session.hrmax.value")
+                 bounds_source)
         z2 = bounds[1]
         _add(facts, "Z2_LOWER_HALF_CAP", "Z2 lower-half ceiling",
              _hr(z2[1] + RECOVERY_Z2_FRACTION * (z2[2] - z2[1])),
-             "services.hr_zones.heart_rate_zone_bounds + metrics_snapshot.activity_session.hrmax.value")
-        _add(facts, "Z3_UPPER_BPM", "Z3 upper boundary", _hr(bounds[2][2]),
-             "services.hr_zones.heart_rate_zone_bounds + metrics_snapshot.activity_session.hrmax.value")
+             bounds_source)
+        _add(facts, "Z3_UPPER_BPM", "Z3 upper boundary",
+             _hr(bounds[2][2] - 1 if len(custom) == 5 else bounds[2][2]),
+             bounds_source)
 
     readiness_field = (snapshot.get("readiness") or {}).get("score")
     readiness = _number(readiness_field.get("value") if isinstance(readiness_field, dict) else readiness_field)

@@ -21,13 +21,14 @@ from db.models import User
 from llm.factory import get_llm_client
 from metrics import get_daily_snapshot
 from metrics.sports import RECOMMENDABLE_SPORTS, sport_category
-from services.activity_coaching_service import ActivityCoachingService
+from services.activity_coaching_service import ActivityCoachingService, supports_activity_coach_opinion
 from services.coach_facts import effort_vs_hr
 from services.coach_opinion import load_opinion
 from services.effort_service import rate_activity
 from services.fact_display import duration as lap_duration
 from services.fact_display import pace as format_pace
 from services.training_chat_service import TrainingChatService
+from services.workout_laps import interpret_laps
 from web.charts import heart_rate_chart
 from web.formatting import activity_distance, activity_duration, metric, short_date
 from web.today import sync_label
@@ -38,6 +39,35 @@ RUN_SUGGESTIONS = ("Why was my HR higher than usual?", "Compare with my best 5 k
                    "What should my next run be?")
 OTHER_SUGGESTIONS = ("Was this harder than it looked on HR?",
                      "How should I recover before my next session?", "Compare with my last session")
+
+EVIDENCE_SOURCES = {
+    "lap_analysis.laps": "Lap", "activity_laps": "Lap",
+    "stream_analysis.first_half": "First half", "stream_analysis.second_half": "Second half",
+    "metrics_snapshot.activity_session.hr_zones": "Heart-rate zones",
+    "metrics_snapshot.activity_session.hrmax": "Your zones",
+    "metrics_snapshot.readiness": "Readiness", "metrics_snapshot.current_health": "Readiness",
+    "metrics_snapshot.baselines": "Readiness", "metrics_snapshot.load": "Load ratio",
+    "services.hr_zones": "Your zones", "custom_heart_rate_zones": "Your zones",
+    "active_goal": "Active goal",
+}
+
+
+def evidence_source_label(source: str) -> str:
+    for prefix, label in EVIDENCE_SOURCES.items():
+        if source.startswith(prefix):
+            if label == "Lap":
+                import re
+
+                match = re.search(r"\[(\d+)\]", source)
+                return f"Lap {int(match.group(1)) + 1}" if match else "Laps"
+            return label
+    if source.startswith("selected_activity"):
+        return "This activity"
+    if source.startswith("recent_median_pace"):
+        return "Recent runs"
+    if source == "legacy":
+        return ""
+    return "Training data"
 
 
 def _db(database: Path) -> sqlite3.Connection:
@@ -53,12 +83,13 @@ def _local_day(settings: Settings) -> date:
 
 def _tools(settings: Settings) -> CoachTools:
     return CoachTools(settings.db_path, settings.default_user_id, settings.local_timezone,
-                      settings.sleep_goal_hours)
+                      settings.sleep_goal_hours, settings.hr_zones)
 
 
 def _session_snapshot(settings: Settings, day: date, activity_id: int):
     snapshot = get_daily_snapshot(day, database=settings.db_path, user_id=settings.default_user_id,
-                                  timezone=settings.local_timezone, sleep_goal_hours=settings.sleep_goal_hours)
+                                  timezone=settings.local_timezone, sleep_goal_hours=settings.sleep_goal_hours,
+                                  hr_zones=settings.hr_zones)
     return next((item for item in snapshot.sessions if item.activity_id == activity_id), None)
 
 
@@ -117,7 +148,7 @@ def list_context(settings: Settings, *, sport: str | None = None, start: date | 
         if day not in snapshot_cache:
             snapshot = get_daily_snapshot(day, database=settings.db_path, user_id=settings.default_user_id,
                                           timezone=settings.local_timezone,
-                                          sleep_goal_hours=settings.sleep_goal_hours)
+                                          sleep_goal_hours=settings.sleep_goal_hours, hr_zones=settings.hr_zones)
             snapshot_cache[day] = {item.activity_id: item for item in snapshot.sessions}
         return snapshot_cache[day].get(row["id"])
 
@@ -263,7 +294,8 @@ def detail_context(settings: Settings, activity_id: int) -> dict[str, Any]:
     session = _session_snapshot(settings, day, activity_id)
     opinion = load_opinion(dict(opinion_row)).model_dump() if opinion_row else None
     zones = _zones(session)
-    low_zone_share = (sum(zone["percent"] or 0 for zone in zones if zone["name"].startswith(("Z1", "Z2")))
+    low_zone_share = (sum(zone["percent"] or 0 for zone in zones
+                          if zone["name"].startswith(("Below Z1", "Z1", "Z2")))
                       if zones else None)
     effort_label = effort_vs_hr(row["rpe"], low_zone_share)
     max_hr = user[0] or (220 - user[1] if user and user[1] else None) if user else None
@@ -271,22 +303,17 @@ def detail_context(settings: Settings, activity_id: int) -> dict[str, Any]:
                                       for index, (low, high) in enumerate(
                                           ((.5, .6), (.6, .7), (.7, .8), (.8, .9), (.9, 1)), 1))
               if max_hr else ())
-    accounted_km = 0.0
-    for lap in laps:
-        raw_distance = lap["distance"]
-        remaining = max(0.0, row["distance"] - accounted_km)
-        # Old Garmin partial laps can retain metres when full laps were normalized to km.
-        metres_partial = (raw_distance is not None and raw_distance > remaining + 0.1
-                          and raw_distance <= 100 and lap["duration"] is not None
-                          and lap["duration"] < 1)
-        lap_km = raw_distance / 1000 if metres_partial else raw_distance
-        lap["distance_km"] = lap_km
-        if lap_km is not None:
-            accounted_km += lap_km
-        lap["distance_label"] = (f"{raw_distance:.2f} m" if metres_partial else
-                                 f"{lap_km:.2f} km" if lap_km is not None else None)
-        lap["partial"] = lap_km is not None and lap_km < 0.9
-        lap["pace_label"] = format_pace(lap["pace"]) if _sport(row) == "running" and not lap["partial"] else None
+    workout = interpret_laps(laps, running=_sport(row) == "running",
+                             session_pace=row["pace"], session_hr=row["avg_hr"])
+    for lap, interpreted in zip(laps, workout.laps, strict=True):
+        lap["distance_km"] = interpreted.distance_km
+        lap["distance_label"] = (f"{lap['distance']:.2f} m" if interpreted.distance_was_metres else
+                                 f"{interpreted.distance_km:.2f} km" if interpreted.distance_km is not None else None)
+        lap["partial"] = interpreted.partial
+        lap["work_label"] = interpreted.label
+        lap["pace_label"] = (format_pace(interpreted.pace_min_km)
+                             if _sport(row) == "running" and interpreted.distance_km is not None
+                             and interpreted.distance_km >= 0.05 else None)
         lap["duration_label"] = lap_duration(lap["duration"])
         lap["zone"] = next((name.split()[0] for name, low, high in bounds if not lap["partial"]
                             and lap["avg_hr"] is not None
@@ -306,8 +333,10 @@ def detail_context(settings: Settings, activity_id: int) -> dict[str, Any]:
             "prev_id": prev_row[0] if prev_row else None, "next_id": next_row[0] if next_row else None,
             "stats": _stats(row, session, cadence, effort_label), "opinion": opinion,
             "opinion_meta": dict(opinion_row) if opinion_row else None,
+            "opinion_supported": supports_activity_coach_opinion(row["type"]),
+            "evidence_source_label": evidence_source_label,
             "zones": sorted(zones, key=lambda zone: zone["name"][:2], reverse=True),
-            "laps": [] if whole_lap else laps, "hr_chart": hr_chart,
+            "laps": [] if whole_lap else laps, "workout": workout, "hr_chart": hr_chart,
             "similar": _similar(settings, activity_id), "intents": INTENTS,
             "ask_suggestions": RUN_SUGGESTIONS if _sport(row) == "running" else OTHER_SUGGESTIONS,
             "sync": sync_label(settings, _local_day(settings))}

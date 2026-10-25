@@ -72,7 +72,8 @@ def banister_trimp(minutes: float, heart_rate: float, resting_hr: float, max_hr:
 
 def session_metrics(activity: Activity, profile: Profile, health: tuple[HealthDay, ...], as_of: date,
                     timezone: str, calibration: Calibration | None = None,
-                    multipliers: Mapping[str, float] | None = None) -> Session | None:
+                    multipliers: Mapping[str, float] | None = None,
+                    hr_zones: tuple[tuple[str, int, int | None], ...] = ()) -> Session | None:
     if activity.day > as_of or sport_category(activity.type, as_of) in ("excluded", "mobility"):
         return None
     session_day = activity.day
@@ -96,12 +97,15 @@ def session_metrics(activity: Activity, profile: Profile, health: tuple[HealthDa
     seconds_total = sum(seconds for seconds, _ in intervals)
     zones = []
     if maximum.value is not None:
-        bounds = heart_rate_zone_bounds(int(maximum.value))
+        bounds = ([(name, float(lower), float(upper + 1) if upper is not None else float("inf"))
+                   for name, lower, upper in hr_zones] if hr_zones else
+                  heart_rate_zone_bounds(int(maximum.value)))
+        zone_sources = (*LOAD_SOURCES, "config.hr_zones") if hr_zones else LOAD_SOURCES
         for name, lower, upper in [*bounds, ("Below Z1", 0.0, bounds[0][1])]:
             seconds = sum(dt for dt, hr in intervals if lower <= hr < upper) if intervals else None
             zones.append(ZoneResult(name,
-                metric(seconds, "seconds", LOAD_SOURCES, session_day, session_day, int(bool(intervals)), "shared_hr_zone_bounds_track_intervals"),
-                metric(seconds / seconds_total * 100 if seconds is not None else None, "%", LOAD_SOURCES,
+                metric(seconds, "seconds", zone_sources, session_day, session_day, int(bool(intervals)), "shared_hr_zone_bounds_track_intervals"),
+                metric(seconds / seconds_total * 100 if seconds is not None else None, "%", zone_sources,
                        session_day, session_day, int(bool(intervals)), "percent_of_observed_hr_seconds")))
     return Session(activity.id, session_day.isoformat(), sport,
                    metric(load, "TRIMP", LOAD_SOURCES, session_day, session_day, int(load is not None), method),

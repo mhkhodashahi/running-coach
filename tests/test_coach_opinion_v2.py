@@ -67,6 +67,15 @@ def test_legacy_mapping_every_field_does_not_rewrite_source():
     assert opinion.intent is None and not opinion.verdicts and not opinion.data_notes
 
 
+def test_legacy_headline_is_first_sentence_without_rewriting_json():
+    original = '{"brutally_honest_conclusion":"Start controlled. Then build gradually."}'
+    row = SimpleNamespace(schema_version=None, payload_json=original)
+    opinion = load_opinion(row)
+    assert opinion.headline == "Start controlled."
+    assert opinion.conclusion == "Then build gradually."
+    assert row.payload_json == original
+
+
 @pytest.mark.parametrize("confidence,expected", [(0, "low"), (39, "low"), (40, "medium"),
                                                    (69, "medium"), (70, "high"), (None, "low")])
 def test_sparse_legacy_mapping_and_confidence(confidence, expected):
@@ -216,7 +225,7 @@ def test_valid_v23_saved_and_plan_passed_to_prompt(opinion_db):
     assert llm.prompts[0][2] is OpinionDraftV23
     with factory() as session:
         row = repository.get_activity_coaching_insight(session, activity_id, 1)
-        assert row.schema_version == "2" and row.prompt_version == "opinion-v2.3"
+        assert row.schema_version == "2" and row.prompt_version == "opinion-v2.4"
         assert row.validation_notes is None
         assert json.loads(row.payload_json)["intent"]["planned"] == "easy"
         assert json.loads(row.payload_json)["intent"]["detected"] == "recovery"
@@ -435,6 +444,22 @@ def test_v21_goal_reference_is_allowed_in_recommendation():
                                    "action": "none", "session": {}}]
     opinion = CoachOpinionV21.model_validate(payload)
     assert opinion_rule_errors(opinion, invented_v21_context()) == ()
+
+
+def test_v24_rejects_stored_goal_name_in_recommendation_but_accepts_type_and_distance():
+    context = invented_v21_context()
+    context["prompt_version"] = "opinion-v2.4"
+    context["active_goal"].update({"goal_type": "10k_pb", "target_distance_km": 10})
+    payload = invented_v21_payload()
+    payload["recommendations"] = [{"text": "Prepare for Invented 10K.", "action": "none", "session": {}}]
+    opinion = CoachOpinionV23.model_validate(payload)
+    assert "stored name" in " ".join(opinion_rule_errors(opinion, context))
+    payload["recommendations"][0]["text"] = "Prepare for your 10K goal."
+    opinion = CoachOpinionV23.model_validate(payload)
+    assert not any("stored name" in error for error in opinion_rule_errors(opinion, context))
+    payload["recommendations"][0]["text"] = "Prepare for your goal."
+    opinion = CoachOpinionV23.model_validate(payload)
+    assert "type and distance" in " ".join(opinion_rule_errors(opinion, context))
 
 
 def invented_draft_facts():

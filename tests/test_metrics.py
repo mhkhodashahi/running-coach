@@ -110,6 +110,18 @@ def test_zones_reuse_boundaries_and_percentages():
     assert all(z.seconds.value is None for z in session_metrics(activity(), PROFILE, health_history(), DAY, ZONE).zones)
 
 
+def test_custom_zones_override_max_hr_bounds_without_changing_load():
+    points = (TrackPoint(0, 0, 120), TrackPoint(1, 60, 140), TrackPoint(2, 120, 150))
+    workout = activity(duration=2, points=points)
+    custom = (("Z1", 100, 119), ("Z2", 120, 139), ("Z3", 140, 159),
+              ("Z4", 160, 179), ("Z5", 180, None))
+    default = session_metrics(workout, PROFILE, health_history(), DAY, ZONE)
+    changed = session_metrics(workout, PROFILE, health_history(), DAY, ZONE, hr_zones=custom)
+    assert changed.load.value == default.load.value
+    assert {zone.name: zone.seconds.value for zone in changed.zones if zone.seconds.value} == {"Z2": 60, "Z3": 60}
+    assert "config.hr_zones" in changed.zones[0].seconds.provenance.sources
+
+
 def test_timezone_and_future_track_point_cutoff():
     assert local_day("2026-05-28T23:30:00+00:00", ZONE, DAY) == DAY
     assert local_day("2026-05-29", ZONE, DAY) == DAY

@@ -30,6 +30,7 @@ def create_app(settings: Settings | None = None, *, password: str | None = None,
     application = FastAPI(title="Pulse Coach", lifespan=lifespan)
     application.state.settings = settings
     application.state.llm = llm
+    application.state.sync_state = {"status": "idle", "message": "No sync started"}
     application.state.templates = Jinja2Templates(directory=WEB_DIR / "templates")
     application.mount("/static", StaticFiles(directory=WEB_DIR / "static"), name="static")
 

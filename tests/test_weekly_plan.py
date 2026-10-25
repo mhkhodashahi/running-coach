@@ -26,8 +26,10 @@ from coach.planning import (
     is_recovery_item,
     lighter_week_allowed,
     load_model,
+    long_run_limit,
     propose_daily_conflict,
     propose_opinion_recommendations,
+    propose_requested_change,
     propose_week,
     reference_habit_pattern,
     revise_week,
@@ -107,6 +109,22 @@ def test_pure_week_rules_and_boundaries():
     assert validate_week([session(START, minutes=110)], model, today=START + timedelta(days=7), decisions={}) == []
     assert any("110%" in error for error in validate_week(
         [session(START, minutes=111)], model, today=START + timedelta(days=7), decisions={}))
+
+
+def test_long_easy_run_is_capped_by_recent_longest_run():
+    model = LoadModel(None, {("running", "easy"): 1}, {"running": 1})
+    habits = HabitPattern({"running": 1, "gym": 0}, {"running": 90, "gym": 30})
+    assert long_run_limit(None) == 30
+    assert long_run_limit(20) == 30
+    assert long_run_limit(40) == 48
+    for longest, expected in ((None, 30), (40, 48), (70, 84)):
+        built = build_habit_week([], model, habits, START, START - timedelta(days=1), {},
+                                 True, 130, longest_recent_run_min=longest)
+        runs = [item for item in built.candidate if item["sport"] == "running"]
+        assert runs and runs[0]["duration_min"] == expected
+    draft = WeekDraft.model_validate({"summary": "Easy running", "changes": [change(START, minutes=49)]})
+    assert "Easy run exceeds the recent long-run safety limit" in validate_draft(
+        draft, [], FACTS, model, START, START - timedelta(days=1), {}, True, long_run_cap=48)
     hard = [session(START + timedelta(days=n), intent="tempo") for n in (0, 1)]
     assert "Hard days are consecutive" in validate_week(hard, model, today=START + timedelta(days=7), decisions={})
     hard = [session(START + timedelta(days=n), intent="tempo") for n in (0, 2, 4)]
@@ -291,6 +309,31 @@ def test_mocked_llm_week_draft_is_validated_and_never_applied(database):
                      today=START - timedelta(days=3))
 
 
+def test_plain_plan_request_retries_invalid_json_then_creates_proposal_only(database):
+    class FakeLLM:
+        calls = 0
+
+        def generate_json(self, system, prompt, response_schema):
+            import json
+            self.calls += 1
+            assert response_schema is WeekDraft
+            assert "athlete_request_as_data" in json.loads(prompt.split("\nValidation errors:")[0])
+            if self.calls == 1:
+                return {"changes": []}
+            fact_id = json.loads(prompt.split("\nValidation errors:")[0])["facts"][0]["id"]
+            item = change(START + timedelta(days=2))
+            item["fact_ids"] = [fact_id]
+            return {"summary": "A flexible easy run is proposed.", "changes": [item]}
+
+    settings = replace(get_settings(), db_path=database, llm_provider="none")
+    fake = FakeLLM()
+    proposed = propose_requested_change("Move my Wednesday run", START, settings=settings,
+                                        user_id=1, llm=fake, today=START - timedelta(days=3))
+    assert fake.calls == 2
+    assert proposed["status"] == "pending"
+    assert get_week(database, 1, START)["sessions"] == []
+
+
 def test_plain_word_revision_uses_model_but_does_not_apply(database):
     class FakeLLM:
         def __init__(self):
@@ -417,7 +460,7 @@ def test_builder_abstains_when_fixed_commitments_exceed_cap():
     assert all(item["origin"] == "fixed" for item in result.candidate if item["sport"] == "football")
     assert all(item["session"]["notes"] == MOBILITY_NOTE for item in result.changes)
     assert any("heavier than any recent week" in warning for warning in result.warnings)
-    assert "full week:" in result.summary
+    assert "Full week:" in result.summary
 
 
 def test_protected_habits_use_nonteam_days_and_are_immutable(database):
@@ -484,8 +527,8 @@ def test_flexible_session_dropped_for_cap_becomes_lighter_week():
                               {"running": 30, "gym": 30}), START, START - timedelta(days=7),
                               {}, False, 130, 1.35)
     assert result.status == "proposal"
-    assert "lighter week" in result.summary and "1.35" in result.summary
-    assert any("dropped" in warning for warning in result.warnings)
+    assert "Lighter week" in result.summary and "1.35" in result.summary
+    assert any("Easy run 30 min dropped" in warning for warning in result.warnings)
     assert all(is_recovery_item(change["session"]) for change in result.changes)
     assert all(change["fact_ids"] == ["LOAD_RATIO", "LOAD_CAP"] for change in result.changes)
     assert week_load_breakdown(list(result.candidate), model, START)["weekly_total"] <= model.cap
@@ -504,7 +547,7 @@ def test_zero_running_habit_rebuilds_only_when_thirty_minutes_fit():
     no_room = build_habit_week([], full, habits, START, START - timedelta(days=7), {}, True, 130,
                                load_ratio=1.2, week_start_readiness=70)
     assert not any(item["sport"] == "running" and item["status"] == "planned" for item in no_room.candidate)
-    assert "next week" in no_room.summary and "full week:" in no_room.summary
+    assert "next week" in no_room.summary and "Full week:" in no_room.summary
     assert "lighter week" not in no_room.summary
 
 
