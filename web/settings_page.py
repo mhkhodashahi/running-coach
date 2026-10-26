@@ -26,6 +26,8 @@ from services.hr_zones import heart_rate_zone_bounds
 from services.import_service import GarminImportService, ImportSummary
 from utils.formatting import format_goal_time
 from web.formatting import sync_time
+from worker.state import history as worker_history
+from worker.state import preferences, save_preferences, worker_running
 
 MAX_CSV_BYTES = 10 * 1024 * 1024
 _SYNC_LOCK = threading.Lock()
@@ -78,7 +80,18 @@ def settings_context(settings: Settings, sync_state: dict[str, str]) -> dict:
                       settings.ollama_model if settings.llm_provider == "ollama" else "Not configured"),
             "remote_sharing": settings.allow_remote_llm and settings.remote_athlete_data_approved,
             "usage": usage, "call_limit": settings.coach_daily_call_limit,
-            "sync": sync_label}
+            "sync": sync_label, "messages": preferences(settings.db_path, settings.default_user_id),
+            "worker_runs": worker_history(settings.db_path, settings.default_user_id, 8),
+            "worker_running": worker_running(settings.db_path)}
+
+
+def save_messages(settings: Settings, fields: dict[str, str]) -> None:
+    toggles = ("morning_enabled", "morning_llm", "day_llm", "weekly_llm")
+    values = {key: int(fields.get(key) == "on") for key in toggles}
+    for key in ("morning_latest", "day_review_time", "weekly_time", "quiet_start", "quiet_end"):
+        values[key] = fields[key]
+    values["weekly_weekday"] = int(fields["weekly_weekday"])
+    save_preferences(settings.db_path, settings.default_user_id, values)
 
 
 def save_profile(settings: Settings, fields: dict[str, str]) -> None:

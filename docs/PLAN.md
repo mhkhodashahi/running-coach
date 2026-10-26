@@ -147,11 +147,11 @@ Sequence depends on the missing target contract. Acceptance criteria below are c
 - Key Sessions as a Quality sessions filter on Activities.
 - Coach digest controls and history in milestone 6.
 
-### 6. Scheduler and Telegram
+### 6. Scheduler and Telegram (implemented)
 
-- Files to touch: `utils/daily_digest_cli.py`, `utils/garmin_sync_cli.py`, `utils/telegram_chat_cli.py`, `services/coaching_workflow.py`, `services/telegram_service.py`, `services/telegram_chatbot.py`, `scripts/`, `launchd/`, `tests/test_telegram_chat.py`, and scheduler tests.
-- Acceptance: document local timezone and schedule; repeated runs do not send duplicate digests for the same event; transient Garmin/Telegram failures retry without losing a completed import or sending twice; health-only sync remains available; recipient allowlist is enforced; job setup is portable and opt-in.
-- Risks: current ignored launchd plists use machine-specific absolute paths; concurrent jobs can contend for SQLite or Garmin rate limits; Telegram tokens in request URLs and job logs require redaction.
+- Files: `worker/`, `db/migrations/versions/0011_worker_jobs.py`, `services/telegram_service.py`, `services/telegram_chatbot.py`, `services/effort_service.py`, `services/garmin_client.py`, `coach/planning.py`, `coach/proposals.py`, Settings and Coach views, `docs/worker.md`, and worker tests.
+- Acceptance: one local-time worker holds a process lock; job claims make scheduled messages at-most-once; Garmin sync and morning data polling, morning/day/weekly reviews, proposal buttons, quiet hours, pause/resume and optional auto-opinions are covered by mocked tests. The worker creates proposals but never applies them. A disposable copy is upgraded before a fake-clock, fake-Telegram day run.
+- Operational limit: Telegram has no idempotency key. Only explicit 429 rejections are retried; a timeout is recorded as uncertain and not resent automatically. Existing working databases need the backup-first 0011 upgrade before starting the worker or web app.
 
 ### 7. Open-source packaging
 

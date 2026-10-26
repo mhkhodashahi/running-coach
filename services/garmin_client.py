@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import json
 from abc import ABC, abstractmethod
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, BinaryIO
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 from garminconnect import (
@@ -16,6 +17,7 @@ from garminconnect import (
     GarminConnectTooManyRequestsError,
 )
 
+from config import get_settings
 from services import garmin_normalization as gn
 from services.garmin_normalization import (
     extract_activity_laps,
@@ -434,7 +436,7 @@ class GarminAPIClient(GarminClient):
 
     def sync_recent_data(self, user_id: int, days: int, health_days: int) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         client = self._get_client()
-        today = date.today()
+        today = datetime.now(ZoneInfo(get_settings().local_timezone)).date()
         activities_start = today - timedelta(days=max(days - 1, 0))
         activities_raw = self._call_api(
             lambda: client.get_activities_by_date(

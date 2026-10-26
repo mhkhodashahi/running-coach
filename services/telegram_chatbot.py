@@ -8,15 +8,17 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from coach.proposals import list_proposals, monday
+from coach.proposals import apply, dismiss, get_proposal, list_proposals, monday
 from config import Settings, get_settings
 from db.session import session_scope
 from db.setup import init_db
 from services.daily_decision_service import get_or_create_daily_decision
-from services.effort_service import dispatch_effort_prompts, rate_activity
+from services.effort_service import rate_activity
 from services.telegram_service import TelegramService
 from services.training_chat_service import TrainingChatService
 from services.weekly_plan_service import get_weekly_plan
+from worker.jobs import day_review_message
+from worker.state import save_preferences
 
 
 @dataclass(frozen=True)
@@ -48,6 +50,25 @@ class TelegramTrainingChatBot:
             if not self._authorized(chat_id):
                 return TelegramHandleResult(handled=True, authorized=False)
             parts = str(callback.get("data") or "").split(":")
+            if len(parts) == 3 and parts[0] == "proposal" and parts[1].isdigit():
+                try:
+                    proposal_id = int(parts[1])
+                    proposal = get_proposal(self.settings.db_path, self.settings.default_user_id, proposal_id)
+                    if parts[2] == "apply":
+                        ids = [change["id"] for change in proposal["changes"]]
+                        apply(self.settings.db_path, self.settings.default_user_id, proposal_id, ids)
+                        reply = "Proposal applied."
+                    elif parts[2] == "dismiss":
+                        dismiss(self.settings.db_path, self.settings.default_user_id, proposal_id)
+                        reply = "Proposal dismissed."
+                    elif parts[2] == "review":
+                        reply = "Review each change in the app: " + self.settings.web_public_url + "/plan"
+                    else:
+                        return TelegramHandleResult(handled=False)
+                except (ValueError, KeyError) as exc:
+                    reply = str(exc)
+                self.telegram_service.acknowledge_callback(str(callback.get("id") or ""), reply)
+                return TelegramHandleResult(handled=True, reply=reply)
             if len(parts) != 3 or parts[0] != "rpe" or not parts[1].isdigit() or not parts[2].isdigit():
                 return TelegramHandleResult(handled=False)
             try:
@@ -87,7 +108,6 @@ class TelegramTrainingChatBot:
 
         offset: int | None = None
         while True:
-            dispatch_effort_prompts(self.settings, self.settings.default_user_id, self.telegram_service)
             updates = self.telegram_service.get_updates(offset=offset, timeout=poll_timeout)
             for update in updates:
                 update_id = update.get("update_id")
@@ -110,13 +130,20 @@ class TelegramTrainingChatBot:
                 "- What was my weekly mileage?\n"
                 "- Am I on track for my running goal?\n"
                 "- What should I do tomorrow?"
-                "\n\nPlan: /plan [MONDAY] shows the week and pending proposals. "
-                "Review and apply changes in the app."
+                "\n\nCommands: /today, /plan [MONDAY], /review, /pause, /resume. "
+                "Proposal buttons can apply all or dismiss; review individual changes in the app."
             )
         if command.startswith("/plan"):
             return self._plan_command(text)
         if command == "/status":
             return self.chat_service.answer("Give me a concise current training status.").text
+        if command in ("/pause", "/resume"):
+            save_preferences(self.settings.db_path, self.settings.default_user_id,
+                             {"paused": command == "/pause"})
+            return "Scheduled messages paused." if command == "/pause" else "Scheduled messages resumed."
+        if command == "/review":
+            day = datetime.now(ZoneInfo(self.settings.local_timezone)).date()
+            return day_review_message(self.settings, day)
         if command == "/today":
             day = datetime.now(ZoneInfo(self.settings.local_timezone)).date()
             decision = get_or_create_daily_decision(day, settings=self.settings)

@@ -111,8 +111,8 @@ def dispatch_effort_prompts(settings: object, user_id: int, telegram: object) ->
             message += "\nCR-10: 0 rest · 3 moderate · 5 hard · 7 very hard · 10 maximal"
             if reminder:
                 message = "Reminder: " + message
-            telegram.send_rating_prompt(message, activity.id)
             mark_prompt_sent(session, activity.id, reminder, datetime.now(UTC))
             session.commit()
+            telegram.send_rating_prompt(message, activity.id)
             sent += 1
     return sent

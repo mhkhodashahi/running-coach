@@ -8,6 +8,7 @@ import sqlite3
 import warnings
 from collections.abc import Iterator
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -18,6 +19,7 @@ from services.coach_facts import unsupported_text_numbers
 
 SPORTS = frozenset({"running", "gym", "football", "volleyball", "mobility"})
 TEAM_SPORTS = frozenset({"football", "volleyball"})
+SUPPRESS_PROPOSAL_NOTICE: ContextVar[bool] = ContextVar("suppress_proposal_notice", default=False)
 SESSION_FIELDS = ("id", "user_id", "date", "sport", "intent", "duration_min", "hr_cap_bpm",
                   "notes", "origin", "status", "linked_activity_id", "fixed_commitment_id")
 
@@ -372,6 +374,8 @@ def create_proposal(database: Path, user_id: int, kind: str, summary: str,
 
 
 def _notify_created(database: Path, user_id: int, summary: str) -> None:
+    if SUPPRESS_PROPOSAL_NOTICE.get():
+        return
     from config import get_settings
     from services.telegram_service import TelegramService
 

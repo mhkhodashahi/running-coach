@@ -750,7 +750,8 @@ def _context(database: Path, user_id: int, start: date, settings: Settings,
 
 def propose_week(start: date, *, settings: Settings | None = None, user_id: int | None = None,
                  llm: Any | None = None, today: date | None = None,
-                 revision_of: int | None = None, revision_text: str | None = None) -> dict[str, Any]:
+                 revision_of: int | None = None, revision_text: str | None = None,
+                 code_only: bool = False) -> dict[str, Any]:
     settings = settings or get_settings()
     user_id = user_id or settings.default_user_id
     start = monday(start)
@@ -759,9 +760,10 @@ def propose_week(start: date, *, settings: Settings | None = None, user_id: int 
     materialize_week(settings.db_path, user_id, start)
     week, facts, model, decisions, running_goal, habits, z2_cap, load_ratio, week_readiness, longest_run = _context(
         settings.db_path, user_id, start, settings, today)
-    client = llm or get_llm_client(settings.llm_provider, settings.openai_api_key, settings.openai_model,
-                                   settings.ollama_base_url, settings.ollama_model)
-    if settings.llm_provider in ("openai", "chatgpt") and not (
+    client = None if code_only else llm or get_llm_client(
+        settings.llm_provider, settings.openai_api_key, settings.openai_model,
+        settings.ollama_base_url, settings.ollama_model)
+    if not code_only and settings.llm_provider in ("openai", "chatgpt") and not (
             settings.allow_remote_llm and settings.remote_athlete_data_approved):
         raise PermissionError("Remote planning is disabled until athlete-data sharing is approved in .env")
     payload = {"week": week, "facts": facts, "load_rates": {f"{sport}:{intent}": round(rate, 3)
@@ -786,6 +788,11 @@ def propose_week(start: date, *, settings: Settings | None = None, user_id: int 
         payload["code_built_changes"] = build.changes
         payload["load_preview"] = week_load_breakdown(list(build.candidate), model, start)
         payload["code_summary"] = build.summary
+    if code_only and build is not None:
+        if not build.changes:
+            return {"status": build.status, "summary": build.summary, "changes": []}
+        return create_proposal(settings.db_path, user_id, "weekly_plan", build.summary,
+                               facts, list(build.changes), base_version=week["version"])
     prompt = json.dumps(payload, default=str)
     with _user_lock(settings.db_path, user_id):
         agent = CoachAgent(settings, client, user_id)

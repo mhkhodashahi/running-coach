@@ -19,7 +19,7 @@ from db.repository import get_or_create_default_goal, get_or_create_default_user
 from scripts.backup_db import backup_database
 
 SCHEMA = Path(__file__).parents[1] / "db/migrations/baseline.sql"
-HEAD = "0010_activity_efforts"
+HEAD = "0011_worker_jobs"
 PLAN_TABLES = ("fixed_commitments", "plan_sessions", "plan_versions", "plan_snapshots",
                "coach_proposals", "proposal_changes")
 
@@ -36,6 +36,7 @@ def snapshot(database):
             "activity_coaching_opinion_history", "coach_chat_turns", "coach_llm_calls",
             *PLAN_TABLES, "protected_habits", "plan_mobility_sessions",
             "activity_efforts", "activity_effort_prompts",
+            "job_runs", "notification_settings",
         }]
         counts = {table: connection.execute(f'SELECT count(*) FROM "{table}"').fetchone()[0] for table in old_tables}
         payloads = {}
@@ -116,7 +117,7 @@ def test_fresh_upgrade_and_default_user(tmp_path):
     database = tmp_path / "fresh.db"
     assert upgrade_database(database) is None
     with closing(sqlite3.connect(database)) as connection:
-        assert len(tables(connection)) == 28
+        assert len(tables(connection)) == 30
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (HEAD,)
         columns = {row[1]: row for row in connection.execute("PRAGMA table_info(activity_coaching_insights)")}
         for name in ("schema_version", "prompt_version"):
@@ -132,6 +133,14 @@ def test_fresh_upgrade_and_default_user(tmp_path):
         assert "plan_mobility_sessions" in tables(connection)
         assert "activity_efforts" in tables(connection)
         assert "activity_effort_prompts" in tables(connection)
+        assert "job_runs" in tables(connection)
+        assert "notification_settings" in tables(connection)
+        assert {row[1] for row in connection.execute("PRAGMA table_info(job_runs)")} == {
+            "id", "user_id", "job", "run_date", "status", "started_at", "finished_at",
+            "attempts", "error", "message_text"}
+        assert {row[1] for row in connection.execute("PRAGMA table_info(notification_settings)")} == {
+            "user_id", "morning_enabled", "morning_latest", "day_review_time", "weekly_weekday",
+            "weekly_time", "quiet_start", "quiet_end", "morning_llm", "day_llm", "weekly_llm", "paused"}
         assert "version_before" in {row[1] for row in connection.execute("PRAGMA table_info(plan_snapshots)")}
         assert "linked_activity_id" in {row[1] for row in connection.execute("PRAGMA table_info(plan_sessions)")}
         assert "group_id" in {row[1] for row in connection.execute("PRAGMA table_info(proposal_changes)")}
@@ -319,7 +328,7 @@ def test_missing_tables_are_created_without_adding_body_tables(tmp_path):
         connection.execute("CREATE TABLE users(id INTEGER PRIMARY KEY, age INTEGER, gender VARCHAR(20), weight FLOAT, height FLOAT, max_hr INTEGER)")
     upgrade_database(database)
     with closing(sqlite3.connect(database)) as connection:
-        assert len(tables(connection)) == 26
+        assert len(tables(connection)) == 28
         assert "prediction_snapshots" in tables(connection)
         assert "garmin_sync_status" in tables(connection)
 

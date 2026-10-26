@@ -16,6 +16,7 @@ from services.training_chat_service import TrainingChatReply, TrainingChatServic
 from web.formatting import short_date
 from web.plan_page import plan_context
 from web.today import sync_label
+from worker.state import history as worker_history
 
 COACH_DATA_LIST = ("Activities", "Laps", "Samples", "Health metrics", "Metrics snapshot",
                    "Goals", "Planned intents", "Plan", "Effort ratings", "Running memory")
@@ -66,7 +67,9 @@ def coach_context(settings: Settings, day: date, *, reply: TrainingChatReply | N
             "question": question, "attached_id": attached_id,
             "sessions": recent, "days": days, "data_list": COACH_DATA_LIST,
             "calls": calls, "call_limit": settings.coach_daily_call_limit,
-            "sync": sync_label(settings, day)}
+            "sync": sync_label(settings, day),
+            "messages": [row for row in worker_history(settings.db_path, settings.default_user_id)
+                         if row["message_text"] and row["job"] in ("morning", "day_review", "weekly_review")]}
 
 
 def ask_coach(settings: Settings, day: date, question: str, activity_id: int | None,

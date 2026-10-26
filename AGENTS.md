@@ -38,6 +38,7 @@ Read this file before every task. If a task conflicts with it, stop and say so.
 - **Readiness v1** constants live in `metrics/readiness.py` and are tuned by the owner; do not change them unasked.
 - **Facts before words:** code, not the LLM, builds a facts pack for each session: rounded display values with IDs, the detected intent (from HR-zone distribution), and data-quality notes. The LLM judges and writes, and cites fact IDs; code turns those IDs into the stored `evidence`. The LLM never writes `data_notes`, never sets `intent.detected`, and never introduces a number that is not in the facts pack.
 - **Decision before words:** the daily intensity (rest | easy | hard) and the sport ranking are decided by code rules in `coach/decision.py` (constants in one place, tuned by the owner). The LLM only explains the decision and cannot change it.
+- **Scheduler (milestone 6):** one long-running worker process (`python -m worker`) runs all timed jobs in the local timezone. Every job is idempotent: a `job_runs` record per job and day prevents duplicate messages, and a lock allows only one worker. Jobs only sync, compute, notify and create proposals; they never apply plan changes. Automatic LLM use by jobs is opt-in per job in Settings.
 - **LLM provider:** the owner chooses per install (local Ollama or a remote API). Never send athlete data to a remote provider without the owner's explicit approval in config.
 
 ## Target architecture

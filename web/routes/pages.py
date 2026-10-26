@@ -33,6 +33,7 @@ from web.settings_page import (
     import_csv,
     save_goal,
     save_local_config,
+    save_messages,
     save_profile,
     settings_context,
     sync_now,
@@ -301,6 +302,15 @@ def _settings(request: Request, *, message: str = "", error: str = ""):
 @router.get("/settings", response_class=HTMLResponse)
 def settings_page(request: Request):
     return _settings(request)
+
+
+@router.post("/settings/messages", response_class=HTMLResponse)
+async def messages_save(request: Request):
+    try:
+        save_messages(request.app.state.settings, dict(await request.form()))
+    except (ValueError, KeyError) as exc:
+        return _settings(request, error=str(exc))
+    return _settings(request, message="Message settings saved")
 
 
 @router.post("/settings/profile", response_class=HTMLResponse)

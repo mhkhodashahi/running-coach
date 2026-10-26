@@ -5,7 +5,7 @@
 {% if message %}<p class="settings-notice" role="status">✓ {{ message }}</p>{% endif %}
 {% if error %}<p class="settings-error" role="alert">{{ error }}</p>{% endif %}
 <div class="settings-layout">
-  <nav class="settings-nav" aria-label="Settings sections"><a href="#profile">Profile</a><a href="#zones">Heart-rate zones</a><a href="#sleep">Sleep goal</a><a href="#goals">Goals</a><a href="#data">Data</a><a href="#coach-settings">Coach</a></nav>
+  <nav class="settings-nav" aria-label="Settings sections"><a href="#profile">Profile</a><a href="#zones">Heart-rate zones</a><a href="#sleep">Sleep goal</a><a href="#goals">Goals</a><a href="#data">Data</a><a href="#coach-settings">Coach</a><a href="#messages">Messages</a></nav>
   <div class="settings-content">
     <section id="profile" class="settings-section"><h2>Profile</h2>
       <form method="post" action="/settings/profile" class="settings-form">
@@ -37,6 +37,23 @@
       <form method="post" action="/settings/import" enctype="multipart/form-data" class="settings-form"><label>Activities CSV<input type="file" name="activities_file" accept=".csv,text/csv"></label><label>Health metrics CSV<input type="file" name="health_file" accept=".csv,text/csv"></label><div class="settings-actions"><button class="button button-secondary" type="submit">Import CSV</button></div></form>
     </section>
     <section id="coach-settings" class="settings-section"><h2>Coach</h2><dl class="settings-facts"><div><dt>Provider</dt><dd>{{ provider }}</dd></div><div><dt>Model</dt><dd>{{ model }}</dd></div><div><dt>Remote athlete-data sharing</dt><dd>{{ 'On' if remote_sharing else 'Off' }}</dd></div><div><dt>Calls today</dt><dd>{{ usage }} of {{ call_limit }}</dd></div></dl></section>
+    <section id="messages" class="settings-section"><h2>Messages</h2>
+      <form method="post" action="/settings/messages" class="settings-form">
+        <label><input type="checkbox" name="morning_enabled" {% if messages.morning_enabled %}checked{% endif %}> Morning call</label>
+        <label>Latest morning time<input type="time" name="morning_latest" value="{{ messages.morning_latest }}"></label>
+        <label>Day review<input type="time" name="day_review_time" value="{{ messages.day_review_time }}"></label>
+        <label>Weekly day<select name="weekly_weekday">{% for index,label in [(0,'Monday'),(1,'Tuesday'),(2,'Wednesday'),(3,'Thursday'),(4,'Friday'),(5,'Saturday'),(6,'Sunday')] %}<option value="{{ index }}" {% if messages.weekly_weekday == index %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
+        <label>Weekly time<input type="time" name="weekly_time" value="{{ messages.weekly_time }}"></label>
+        <label>Quiet from<input type="time" name="quiet_start" value="{{ messages.quiet_start }}"></label>
+        <label>Quiet until<input type="time" name="quiet_end" value="{{ messages.quiet_end }}"></label>
+        <label><input type="checkbox" name="morning_llm" {% if messages.morning_llm %}checked{% endif %}> Use AI in morning call</label>
+        <label><input type="checkbox" name="day_llm" {% if messages.day_llm %}checked{% endif %}> Use AI in day review</label>
+        <label><input type="checkbox" name="weekly_llm" {% if messages.weekly_llm %}checked{% endif %}> Use AI in weekly review</label>
+        <div class="settings-actions"><button class="button button-secondary" type="submit">Save messages</button></div>
+      </form>
+      <p>Worker {{ 'running' if worker_running else 'not running' }}. {{ 'Scheduled messages paused' if messages.paused else 'Scheduled messages active' }}.</p>
+      <h3>Recent worker jobs</h3><ul>{% for row in worker_runs %}<li>{{ row.run_date }} · {{ row.job }} · {{ row.status }}{% if row.error %} · {{ row.error }}{% endif %}</li>{% else %}<li>No worker jobs yet.</li>{% endfor %}</ul>
+    </section>
   </div>
 </div>
 {% endblock %}

@@ -14,6 +14,7 @@ from services.daily_decision_service import build_daily_decision
 from services.import_service import ImportSummary
 from web.app import create_app
 from web.settings_page import save_local_config
+from worker.state import preferences
 
 
 @pytest.fixture
@@ -112,3 +113,17 @@ def test_sync_runs_existing_service_and_reports_result(settings, monkeypatch):
         assert response.status_code == 200
         status = client.get("/settings/sync/status")
         assert "Imported 2 activities, 3 health days" in status.text
+
+
+def test_messages_settings_validate_and_save(settings):
+    payload = {"morning_enabled": "on", "morning_latest": "09:30", "day_review_time": "17:15",
+               "weekly_weekday": "6", "weekly_time": "18:30", "quiet_start": "22:00",
+               "quiet_end": "06:00", "weekly_llm": "on"}
+    with TestClient(create_app(settings, password="")) as client:
+        assert "Message settings saved" in client.post("/settings/messages", data=payload).text
+        assert "Invalid morning_latest time" in client.post(
+            "/settings/messages", data=payload | {"morning_latest": "bad"}).text
+        assert "Messages" in client.get("/coach").text
+    saved = preferences(settings.db_path, settings.default_user_id)
+    assert saved["morning_latest"] == "09:30"
+    assert saved["weekly_llm"] == 1
