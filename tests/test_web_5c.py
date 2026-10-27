@@ -110,6 +110,52 @@ def test_revision_route_supersedes_without_applying(data, monkeypatch):
     assert not get_week(settings.db_path, settings.default_user_id, start)["sessions"]
 
 
+def test_revision_without_provider_renders_plan_error_and_keeps_proposal(data):
+    settings, day = data
+    created, _, _ = proposal(settings, day)
+    with TestClient(create_app(settings, password="")) as client:
+        response = client.post(f"/plan/proposals/{created['id']}/revise",
+                               data={"revision": "Move the run to Wednesday"})
+    assert response.status_code == 409
+    assert "text/html" in response.headers["content-type"]
+    assert "configured coach model" in response.text
+    assert "role=\"alert\"" in response.text
+    assert get_proposal(settings.db_path, settings.default_user_id, created["id"])["status"] == "pending"
+
+
+def test_plan_now_buttons_route_to_the_requested_day(data, monkeypatch):
+    settings, day = data
+    targets = []
+    week_starts = []
+
+    def fake_day(_settings, today, target):
+        assert today == day
+        targets.append(target)
+        return {"status": "already_planned", "summary": "This day already has a planned session."}
+
+    def fake_week(_settings, today, start, _llm):
+        assert today == day
+        week_starts.append(start)
+        return {"status": "no_safe_change", "summary": "No safe sessions to add."}
+
+    monkeypatch.setattr("web.routes.pages.create_day", fake_day)
+    monkeypatch.setattr("web.routes.pages.create_week", fake_week)
+    with TestClient(create_app(settings, password="")) as client:
+        page = client.get("/plan")
+        for label in ("Plan today", "Plan tomorrow", "Plan this week", "Plan next week"):
+            assert label in page.text
+        for when in ("today", "tomorrow"):
+            response = client.post("/plan/day", data={"when": when})
+            assert response.status_code == 200
+            assert "This day already has a planned session." in response.text
+        current_week = day - timedelta(days=day.weekday())
+        assert client.post("/plan/week", data={"start": current_week.isoformat()}).status_code == 200
+        assert client.post("/plan/week", data={"start": (current_week + timedelta(days=7)).isoformat()}).status_code == 200
+        assert client.post("/plan/day", data={"when": "yesterday"}).status_code == 400
+    assert targets == [day, day + timedelta(days=1)]
+    assert week_starts == [current_week, current_week + timedelta(days=7)]
+
+
 def test_apply_route_accepts_entire_change_group(data):
     settings, day = data
     fill_data(settings, day)

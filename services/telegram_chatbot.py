@@ -18,6 +18,7 @@ from services.telegram_service import TelegramService
 from services.training_chat_service import TrainingChatService
 from services.weekly_plan_service import get_weekly_plan
 from worker.jobs import day_review_message
+from worker.messages import public_link
 from worker.state import save_preferences
 
 
@@ -62,11 +63,16 @@ class TelegramTrainingChatBot:
                         dismiss(self.settings.db_path, self.settings.default_user_id, proposal_id)
                         reply = "Proposal dismissed."
                     elif parts[2] == "review":
-                        reply = "Review each change in the app: " + self.settings.web_public_url + "/plan"
+                        link = public_link(self.settings.public_url, "/plan")
+                        reply = "Review each change in the app: " + link if link else "Review each change in the app."
                     else:
                         return TelegramHandleResult(handled=False)
                 except (ValueError, KeyError) as exc:
-                    reply = str(exc)
+                    if "stale" in str(exc).lower() or "out of date" in str(exc).lower():
+                        reply = ("This proposal is out of date because your plan changed. "
+                                 "Send /plan or open the app for a fresh one.")
+                    else:
+                        reply = "That proposal could not be changed. Send /plan to review it."
                 self.telegram_service.acknowledge_callback(str(callback.get("id") or ""), reply)
                 return TelegramHandleResult(handled=True, reply=reply)
             if len(parts) != 3 or parts[0] != "rpe" or not parts[1].isdigit() or not parts[2].isdigit():

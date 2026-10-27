@@ -17,6 +17,7 @@ from services.telegram_chatbot import TelegramTrainingChatBot
 from services.telegram_service import TelegramService
 from worker import jobs
 from worker.__main__ import acquire_lock
+from worker.messages import OutboundMessage
 from worker.state import history, in_quiet_hours, preferences, save_preferences
 
 
@@ -25,6 +26,12 @@ class FakeTelegram:
 
     def __init__(self):
         self.messages = []
+        self.keyboards = []
+
+    def send_message(self, html, keyboard=(), plain=None):
+        del plain
+        self.messages.append(html)
+        self.keyboards.append(keyboard)
 
     def send_text(self, text, recipient=None):
         del recipient
@@ -62,7 +69,7 @@ def _clock(hour, minute=0):
 def test_morning_waits_and_sends_once_after_sleep_and_hrv(worker_db, monkeypatch):
     settings = _settings(worker_db)
     telegram = FakeTelegram()
-    monkeypatch.setattr(jobs, "morning_message", lambda *_args, **_kwargs: "Morning decision")
+    monkeypatch.setattr(jobs, "morning_payload", lambda *_args, **_kwargs: "Morning decision")
     monkeypatch.setattr(jobs, "dispatch_effort_prompts", lambda *_args: 0)
     jobs.tick(settings, _clock(7), telegram, sync_job=lambda: None)
     assert telegram.messages == []
@@ -76,17 +83,42 @@ def test_morning_waits_and_sends_once_after_sleep_and_hrv(worker_db, monkeypatch
 
 def test_latest_morning_fallback_and_restart(worker_db, monkeypatch):
     telegram = FakeTelegram()
-    monkeypatch.setattr(jobs, "morning_message", lambda *_args, **_kwargs: "Provisional, based on yesterday")
+    monkeypatch.setattr(jobs, "morning_payload", lambda *_args, **_kwargs: "Provisional, based on yesterday")
     monkeypatch.setattr(jobs, "dispatch_effort_prompts", lambda *_args: 0)
     jobs.tick(_settings(worker_db), _clock(10), telegram, sync_job=lambda: None)
     jobs.tick(_settings(worker_db), _clock(10, 1), telegram, sync_job=lambda: None)
     assert telegram.messages == ["Provisional, based on yesterday"]
 
 
+@pytest.mark.parametrize("new_intensity,expected_updates", [("hard", 1), ("easy", 0)])
+def test_late_health_data_sends_only_changed_intensity_once(worker_db, monkeypatch,
+                                                             new_intensity, expected_updates):
+    from types import SimpleNamespace
+
+    settings = _settings(worker_db)
+    telegram = FakeTelegram()
+    monkeypatch.setattr(jobs, "dispatch_effort_prompts", lambda *_args: 0)
+    monkeypatch.setattr(jobs, "morning_payload", lambda *_args, **_kwargs: OutboundMessage(
+        "<b>Easy day — waiting for your data</b>", "Easy day — waiting for your data"))
+    jobs.tick(settings, _clock(10), telegram, sync_job=lambda: None)
+    assert len(telegram.messages) == 1
+    with sqlite3.connect(worker_db) as db:
+        db.execute("INSERT INTO health_metrics(user_id,date,sleep_duration,hrv) VALUES(1,'2026-10-26',8,60)")
+    monkeypatch.setattr(jobs, "_decision", lambda *_args: SimpleNamespace(
+        intensity=new_intensity, headline=f"{new_intensity.title()} today.", rule="hard_allowed",
+        facts=({"id": "LOAD_RATIO", "display": "0.99"},)))
+    jobs.tick(settings, _clock(11, 30), telegram, sync_job=lambda: None)
+    jobs.tick(settings, _clock(11, 31), telegram, sync_job=lambda: None)
+    assert len(telegram.messages) == 1 + expected_updates
+    if expected_updates:
+        assert telegram.messages[-1] == f"<b>Data is in. {new_intensity.title()} today: load 0.99, normal.</b>"
+    assert len([row for row in history(worker_db, 1) if row["job"] == "morning_update"]) == 1
+
+
 def test_quiet_hours_pause_and_lock(worker_db, monkeypatch):
     telegram = FakeTelegram()
     monkeypatch.setattr(jobs, "health_ready", lambda *_args: True)
-    monkeypatch.setattr(jobs, "morning_message", lambda *_args, **_kwargs: "Morning")
+    monkeypatch.setattr(jobs, "morning_payload", lambda *_args, **_kwargs: "Morning")
     monkeypatch.setattr(jobs, "dispatch_effort_prompts", lambda *_args: 0)
     save_preferences(worker_db, 1, {"quiet_start": "06:00", "quiet_end": "08:00"})
     jobs.tick(_settings(worker_db), _clock(7), telegram, sync_job=lambda: None)
@@ -127,7 +159,51 @@ def test_telegram_redacts_token_in_transport_error(monkeypatch):
     assert "secret" not in str(error.value)
 
 
-def test_proposal_keyboard_contains_apply_dismiss_and_review(monkeypatch):
+def test_html_transport_sets_parse_mode_and_inline_keyboard(monkeypatch):
+    sent = []
+
+    class Response:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"ok": True}
+
+    monkeypatch.setattr("requests.post", lambda _url, **kwargs: (sent.append(kwargs["json"]), Response())[1])
+    TelegramService(_settings(__import__("pathlib").Path("/tmp/unused.db"))).send_message(
+        "<b>Easy day</b>", (({"text": "0", "callback_data": "rpe:1:0"},),))
+    assert sent[0]["parse_mode"] == "HTML"
+    assert sent[0]["reply_markup"]["inline_keyboard"][0][0]["callback_data"] == "rpe:1:0"
+
+
+def test_html_rejection_uses_plain_text_fallback_with_keyboard(monkeypatch):
+    sent = []
+
+    class Response:
+        def __init__(self, status):
+            self.status_code = status
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"ok": self.status_code == 200,
+                    "description": "Bad Request: can't parse entities"}
+
+    def post(_url, **kwargs):
+        sent.append(kwargs["json"])
+        return Response(400 if len(sent) == 1 else 200)
+
+    monkeypatch.setattr("requests.post", post)
+    result = TelegramService(_settings(__import__("pathlib").Path("/tmp/unused.db"))).send_message(
+        "<b>Morning</b>", (({"text": "0", "callback_data": "rpe:1:0"},),), "Morning")
+    assert result == "plain"
+    assert len(sent) == 2
+    assert sent[1]["text"] == "Morning" and "parse_mode" not in sent[1]
+    assert sent[1]["reply_markup"] == sent[0]["reply_markup"]
+
+
+def test_proposal_keyboard_has_link_only_with_public_url(monkeypatch):
     captured = {}
 
     class Response:
@@ -142,10 +218,14 @@ def test_proposal_keyboard_contains_apply_dismiss_and_review(monkeypatch):
         return Response()
 
     monkeypatch.setattr("requests.post", post)
-    TelegramService(_settings(__import__("pathlib").Path("/tmp/unused.db"))).send_proposal_prompt("Review", 7)
+    settings = _settings(__import__("pathlib").Path("/tmp/unused.db"))
+    TelegramService(settings).send_proposal_prompt("Review", 7)
     buttons = captured["reply_markup"]["inline_keyboard"]
     assert {button["callback_data"] for row in buttons for button in row} == {
-        "proposal:7:apply", "proposal:7:dismiss", "proposal:7:review"}
+        "proposal:7:apply", "proposal:7:dismiss"}
+    TelegramService(replace(settings, public_url="https://example.org")).send_proposal_prompt("Review", 7)
+    assert captured["reply_markup"]["inline_keyboard"][-1][0]["url"] == "https://example.org/plan"
+    assert captured["parse_mode"] == "HTML"
 
 
 def test_garmin_retry_has_bounded_backoff():
@@ -191,8 +271,7 @@ def test_telegram_retries_explicit_rejection_only(monkeypatch):
 
 def test_day_review_dispatches_rating_keyboard_once(worker_db, monkeypatch):
     telegram = FakeTelegram()
-    monkeypatch.setattr(jobs, "day_review_message", lambda *_args, **_kwargs: "Day review")
-    monkeypatch.setattr(jobs, "_send_with_proposal", lambda _settings, service, _day, text: service.send_text(text))
+    monkeypatch.setattr(jobs, "day_review_payload", lambda *_args, **_kwargs: "Day review")
     calls = []
 
     def prompt(_settings, _user_id, service):
@@ -206,6 +285,25 @@ def test_day_review_dispatches_rating_keyboard_once(worker_db, monkeypatch):
     assert telegram.messages[-2:] == ["Day review", "rating 42: How hard?"]
 
 
+def test_day_review_uses_stored_minutes_for_extra_session(worker_db):
+    with sqlite3.connect(worker_db) as db:
+        db.execute("INSERT INTO activities(user_id,date,type,distance,duration,avg_hr) "
+                   "VALUES(1,'2026-10-26','running',5,30,140)")
+    payload = jobs.day_review_payload(_settings(worker_db), _clock(17).date())
+    assert "Running 30 min (extra)" in payload.plain
+    assert "Running 0 min" not in payload.plain
+
+
+def test_worker_rating_prompt_uses_shared_recent_selector(worker_db):
+    with sqlite3.connect(worker_db) as db:
+        db.execute("INSERT INTO activities(user_id,date,type,distance,duration) "
+                   "VALUES(1,'2026-10-20','running',5,30)")
+        db.execute("INSERT INTO activities(user_id,date,type,distance,duration) "
+                   "VALUES(1,'2026-10-26','running',5,30)")
+    found = jobs._unrated(_settings(worker_db), _clock(17))
+    assert len(found) == 1 and "Mon 26 Oct" in found[0][1]
+
+
 def test_weekly_review_proposes_without_applying(worker_db, monkeypatch):
     settings = _settings(worker_db)
     seen = []
@@ -213,9 +311,6 @@ def test_weekly_review_proposes_without_applying(worker_db, monkeypatch):
     monkeypatch.setattr(jobs, "propose_week", lambda *_args, **kwargs: (
         seen.append(kwargs), {"summary": "Invented plan"})[1])
     monkeypatch.setattr(jobs, "get_week", lambda *_args: {"sessions": []})
-    monkeypatch.setattr(jobs, "get_daily_snapshot", lambda *_args, **_kwargs: __import__("types").SimpleNamespace(
-        sessions=[], readiness=__import__("types").SimpleNamespace(
-            score=__import__("types").SimpleNamespace(value=None))))
     monkeypatch.setattr(jobs, "load_model", lambda *_args: __import__("types").SimpleNamespace(cap=None))
     text = jobs.weekly_message(settings, _clock(18).date(), use_llm=False)
     assert seen[0]["code_only"] is True
@@ -235,8 +330,10 @@ def test_proposal_button_refuses_stale_and_keeps_allowlist(worker_db, monkeypatc
     authorized = {"callback_query": {"id": "x", "data": "proposal:1:apply",
                                     "message": {"chat": {"id": 1}}}}
     assert not bot.handle_update(unauthorized).authorized
-    assert "stale" in bot.handle_update(authorized).reply
-    assert telegram.messages == ["Proposal is stale because the plan changed"]
+    expected = ("This proposal is out of date because your plan changed. "
+                "Send /plan or open the app for a fresh one.")
+    assert bot.handle_update(authorized).reply == expected
+    assert telegram.messages == [expected]
 
 
 def test_pause_command_prevents_scheduled_message(worker_db):
@@ -304,10 +401,11 @@ def test_scheduled_daily_decision_suppresses_immediate_proposal_notice(worker_db
     def decision(*_args, **_kwargs):
         assert SUPPRESS_PROPOSAL_NOTICE.get() is True
         return SimpleNamespace(headline="Easy today.", explanation="Take it easy.", readiness=60,
-                               provisional=False, sports=(), intensity="easy")
+                               provisional=False, sports=(), intensity="easy", rule="otherwise_easy",
+                               based_on="2026-10-26")
 
     monkeypatch.setattr(jobs, "get_or_create_daily_decision", decision)
     monkeypatch.setattr(jobs, "_planned", lambda *_args: [])
     text = jobs.morning_message(_settings(worker_db), _clock(10).date(), use_llm=False)
-    assert "Easy today" in text
+    assert "Easy day" in text
     assert SUPPRESS_PROPOSAL_NOTICE.get() is False

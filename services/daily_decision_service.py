@@ -22,6 +22,7 @@ from coach.decision import (
     SPORT_WINDOW,
     TEAM_SPORTS,
     PriorSession,
+    cap_stale_intensity,
     decide_intensity,
     is_hard_session,
     provisional_day,
@@ -38,6 +39,7 @@ from metrics.sports import RECOMMENDABLE_SPORTS, sport_category
 from services.coach_facts import unsupported_text_numbers
 from services.fact_display import ratio as format_ratio
 from services.fact_display import score as format_score
+from services.fact_display import signed_delta
 from services.hr_zones import heart_rate_zone_bounds
 
 PROMPT_VERSION = "daily-v2.3"
@@ -181,6 +183,8 @@ def build_daily_decision(requested: date, database: Path, user_id: int, timezone
     load_ratio = snapshot.load.ratio.value
     illness = snapshot.readiness.illness_flag.value
     intensity = decide_intensity(illness, readiness, load_ratio, recent, now)
+    if health and any(sleep is not None and hrv is not None for _, sleep, hrv in health):
+        intensity = cap_stale_intensity(intensity, requested, based_on)
     max_hr = user[0] or (220 - user[1] if user and user[1] else None) if user else None
     z2_cap = None
     if hr_zones:
@@ -208,7 +212,20 @@ def build_daily_decision(requested: date, database: Path, user_id: int, timezone
               "activities + HR zones"),
         _fact("BASED_ON_DATE", "Health day used", based_on.isoformat(), "health_metrics.date"),
         _fact("LAST_SYNC_TIME", "Last Garmin sync", sync_display, "garmin_sync_status.last_synced_at"),
+        _fact("TRAINING_SESSIONS_7D", "Training sessions in last 7 days",
+              f"{sum(now - timedelta(days=7) <= item.when < now for item in recent)} "
+              "sessions in the last 7 days", "activities.date,type"),
     ]
+    current = dict(snapshot.current_health)
+    baselines = {(item.field, item.days): item.mean.value for item in snapshot.baselines}
+    for fact_id, field, days, unit in (("RHR_DELTA", "resting_hr", 7, "bpm"),
+                                       ("HRV_DELTA", "hrv", 28, "ms")):
+        measured = current.get(field)
+        baseline = baselines.get((field, days))
+        display = (signed_delta(measured.value - baseline, unit)
+                   if measured and measured.value is not None and baseline is not None else None)
+        facts.append(_fact(fact_id, f"{field} versus baseline", display or "No data",
+                           f"health_metrics.{field} - {days}-day baseline"))
     if active_goal:
         facts.append(_fact("ACTIVE_GOAL", "Active goal",
                            f"{active_goal[1]:g} km {active_goal[0].replace('_', ' ')}",
@@ -265,10 +282,20 @@ def fallback_explanation(decision: DailyDecision) -> str:
     """Plain, rule-specific explanation without internal IDs or thresholds."""
     readiness = format_score(decision.readiness) or "No data"
     load_ratio = next((fact["display"] for fact in decision.facts if fact["id"] == "LOAD_RATIO"), "No data")
+    evidence = {fact["id"]: fact["display"] for fact in decision.facts}
+    rhr_delta, hrv_delta = evidence.get("RHR_DELTA"), evidence.get("HRV_DELTA")
+    illness_copy = (f"Rest today. Your resting HR is {rhr_delta} and HRV is {hrv_delta} "
+                    "vs your baseline. If this persists, see a doctor."
+                    if rhr_delta not in (None, "No data") and hrv_delta not in (None, "No data") else
+                    "Rest today. Your resting HR and HRV both point to strain. If this persists, see a doctor.")
+    health_day = date.fromisoformat(decision.based_on)
     sentences = {
-        "illness_signal": "Rest today. Your resting HR and HRV both point to strain. If this persists, see a doctor.",
+        "illness_signal": illness_copy,
         "readiness_below_30": f"Rest today. Readiness is {readiness}, so recovery takes priority.",
         "not_enough_data": "Keep today easy. There is not enough recovery data to support a hard session.",
+        "stale_data": (f"Your latest sleep and HRV are from "
+                       f"{health_day:%a} {health_day.day} {health_day:%b}. "
+                       "Open Garmin Connect to sync your watch; I'll update you."),
         "readiness_below_50": f"Keep today easy. Readiness is {readiness}, so protect recovery.",
         "load_ratio_above_1_5": ("Keep today easy. Your training load is well above your usual level "
                                    f"(load ratio {load_ratio})."),
@@ -333,10 +360,14 @@ def explain_decision(decision: DailyDecision, llm: Any | None = None,
     """The model receives no mutable choice fields; bad output cannot change the decision."""
     fallback = fallback_explanation(decision)
     defaults = ("How has my recovery changed?", "Which sessions affected today's load?")
+    if decision.rule == "stale_data":
+        return replace(decision, headline="Easy today.", explanation=fallback,
+                       evidence_ids=decision.rule_fact_ids, follow_ups=defaults, explanation_source="fallback")
     if llm is None:
         return replace(decision, headline=f"{decision.intensity.title()} today.", explanation=fallback,
                        evidence_ids=decision.rule_fact_ids, follow_ups=defaults, explanation_source="fallback")
-    explanation_fact_ids = {"READINESS", "LOAD_RATIO", "ILLNESS_FLAG", "HARD_LAST_48H", "HARD_LOOKBACK"}
+    explanation_fact_ids = {"READINESS", "LOAD_RATIO", "ILLNESS_FLAG", "HARD_LAST_48H", "HARD_LOOKBACK",
+                            "RHR_DELTA", "HRV_DELTA", "TRAINING_SESSIONS_7D"}
     context = {"intensity": decision.intensity,
                "top_sport": decision.sports[0]["sport"] if decision.sports else None,
                "facts": [fact for fact in decision.facts if fact["id"] in explanation_fact_ids and

@@ -90,6 +90,23 @@ def test_provisional_badge_has_short_date_without_sync(client, web_db):
     assert "last sync" not in coach.lower()
 
 
+def test_today_caps_stale_health_at_easy(client, web_db):
+    day = datetime.now(ZoneInfo("Europe/Berlin")).date()
+    with sqlite3.connect(web_db) as connection:
+        connection.execute("DELETE FROM health_metrics WHERE date>=?",
+                           ((day - timedelta(days=1)).isoformat(),))
+    response = client.get("/")
+    assert response.status_code == 200
+    assert "Open Garmin Connect to sync your watch" in response.text
+    with sqlite3.connect(web_db) as connection:
+        payload = connection.execute("SELECT payload_json FROM coaching_decisions WHERE decision_type='daily_v2' "
+                                     "ORDER BY id DESC LIMIT 1").fetchone()[0]
+    import json
+
+    assert json.loads(payload)["decision"]["rule"] == "stale_data"
+    assert json.loads(payload)["decision"]["intensity"] == "easy"
+
+
 @pytest.mark.parametrize("path", ["/", "/activities", "/activities/340", "/trends", "/coach", "/plan"])
 def test_routes_respond(client, path):
     assert client.get(path).status_code == 200
@@ -118,6 +135,16 @@ def test_rating_post_persists(client, web_db):
     assert response.status_code == 200
     with sqlite3.connect(web_db) as connection:
         assert connection.execute("SELECT rpe,source FROM activity_efforts WHERE activity_id=340").fetchone() == (7, "web")
+
+
+def test_today_does_not_prompt_for_old_unrated_activity(client, web_db):
+    day = datetime.now(ZoneInfo("Europe/Berlin")).date()
+    with sqlite3.connect(web_db) as connection:
+        connection.execute("UPDATE activities SET date=? WHERE id=340",
+                           ((day - timedelta(days=3)).isoformat(),))
+    response = client.get("/")
+    assert response.status_code == 200
+    assert "Rate your last session" not in response.text
 
 
 def test_recent_sessions_and_rating_target_exclude_walking_and_show_units(client, web_db):

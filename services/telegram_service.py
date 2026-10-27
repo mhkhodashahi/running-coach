@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import time
+from html import escape
 
 import requests
 
 from config import Settings
+from worker.messages import public_link
 
 
 class TelegramService:
@@ -35,6 +37,9 @@ class TelegramService:
                     delay = getattr(response, "headers", {}).get("Retry-After", 2 ** attempt)
                     time.sleep(min(30, max(1, int(delay))))
                     continue
+                if getattr(response, "status_code", None) == 400:
+                    detail = response.json().get("description", "Telegram rejected the request")
+                    raise RuntimeError(self.redact(str(detail)))
                 response.raise_for_status()
                 payload = response.json()
                 break
@@ -48,10 +53,33 @@ class TelegramService:
         if not self.configured:
             raise ValueError("Telegram settings are incomplete.")
         buttons = [[{"text": "Apply all", "callback_data": f"proposal:{proposal_id}:apply"},
-                    {"text": "Dismiss", "callback_data": f"proposal:{proposal_id}:dismiss"}],
-                   [{"text": "Review in app", "callback_data": f"proposal:{proposal_id}:review"}]]
+                    {"text": "Dismiss", "callback_data": f"proposal:{proposal_id}:dismiss"}]]
+        link = public_link(self.settings.public_url, "/plan")
+        if link:
+            buttons.append([{"text": "Review in app", "url": link}])
         self._request("POST", "sendMessage", json={"chat_id": self.settings.telegram_chat_id,
-                      "text": text, "reply_markup": {"inline_keyboard": buttons}}, timeout=30)
+                      "text": escape(text), "parse_mode": "HTML",
+                      "reply_markup": {"inline_keyboard": buttons}}, timeout=30)
+
+    def send_message(self, html: str, keyboard: tuple[tuple[dict[str, str], ...], ...] = (),
+                     plain: str | None = None) -> str:
+        """Send escaped, formatted worker text and its inline actions."""
+        if not self.configured:
+            raise ValueError("Telegram settings are incomplete.")
+        payload: dict = {"chat_id": self.settings.telegram_chat_id, "text": html,
+                         "parse_mode": "HTML", "disable_web_page_preview": True}
+        if keyboard:
+            payload["reply_markup"] = {"inline_keyboard": [list(row) for row in keyboard]}
+        try:
+            self._request("POST", "sendMessage", json=payload, timeout=30)
+        except RuntimeError as exc:
+            if plain is None or "parse entities" not in str(exc).lower():
+                raise
+            payload.pop("parse_mode")
+            payload["text"] = plain
+            self._request("POST", "sendMessage", json=payload, timeout=30)
+            return "plain"
+        return "html"
 
     def send(self, title: str, body: str, recipient: str | None = None) -> tuple[str, str]:
         chat_id = (recipient or self.settings.telegram_chat_id).strip()

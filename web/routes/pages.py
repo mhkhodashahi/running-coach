@@ -1,7 +1,7 @@
 """Thin HTML routes; business operations live in the existing services."""
 
 import json
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, BackgroundTasks, Form, HTTPException, Request, UploadFile
@@ -19,6 +19,7 @@ from web.activities import (
 from web.coach_page import ask_coach, coach_context
 from web.plan_page import (
     apply_groups,
+    create_day,
     create_week,
     dismiss_proposal,
     edit_plan_item,
@@ -228,10 +229,28 @@ def plan(request: Request):
 @router.post("/plan/week")
 def plan_week(request: Request, start: str = Form(...)):
     try:
-        create_week(request.app.state.settings, _day(request), date.fromisoformat(start), request.app.state.llm)
+        result = create_week(request.app.state.settings, _day(request), date.fromisoformat(start), request.app.state.llm)
     except (ValueError, RuntimeError, PermissionError) as exc:
-        raise HTTPException(400, str(exc)) from exc
-    return RedirectResponse("/plan", status_code=303)
+        return request.app.state.templates.TemplateResponse(
+            request, "plan.html", plan_context(request.app.state.settings, _day(request), error=str(exc)),
+            status_code=400)
+    return request.app.state.templates.TemplateResponse(
+        request, "plan.html", plan_context(request.app.state.settings, _day(request), notice=result["summary"]))
+
+
+@router.post("/plan/day", response_class=HTMLResponse)
+def plan_day(request: Request, when: str = Form(...)):
+    if when not in ("today", "tomorrow"):
+        raise HTTPException(400, "Choose today or tomorrow")
+    today = _day(request)
+    target = today if when == "today" else today + timedelta(days=1)
+    try:
+        result = create_day(request.app.state.settings, today, target)
+    except (ValueError, RuntimeError, PermissionError) as exc:
+        return request.app.state.templates.TemplateResponse(
+            request, "plan.html", plan_context(request.app.state.settings, today, error=str(exc)), status_code=400)
+    return request.app.state.templates.TemplateResponse(
+        request, "plan.html", plan_context(request.app.state.settings, today, notice=result["summary"]))
 
 
 @router.post("/plan/proposals/{proposal_id}/apply")
@@ -259,7 +278,8 @@ def plan_revise(request: Request, proposal_id: int, revision: str = Form(...)):
         revise_proposal(request.app.state.settings, _day(request), proposal_id, revision,
                         request.app.state.llm)
     except (ValueError, RuntimeError, PermissionError) as exc:
-        raise HTTPException(409, str(exc)) from exc
+        context = plan_context(request.app.state.settings, _day(request), error=str(exc))
+        return request.app.state.templates.TemplateResponse(request, "plan.html", context, status_code=409)
     return RedirectResponse("/plan", status_code=303)
 
 

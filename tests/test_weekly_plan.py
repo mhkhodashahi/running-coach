@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from dataclasses import replace
 from datetime import date, timedelta
@@ -28,6 +29,7 @@ from coach.planning import (
     load_model,
     long_run_limit,
     propose_daily_conflict,
+    propose_day,
     propose_opinion_recommendations,
     propose_requested_change,
     propose_week,
@@ -353,6 +355,103 @@ def test_plain_word_revision_uses_model_but_does_not_apply(database):
     assert get_proposal(database, 1, original["id"])["status"] == "superseded"
     assert revised["status"] == "pending"
     assert revised["changes"][0]["session"]["date"] == llm.day.isoformat()
+
+
+def test_revision_without_model_keeps_current_proposal(database):
+    settings = replace(get_settings(), db_path=database, llm_provider="none")
+    original = create_proposal(database, 1, "weekly_plan", "Keep easy work", FACTS, [change(START)])
+    with pytest.raises(ValueError, match="configured coach model"):
+        revise_week(original["id"], "Move the run to Wednesday", settings=settings,
+                    today=START - timedelta(days=3))
+    assert get_proposal(database, 1, original["id"])["status"] == "pending"
+    assert get_week(database, 1, START)["sessions"] == []
+
+
+def test_new_week_without_model_uses_code_built_plan(database):
+    settings = replace(get_settings(), db_path=database, llm_provider="none")
+    result = propose_week(START, settings=settings, today=START - timedelta(days=3))
+    assert result["status"] in {"pending", "already_planned", "no_safe_change"}
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("SELECT count(*) FROM coach_llm_calls").fetchone()[0] == 0
+
+
+def test_daily_proposal_is_one_change_and_requires_approval(database, monkeypatch):
+    from types import SimpleNamespace
+
+    def easy_decision(*_args, **_kwargs):
+        return SimpleNamespace(based_on=(START - timedelta(days=1)).isoformat(), readiness=60,
+            intensity="easy", rule_fact_ids=("READINESS",),
+            facts=({"id": "READINESS", "metric": "Readiness", "display": "60/100", "source": "metrics"},),
+            sports=({"sport": "running", "session": {"intent": "easy", "duration_min": 30,
+                                                       "hr_cap_bpm": 130}},))
+
+    monkeypatch.setattr("coach.planning.build_daily_decision", easy_decision)
+    settings = replace(get_settings(), db_path=database, llm_provider="none")
+    proposed = propose_day(START, settings=settings, today=START)
+    assert proposed["status"] == "pending"
+    assert len(proposed["changes"]) == 1
+    assert proposed["changes"][0]["session"]["date"] == START.isoformat()
+    assert get_week(database, 1, START)["sessions"] == []
+    assert propose_day(START, settings=settings, today=START)["status"] == "already_proposed"
+    with pytest.raises(ValueError, match="today or tomorrow"):
+        propose_day(START + timedelta(days=2), settings=settings, today=START)
+
+
+def test_daily_proposal_does_not_duplicate_existing_session(database):
+    settings = replace(get_settings(), db_path=database, llm_provider="none")
+    manual_session(database, 1, session(START))
+    result = propose_day(START, settings=settings, today=START)
+    assert result["status"] == "already_planned"
+    assert list_proposals(database, 1, START) == []
+
+
+@pytest.mark.parametrize("choice, expected_status, expected_intent", [
+    ("rest", "rest", None),
+    ("easy", "pending", "easy"),
+])
+def test_daily_proposal_respects_athlete_choice(database, monkeypatch, choice, expected_status, expected_intent):
+    from types import SimpleNamespace
+
+    def hard_decision(*_args, **_kwargs):
+        return SimpleNamespace(based_on=(START - timedelta(days=1)).isoformat(), readiness=80,
+            intensity="hard", rule_fact_ids=("READINESS",),
+            facts=({"id": "READINESS", "metric": "Readiness", "display": "80/100", "source": "metrics"},),
+            sports=({"sport": "running", "session": {"intent": "tempo", "duration_min": 48,
+                                                       "hr_cap_bpm": None}},))
+
+    monkeypatch.setattr("coach.planning.build_daily_decision", hard_decision)
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "INSERT INTO coaching_decisions(user_id,decision_type,decision_date,summary,risk_level,payload_json,created_at) "
+            "VALUES(1,'daily_v2',?,'test','moderate',?,'2026-06-29 08:00:00')",
+            (START.isoformat(), json.dumps({"athlete_choice": choice})))
+    settings = replace(get_settings(), db_path=database, llm_provider="none")
+    result = propose_day(START, settings=settings, today=START)
+    assert result["status"] == expected_status
+    if expected_intent is not None:
+        assert result["changes"][0]["session"]["intent"] == expected_intent
+        assert result["changes"][0]["session"]["hr_cap_bpm"] is not None
+    else:
+        assert list_proposals(database, 1, START) == []
+
+
+def test_empty_revision_response_reports_failure_without_superseding(database):
+    class EmptyLLM:
+        calls = 0
+
+        def generate_json(self, *_args, **_kwargs):
+            self.calls += 1
+            return {}
+
+    settings = replace(get_settings(), db_path=database, llm_provider="none")
+    original = create_proposal(database, 1, "weekly_plan", "Keep easy work", FACTS, [change(START)])
+    llm = EmptyLLM()
+    with pytest.raises(ValueError, match="current proposal is unchanged") as error:
+        revise_week(original["id"], "Move the run to Wednesday", settings=settings,
+                    llm=llm, today=START - timedelta(days=3))
+    assert "Field required" not in str(error.value)
+    assert llm.calls == 2
+    assert get_proposal(database, 1, original["id"])["status"] == "pending"
     assert get_week(database, 1, START)["sessions"] == []
 
 

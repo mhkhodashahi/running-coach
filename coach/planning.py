@@ -15,8 +15,17 @@ from zoneinfo import ZoneInfo
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from coach.agent import CoachAgent, _read_version, _user_lock
-from coach.proposals import create_proposal, get_proposal, get_week, materialize_week, monday, request_revision
+from coach.proposals import (
+    create_proposal,
+    get_proposal,
+    get_week,
+    list_proposals,
+    materialize_week,
+    monday,
+    request_revision,
+)
 from config import Settings, get_settings
+from llm.base import NullLLMClient
 from llm.factory import get_llm_client
 from metrics import get_daily_snapshot
 from metrics.load import calibration_and_scales, session_metrics
@@ -763,6 +772,11 @@ def propose_week(start: date, *, settings: Settings | None = None, user_id: int 
     client = None if code_only else llm or get_llm_client(
         settings.llm_provider, settings.openai_api_key, settings.openai_model,
         settings.ollama_base_url, settings.ollama_model)
+    if isinstance(client, NullLLMClient):
+        if revision_of is not None:
+            raise ValueError("A configured coach model is needed to revise a proposal in your words. "
+                             "The current proposal is unchanged; you can edit your plan directly instead.")
+        code_only = True
     if not code_only and settings.llm_provider in ("openai", "chatgpt") and not (
             settings.allow_remote_llm and settings.remote_athlete_data_approved):
         raise PermissionError("Remote planning is disabled until athlete-data sharing is approved in .env")
@@ -843,9 +857,79 @@ def propose_week(start: date, *, settings: Settings | None = None, user_id: int 
                         result["load_preview"] = week_load_breakdown(list(build.candidate), model, start)
                         result["warnings"] = [*build.warnings, "Explanation unavailable; code reasons used."]
                         return result
-                    raise ValueError(f"Weekly proposal failed validation: {exc}") from exc
+                    raise ValueError("The coach could not produce a valid revision. "
+                                     "The current proposal is unchanged. Try a simpler request or check the coach model.") from exc
                 prompt += f"\nValidation errors: {exc}. Return corrected JSON only."
     raise AssertionError("unreachable")
+
+
+def propose_day(day: date, *, settings: Settings | None = None, user_id: int | None = None,
+                today: date | None = None) -> dict[str, Any]:
+    """Suggest one safe session for today or tomorrow; never edit the plan."""
+    settings = settings or get_settings()
+    user_id = user_id or settings.default_user_id
+    today = today or datetime.now(ZoneInfo(settings.local_timezone)).date()
+    if day not in (today, today + timedelta(days=1)):
+        raise ValueError("Choose today or tomorrow for a daily proposal")
+    _read_version(settings.db_path)
+    start = monday(day)
+    for proposal in list_proposals(settings.db_path, user_id, start):
+        if proposal["status"] == "pending" and any(
+                change["session"]["date"] == day.isoformat() for change in proposal["changes"]):
+            return {"status": "already_proposed", "summary": "A proposal for this day is already awaiting review."}
+    week = get_week(settings.db_path, user_id, start)
+    if any(item["date"] == day.isoformat() and item["status"] in ("planned", "done")
+           for item in week["sessions"]):
+        return {"status": "already_planned", "summary": "This day already has a planned session."}
+    with sqlite3.connect(settings.db_path.resolve().as_uri() + "?mode=ro", uri=True) as connection:
+        logged_types = [row[0] for row in connection.execute(
+            "SELECT type FROM activities WHERE user_id=? AND date=?", (user_id, day.isoformat()))]
+        if any(sport_category(raw, day) in ("running", "gym", "football", "volleyball")
+               for raw in logged_types):
+            return {"status": "already_logged", "summary": "This day already has a logged activity."}
+    week, context_facts, model, decisions, _, _, z2_cap, _, _, longest_run = _context(
+        settings.db_path, user_id, start, settings, today)
+    decision = build_daily_decision(day, settings.db_path, user_id, settings.local_timezone,
+                                    settings.sleep_goal_hours, settings.hr_zones)
+    with sqlite3.connect(settings.db_path.resolve().as_uri() + "?mode=ro", uri=True) as connection:
+        choice_row = connection.execute(
+            "SELECT payload_json FROM coaching_decisions WHERE user_id=? AND decision_type='daily_v2' "
+            "AND decision_date=? ORDER BY id DESC LIMIT 1", (user_id, day.isoformat())).fetchone()
+    athlete_choice = json.loads(choice_row[0]).get("athlete_choice") if choice_row else None
+    if athlete_choice == "rest":
+        return {"status": "rest", "summary": "You chose rest for this day; no training session was proposed."}
+    if athlete_choice == "easy":
+        decisions[day] = "easy"
+    if decision.intensity == "rest" or not decision.sports:
+        return {"status": "rest", "summary": "The daily decision calls for rest; no training session was proposed."}
+    top = next((item for item in decision.sports if item["sport"] in ("running", "gym")), None)
+    if top is None:
+        return {"status": "no_safe_change", "summary": "No solo session is available for this day."}
+    suggested = top["session"]
+    sport = top["sport"]
+    intent = suggested["intent"] if sport == "running" else "strength" if decision.intensity == "hard" else "light"
+    duration = suggested["duration_min"]
+    cap = suggested["hr_cap_bpm"]
+    if athlete_choice == "easy" and decision.intensity == "hard":
+        intent = "easy" if sport == "running" else "light"
+        duration = 30
+        cap = z2_cap if sport == "running" else None
+    if sport == "running" and intent == "easy":
+        duration = min(duration, long_run_limit(longest_run))
+    session = {"id": None, "date": day.isoformat(), "sport": sport, "intent": intent,
+               "duration_min": duration, "hr_cap_bpm": cap,
+               "notes": None, "status": "planned"}
+    change = {"change_type": "add", "session": session,
+              "reason": "This matches the daily decision and fits your recent training pattern.",
+              "fact_ids": list(decision.rule_fact_ids), "group_id": f"day-{day.isoformat()}"}
+    candidate = apply_draft(week["sessions"], [change])
+    errors = validate_week(candidate, model, today=today, decisions=decisions, week_start=start)
+    if errors:
+        return {"status": "no_safe_change", "summary": "No safe session was proposed: " + "; ".join(errors)}
+    facts = list({fact["id"]: fact for fact in (*context_facts, *decision.facts)}.values())
+    return create_proposal(settings.db_path, user_id, "change",
+                           f"{intent.title()} {sport} proposed for {day:%a %d %b}.", facts, [change],
+                           base_version=week["version"])
 
 
 def revise_week(proposal_id: int, text: str, *, settings: Settings | None = None,

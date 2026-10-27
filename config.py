@@ -66,7 +66,7 @@ class Settings:
     coach_daily_call_limit: int = 20
     sync_interval_hours: int = 2
     auto_opinions: bool = False
-    web_public_url: str = "http://127.0.0.1:8000"
+    public_url: str = ""
 
     @property
     def db_url(self) -> str:
@@ -120,7 +120,7 @@ def get_settings() -> Settings:
         coach_daily_call_limit=_coach_call_limit(os.getenv("COACH_DAILY_CALL_LIMIT", "")),
         sync_interval_hours=max(1, int(os.getenv("SYNC_INTERVAL_HOURS", "2"))),
         auto_opinions=os.getenv("AUTO_OPINIONS", "").lower() == "true",
-        web_public_url=os.getenv("WEB_PUBLIC_URL", "http://127.0.0.1:8000").rstrip("/"),
+        public_url=os.getenv("PUBLIC_URL", "").strip().rstrip("/"),
     )
 
 

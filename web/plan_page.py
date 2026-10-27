@@ -7,7 +7,7 @@ import sqlite3
 from datetime import date, timedelta
 from typing import Any
 
-from coach.planning import apply_draft, load_model, propose_week, revise_week, week_load_breakdown
+from coach.planning import apply_draft, load_model, propose_day, propose_week, revise_week, week_load_breakdown
 from coach.proposals import (
     apply,
     dismiss,
@@ -191,6 +191,10 @@ def plan_context(settings: Settings, day: date, *, notice: str | None = None,
 
 def create_week(settings: Settings, day: date, start: date, llm: Any = None) -> dict[str, Any]:
     return propose_week(start, settings=settings, user_id=settings.default_user_id, llm=llm, today=day)
+
+
+def create_day(settings: Settings, today: date, target: date) -> dict[str, Any]:
+    return propose_day(target, settings=settings, user_id=settings.default_user_id, today=today)
 
 
 def apply_groups(settings: Settings, proposal_id: int, group_ids: list[str]) -> dict[str, Any]:

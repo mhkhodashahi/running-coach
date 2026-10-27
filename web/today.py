@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import sqlite3
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
@@ -97,7 +98,9 @@ def today_context(settings: Settings, *, day: date, llm: Any = None) -> dict[str
     engine = create_engine(settings.db_url)
     try:
         with Session(engine) as session:
-            pending = unrated_activities(session, user_id, limit=1)
+            pending = unrated_activities(session, user_id, limit=1,
+                                         now=datetime.now(ZoneInfo(settings.local_timezone)),
+                                         timezone=settings.local_timezone)
             unrated = pending[0] if pending else None
     finally:
         engine.dispose()

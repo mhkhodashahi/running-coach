@@ -73,6 +73,15 @@ def ratio(value: Any) -> str | None:
     return f"{number:.2f}" if number is not None else None
 
 
+def signed_delta(value: Any, unit: str) -> str | None:
+    number = as_number(value)
+    if number is None:
+        return None
+    rounded = round(number)
+    prefix = "+" if rounded > 0 else "−" if rounded < 0 else ""
+    return f"{prefix}{abs(rounded)} {unit}"
+
+
 def score(value: Any, *, decimals: int = 0) -> str | None:
     number = as_number(value)
     return f"{number:.{decimals}f}/100" if number is not None and decimals else f"{round(number)}/100" if number is not None else None

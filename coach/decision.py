@@ -32,6 +32,7 @@ HARD_GYM_DURATION_MIN = 45
 SKILLS_DURATION_MIN = 30
 SOLO_SPORTS = ("running", "gym")
 TEAM_SPORTS = ("football", "volleyball")
+MAX_HEALTH_AGE_DAYS = 1
 
 Intensity = Literal["rest", "easy", "hard"]
 
@@ -103,6 +104,13 @@ def decide_intensity(illness: bool | None, readiness: float | None, load_ratio: 
     if recent_hard:
         return IntensityDecision("easy", "hard_in_last_48h", ("HARD_LAST_48H", "READINESS"))
     return IntensityDecision("easy", "otherwise_easy", ("READINESS", "LOAD_RATIO"))
+
+
+def cap_stale_intensity(decision: IntensityDecision, requested: date, health_day: date) -> IntensityDecision:
+    """Never recommend hard training from health data older than yesterday."""
+    if requested - health_day <= timedelta(days=MAX_HEALTH_AGE_DAYS) or decision.intensity == "rest":
+        return decision
+    return IntensityDecision("easy", "stale_data", ("BASED_ON_DATE", "LAST_SYNC_TIME"))
 
 
 def rank_sports(intensity: Intensity, sessions: tuple[PriorSession, ...], now: datetime,

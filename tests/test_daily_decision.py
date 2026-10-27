@@ -11,6 +11,7 @@ import pytest
 from coach.decision import (
     IntensityDecision,
     PriorSession,
+    cap_stale_intensity,
     decide_intensity,
     is_hard_session,
     provisional_day,
@@ -68,6 +69,34 @@ def test_intensity_first_match_and_boundaries(illness, readiness, ratio, session
     assert result.intensity == ("rest" if expected.startswith(("illness", "readiness_below_30")) else
                                 "hard" if expected == "hard_allowed" else "easy")
     assert result.fact_ids
+
+
+def test_stale_data_caps_hard_but_preserves_rest(decision_db):
+    hard = IntensityDecision("hard", "hard_allowed", ("READINESS", "LOAD_RATIO"))
+    assert cap_stale_intensity(hard, DAY, DAY - timedelta(days=1)) == hard
+    stale = cap_stale_intensity(hard, DAY, DAY - timedelta(days=2))
+    assert (stale.intensity, stale.rule) == ("easy", "stale_data")
+    rest = IntensityDecision("rest", "illness_signal", ("ILLNESS_FLAG",))
+    assert cap_stale_intensity(rest, DAY, DAY - timedelta(days=3)) == rest
+    with sqlite3.connect(decision_db) as connection:
+        connection.execute("DELETE FROM health_metrics WHERE date>=?",
+                           ((DAY - timedelta(days=1)).isoformat(),))
+    result = build_daily_decision(DAY, decision_db, 1, "Europe/Berlin", 7.5)
+    assert result.rule == "stale_data" and result.intensity == "easy"
+    assert "latest sleep and HRV" in result.explanation
+
+
+def test_illness_explanation_cites_signed_health_deltas(decision_db):
+    with sqlite3.connect(decision_db) as connection:
+        connection.execute("UPDATE health_metrics SET resting_hr=72,hrv=15 WHERE date=?",
+                           (DAY.isoformat(),))
+    result = build_daily_decision(DAY, decision_db, 1, "Europe/Berlin", 7.5)
+    facts = {item["id"]: item["display"] for item in result.facts}
+    assert result.rule == "illness_signal"
+    assert facts["RHR_DELTA"] == "+17 bpm"
+    assert facts["HRV_DELTA"] == "−35 ms"
+    assert "+17 bpm" in result.explanation and "−35 ms" in result.explanation
+    assert "see a doctor" in result.explanation
 
 
 def test_hard_session_detection():
@@ -304,7 +333,7 @@ def test_llm_failure_falls_back_and_cannot_change_intensity(decision_db):
 
 
 @pytest.mark.parametrize("rule,phrase", [
-    ("illness_signal", "resting HR and HRV both point to strain"),
+    ("illness_signal", "resting HR is 0 bpm and HRV is 0 ms"),
     ("readiness_below_30", "recovery takes priority"),
     ("not_enough_data", "not enough recovery data"),
     ("readiness_below_50", "protect recovery"),

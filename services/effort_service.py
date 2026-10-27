@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import select, text
@@ -12,6 +12,7 @@ from db.models import Activity, ActivityEffort, ActivityEffortPrompt
 from metrics.sports import sport_category
 
 REMINDER_DELAY = timedelta(hours=12)
+RATING_PROMPT_WINDOW = timedelta(hours=48)
 CR10_LABELS = {0: "rest", 3: "moderate", 5: "hard", 7: "very hard", 10: "maximal"}
 
 
@@ -38,19 +39,46 @@ def rate_activity(session: Session, activity_id: int, user_id: int, rpe: int, so
     return effort
 
 
-def unrated_activities(session: Session, user_id: int, limit: int = 5) -> list[Activity]:
+def _activity_time(session: Session, activity: Activity, timezone: str) -> datetime:
+    stamp = session.execute(text(
+        "SELECT MIN(start_time) FROM activity_laps WHERE activity_id=:id"), {"id": activity.id}).scalar()
+    stamp = stamp or session.execute(text(
+        "SELECT MIN(timestamp) FROM activity_track_points WHERE activity_id=:id"), {"id": activity.id}).scalar()
+    zone = ZoneInfo(timezone)
+    if stamp:
+        parsed = datetime.fromisoformat(stamp)
+        return parsed.replace(tzinfo=zone) if parsed.tzinfo is None else parsed.astimezone(zone)
+    return datetime.combine(activity.date, time.min, zone)
+
+
+def unrated_activities(session: Session, user_id: int, limit: int = 5, *,
+                       now: datetime | None = None, timezone: str = "Europe/Berlin") -> list[Activity]:
+    """Shared Today and Telegram selector; never prompt outside the last 48 hours."""
+    zone = ZoneInfo(timezone)
+    local_now = now or datetime.now(UTC)
+    local_now = local_now.replace(tzinfo=zone) if local_now.tzinfo is None else local_now.astimezone(zone)
+    cutoff_date = (local_now.astimezone(UTC) - RATING_PROMPT_WINDOW).astimezone(zone).date()
     rows = session.scalars(select(Activity).outerjoin(ActivityEffort, Activity.id == ActivityEffort.activity_id)
-                           .where(Activity.user_id == user_id, ActivityEffort.activity_id.is_(None))
+                           .where(Activity.user_id == user_id, ActivityEffort.activity_id.is_(None),
+                                  Activity.date >= cutoff_date,
+                                  Activity.date <= local_now.date())
                            .order_by(Activity.date.desc(), Activity.id.desc())).all()
-    return [row for row in rows if sport_category(row.type, row.date) not in ("excluded", "mobility")
-            and row.type.strip().lower() != "walking"][:limit]
+    eligible = [(row, _activity_time(session, row, timezone)) for row in rows
+                if sport_category(row.type, row.date) not in ("excluded", "mobility")
+                and row.type.strip().lower() != "walking"]
+    eligible = [(row, started) for row, started in eligible
+                if timedelta(0) <= local_now.astimezone(UTC) - started.astimezone(UTC) <= RATING_PROMPT_WINDOW]
+    eligible.sort(key=lambda item: (item[1].astimezone(UTC), item[0].id), reverse=True)
+    return [row for row, _ in eligible[:limit]]
 
 
-def prompt_candidates(session: Session, user_id: int, now: datetime) -> list[tuple[Activity, bool]]:
+def prompt_candidates(session: Session, user_id: int, now: datetime,
+                      timezone: str = "Europe/Berlin") -> list[tuple[Activity, bool]]:
+    eligible = unrated_activities(session, user_id, limit=100, now=now, timezone=timezone)
     now = now.replace(tzinfo=None)
     result = []
     pending_ids = set(session.scalars(select(ActivityEffortPrompt.activity_id)).all())
-    for activity in unrated_activities(session, user_id, limit=100):
+    for activity in eligible:
         if activity.id not in pending_ids:
             continue
         prompt = session.get(ActivityEffortPrompt, activity.id)
@@ -93,7 +121,8 @@ def dispatch_effort_prompts(settings: object, user_id: int, telegram: object) ->
         return 0
     sent = 0
     with session_scope() as session:
-        for activity, reminder in prompt_candidates(session, user_id, datetime.now(UTC)):
+        for activity, reminder in prompt_candidates(session, user_id, datetime.now(UTC),
+                                                    settings.local_timezone):
             first = session.execute(text(
                 "SELECT MIN(start_time) FROM activity_laps WHERE activity_id=:id"),
                 {"id": activity.id}).scalar()

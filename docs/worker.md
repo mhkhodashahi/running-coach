@@ -14,9 +14,14 @@ these times and per-job AI opt-ins in Settings. `AUTO_OPINIONS=true` enables
 automatic opinions for new runs; it is off by default. Remote AI still needs
 the separate athlete-data approval flags.
 
-`WEB_PUBLIC_URL` is the base address included in message links. Set it to an
-address the recipient can actually open; the default localhost link only
-works on the same machine. The bot process (`python -m utils.telegram_chat_cli`)
+Decisions use at most easy intensity when the latest complete sleep and HRV day
+is older than yesterday. A provisional morning call is followed by one short
+update only if new data changes the intensity. Scheduled messages use Telegram
+HTML for a bold heading, with plain text if Telegram explicitly rejects the
+markup. Rating and proposal actions use inline keyboards.
+
+`PUBLIC_URL` is the optional public HTTPS base address for Telegram link buttons.
+Leave it empty for a local-only install; localhost links are never sent. The bot process (`python -m utils.telegram_chat_cli`)
 must also be running for commands and buttons. Keep one bot process and one
 worker process. Both use the existing Telegram recipient allowlist.
 

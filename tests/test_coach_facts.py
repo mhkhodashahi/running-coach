@@ -11,7 +11,7 @@ from services.coach_facts import (
     match_text_facts,
     unsupported_text_numbers,
 )
-from services.fact_display import duration, heart_rate, hours, pace, percent, ratio, score
+from services.fact_display import duration, heart_rate, hours, pace, percent, ratio, score, signed_delta
 from services.workout_laps import interpret_laps
 
 
@@ -340,3 +340,9 @@ def test_facts_are_pure_and_do_not_mutate_context():
     first = build_facts(10, data)
     assert data == before
     assert first == build_facts(10, data)
+
+
+def test_signed_delta_uses_math_minus_and_units():
+    assert signed_delta(17.4, "bpm") == "+17 bpm"
+    assert signed_delta(-35, "ms") == "−35 ms"
+    assert signed_delta(0, "bpm") == "0 bpm"

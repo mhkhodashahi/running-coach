@@ -4,13 +4,14 @@ from contextlib import contextmanager
 from dataclasses import replace
 from datetime import date, datetime, timedelta
 from types import SimpleNamespace
+from zoneinfo import ZoneInfo
 
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session
 
 from coach.decision import PriorSession, is_hard_session
-from db.models import Activity, ActivityEffort, Base, User
+from db.models import Activity, ActivityEffort, ActivityLap, Base, User
 from metrics.effort import (
     calibrate,
     combined_load,
@@ -191,6 +192,70 @@ def test_prompt_once_reminder_once_and_rating_change(tmp_path):
         assert [row.id for row in unrated_activities(session, 1)] == []
         with pytest.raises(ValueError):
             rate_activity(session, 2, 1, 3, "web")
+    engine.dispose()
+
+
+def test_shared_unrated_selector_limits_prompts_to_last_48_hours(tmp_path):
+    engine = create_engine(f"sqlite:///{tmp_path / 'recent-effort.db'}")
+    Base.metadata.create_all(engine)
+    now = datetime(2026, 5, 21, 10, tzinfo=ZoneInfo("Europe/Berlin"))
+    with Session(engine) as session:
+        session.add(User(id=1))
+        session.add_all([
+            Activity(id=1, user_id=1, date=date(2026, 5, 19), type="running", distance=5, duration=30),
+            Activity(id=2, user_id=1, date=date(2026, 5, 19), type="running", distance=5, duration=30),
+            Activity(id=3, user_id=1, date=date(2026, 5, 20), type="football", distance=1, duration=90),
+            Activity(id=4, user_id=1, date=date(2026, 5, 21), type="walking", distance=1, duration=15),
+            Activity(id=5, user_id=1, date=date(2026, 5, 21), type="gym", distance=0, duration=30),
+            Activity(id=6, user_id=1, date=date(2026, 5, 21), type="running", distance=5, duration=30),
+        ])
+        session.flush()
+        session.add_all([
+            ActivityLap(activity_id=1, lap_index=1, start_time=datetime(2026, 5, 19, 10)),
+            ActivityLap(activity_id=2, lap_index=1, start_time=datetime(2026, 5, 19, 9, 59)),
+            ActivityLap(activity_id=6, lap_index=1, start_time=datetime(2026, 5, 21, 11)),
+        ])
+        session.flush()
+        queue_new_activities(session, {1, 2, 3, 4, 5, 6})
+        selected = unrated_activities(session, 1, now=now, timezone="Europe/Berlin")
+        assert [row.id for row in selected] == [5, 3, 1]
+        assert [row.id for row, _ in prompt_candidates(session, 1, now)] == [5, 3, 1]
+        rate_activity(session, 5, 1, 5, "web", now=now)
+        assert [row.id for row in unrated_activities(session, 1, now=now)] == [3, 1]
+    engine.dispose()
+
+
+def test_rating_window_uses_elapsed_hours_across_dst(tmp_path):
+    engine = create_engine(f"sqlite:///{tmp_path / 'dst-effort.db'}")
+    Base.metadata.create_all(engine)
+    now = datetime(2026, 10, 27, 1, tzinfo=ZoneInfo("Europe/Berlin"))
+    with Session(engine) as session:
+        session.add(User(id=1))
+        session.add_all([Activity(id=1, user_id=1, date=date(2026, 10, 25), type="running",
+                                  distance=5, duration=30),
+                         Activity(id=2, user_id=1, date=date(2026, 10, 25), type="running",
+                                  distance=5, duration=30)])
+        session.flush()
+        session.execute(text("INSERT INTO activity_laps(activity_id,lap_index,start_time) "
+                             "VALUES(1,1,:boundary), (2,1,:older)"),
+                        {"boundary": "2026-10-25T02:00:00+02:00",
+                         "older": "2026-10-25T01:59:00+02:00"})
+        assert [row.id for row in unrated_activities(session, 1, now=now)] == [1]
+    engine.dispose()
+
+
+def test_rating_window_includes_previous_local_date_at_spring_dst_boundary(tmp_path):
+    engine = create_engine(f"sqlite:///{tmp_path / 'spring-effort.db'}")
+    Base.metadata.create_all(engine)
+    now = datetime(2026, 3, 30, 0, 30, tzinfo=ZoneInfo("Europe/Berlin"))
+    with Session(engine) as session:
+        session.add(User(id=1))
+        session.add(Activity(id=1, user_id=1, date=date(2026, 3, 27), type="running",
+                             distance=5, duration=30))
+        session.flush()
+        session.add(ActivityLap(activity_id=1, lap_index=1, start_time=datetime(2026, 3, 27, 23, 30)))
+        session.flush()
+        assert [row.id for row in unrated_activities(session, 1, now=now)] == [1]
     engine.dispose()
 
 
