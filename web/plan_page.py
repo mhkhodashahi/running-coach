@@ -7,6 +7,9 @@ import sqlite3
 from datetime import date, timedelta
 from typing import Any
 
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session
+
 from coach.planning import apply_draft, load_model, propose_day, propose_week, revise_week, week_load_breakdown
 from coach.proposals import (
     apply,
@@ -26,8 +29,18 @@ from coach.proposals import (
 from config import Settings
 from metrics import get_daily_snapshot
 from metrics.sports import RECOMMENDABLE_SPORTS, sport_category
-from web.formatting import duration_minutes, short_date
+from services.effort_service import unrated_activities
+from web.formatting import short_date
 from web.today import sync_label
+from web.view_models.today import display_duration
+from web.view_models.training import (
+    TRAINING_FOLLOW_UPS,
+    coach_summary,
+    percentage,
+    proposal_view,
+    selected_groups,
+    week_view,
+)
 
 
 def _groups(proposal: dict[str, Any]) -> list[dict[str, Any]]:
@@ -57,6 +70,13 @@ def _actuals(settings: Settings, day: date, start: date) -> tuple[dict[str, list
     loads = {item.activity_id: item.load.value for item in snapshot.sessions}
     actuals: dict[str, list[dict[str, Any]]] = {}
     rest_choices: set[str] = set()
+    engine = create_engine(settings.db_url)
+    try:
+        with Session(engine) as session:
+            unrated_ids = {item.id for item in unrated_activities(
+                session, settings.default_user_id, limit=50, timezone=settings.local_timezone)}
+    finally:
+        engine.dispose()
     with sqlite3.connect(settings.db_path.resolve().as_uri() + "?mode=ro", uri=True) as connection:
         connection.row_factory = sqlite3.Row
         for row in connection.execute("SELECT id,date,type,duration FROM activities WHERE user_id=? "
@@ -67,7 +87,8 @@ def _actuals(settings: Settings, day: date, start: date) -> tuple[dict[str, list
             if sport not in RECOMMENDABLE_SPORTS:
                 continue
             actuals.setdefault(stamp, []).append({"id": row["id"], "sport": sport,
-                "duration": duration_minutes(row["duration"]), "load": loads.get(row["id"]), "status": "done"})
+                "duration": display_duration(row["duration"]), "load": loads.get(row["id"]),
+                "rate_id": row["id"] if row["id"] in unrated_ids else None, "status": "done"})
         for row in connection.execute("SELECT decision_date,payload_json FROM coaching_decisions "
                                       "WHERE user_id=? AND decision_type='daily_v2' AND decision_date BETWEEN ? AND ?",
                                       (settings.default_user_id, start.isoformat(), day.isoformat())):
@@ -143,12 +164,13 @@ def _mobile_rows(days: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def plan_context(settings: Settings, day: date, *, notice: str | None = None,
-                 error: str | None = None) -> dict[str, Any]:
+                 error: str | None = None, start: date | None = None,
+                 view: str = "week") -> dict[str, Any]:
     """Render this and next week without changing the plan."""
-    start = monday(day)
+    start = monday(start or day)
     actuals, rest_choices = _actuals(settings, day, start)
     weeks = []
-    for offset in (0, 7):
+    for offset in ((0, 7) if view == "week" else (0, 7, 14, 21)):
         week_start = start + timedelta(days=offset)
         week = get_week(settings.db_path, settings.default_user_id, week_start)
         model = load_model(settings.db_path, settings.default_user_id, week_start, settings)
@@ -170,8 +192,9 @@ def plan_context(settings: Settings, day: date, *, notice: str | None = None,
                                             rest_choices)["weekly_total"]
                 except ValueError:
                     pass
-            proposed.append({**proposal, "groups": _groups(proposal), "projected_total": projection})
-        weeks.append({"start": week_start.isoformat(), "label": short_date(week_start),
+            proposed.append({**proposal, "groups": _groups(proposal), "projected_total": projection,
+                             "week_start": week_start.isoformat()})
+        raw_week = {"start": week_start.isoformat(), "label": short_date(week_start),
                       "days": days, "total": breakdown["weekly_total"], "cap": breakdown["cap"],
                       "actual_total": breakdown["actual_total"], "planned_total": breakdown["planned_total"],
                       "expected_walking": breakdown["expected_walking_weekly"], "week_label": label,
@@ -180,13 +203,21 @@ def plan_context(settings: Settings, day: date, *, notice: str | None = None,
                       if breakdown["cap"] and breakdown["weekly_total"] is not None else None,
                       "actual_percent": min(100, round(breakdown["actual_total"] / breakdown["cap"] * 100))
                       if breakdown["cap"] and breakdown["actual_total"] is not None else None,
-                      "proposals": proposed})
+                      "proposals": proposed}
+        shown = week_view(raw_week, day, sync_label(settings, day))
+        shown["proposals"] = [proposal_view(item, raw_week, model) for item in proposed]
+        weeks.append(shown)
     return {"weeks": weeks, "commitments": list_commitments(settings.db_path, settings.default_user_id),
             "habits": list_protected_habits(settings.db_path, settings.default_user_id),
             "notice": notice, "error": error, "sync": sync_label(settings, day),
             "weekdays": tuple(enumerate(("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"))),
             "pending_proposals": any(proposal["status"] == "pending" for week in weeks
-                                     for proposal in week["proposals"])}
+                                     for proposal in week["proposals"]), "view": view,
+            "primary_proposal_id": next((proposal["id"] for week in weeks for proposal in week["proposals"]
+                                         if proposal["status"] == "pending"), None),
+            "previous_start": (start - timedelta(days=7)).isoformat(),
+            "next_start": (start + timedelta(days=7)).isoformat(),
+            "coach_summary": coach_summary(weeks[0]), "training_follow_ups": TRAINING_FOLLOW_UPS}
 
 
 def create_week(settings: Settings, day: date, start: date, llm: Any = None) -> dict[str, Any]:
@@ -208,6 +239,32 @@ def apply_groups(settings: Settings, proposal_id: int, group_ids: list[str]) -> 
     accepted = [change["id"] for group in groups if group["id"] in group_ids
                 for change in group["changes"]]
     return apply(settings.db_path, settings.default_user_id, proposal_id, accepted)
+
+
+def apply_change_selection(settings: Settings, proposal_id: int,
+                           change_ids: list[int]) -> dict[str, Any]:
+    proposal = get_proposal(settings.db_path, settings.default_user_id, proposal_id)
+    group_ids, _ = selected_groups(_groups(proposal), change_ids)
+    return apply_groups(settings, proposal_id, group_ids)
+
+
+def preview_changes(settings: Settings, day: date, proposal_id: int,
+                    change_ids: list[int]) -> dict[str, Any]:
+    proposal = get_proposal(settings.db_path, settings.default_user_id, proposal_id)
+    if proposal["status"] != "pending":
+        raise ValueError("Proposal is out of date")
+    groups = _groups(proposal)
+    _, count = selected_groups(groups, change_ids)
+    first = date.fromisoformat(proposal["changes"][0]["session"]["date"])
+    start = monday(first)
+    week = get_week(settings.db_path, settings.default_user_id, start)
+    model = load_model(settings.db_path, settings.default_user_id, start, settings)
+    chosen = [change for change in proposal["changes"] if change["id"] in change_ids]
+    candidate = apply_draft(week["sessions"], chosen)
+    actuals, rest_choices = _actuals(settings, day, start)
+    projected = _week_view(candidate, model, start, day, actuals, rest_choices)["weekly_total"]
+    return {"proposal_id": proposal_id, "selected_count": count,
+            "percent": percentage(projected, model.cap), "sync": sync_label(settings, day)}
 
 
 def dismiss_proposal(settings: Settings, proposal_id: int) -> None:

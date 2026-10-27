@@ -1,0 +1,16 @@
+{% from 'components/v2_icons.html' import icon %}
+<section id="coach-card" class="v2-call card" aria-labelledby="v2-call-title">
+  <div class="v2-call-copy"><div class="v2-call-kicker"><span class="eyebrow">Today's call</span>{% if decision.provisional %}<span class="chip st">{{ icon('clock') }} Provisional · based on {{ based_on_label }}</span>{% else %}<span class="chip st">{{ icon('check') }} Final · last night's data</span>{% endif %}</div>
+    <h2 id="v2-call-title" class="num">{{ call_headline }}</h2><p>{{ purpose }}</p>
+    {% if decision.athlete_choice %}<div class="v2-choice-note st">{{ icon('check') }} Your choice <form action="/today/choice" method="post" hx-post="/today/choice" hx-target="#coach-card" hx-swap="outerHTML"><button type="submit" name="choice" value="clear">Back to coach</button></form></div>{% endif %}
+  </div>
+  {% if workout %}<div class="v2-workout"><div class="v2-workout-top"><strong class="num">{{ workout.duration }}</strong><span class="cap">{{ workout.sport }}</span></div><strong class="v2-workout-title">{{ workout.title|capitalize }}</strong>
+    {% if workout.steps %}<div class="v2-workout-profile" role="img" aria-label="Workout steps"><span></span><span></span><span></span><span></span><span></span></div><ol>{% for step in workout.steps %}<li>{{ step }}</li>{% endfor %}</ol>
+    {% elif workout.structure %}<p>{{ workout.structure }}</p>{% endif %}
+  </div>{% endif %}
+  <div class="v2-call-actions">
+    <button class="btn v2-why" type="button" data-open-coach>Why this?</button>
+    {% if (decision.athlete_choice or decision.intensity) != 'rest' %}<form action="/today/choice" method="post" hx-post="/today/choice" hx-target="#coach-card" hx-swap="outerHTML"><button class="btn" type="submit" name="choice" value="easy">Make it easy</button></form>{% endif %}
+    <form action="/today/choice" method="post" hx-post="/today/choice" hx-target="#coach-card" hx-swap="outerHTML"><button class="btn" type="submit" name="choice" value="rest">Rest today</button></form>
+  </div>
+</section>

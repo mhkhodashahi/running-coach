@@ -311,6 +311,24 @@ def test_mocked_llm_week_draft_is_validated_and_never_applied(database):
                      today=START - timedelta(days=3))
 
 
+@pytest.mark.parametrize("request_kind", ["week", "change"])
+def test_remote_planning_error_names_required_approval(database, request_kind):
+    class UnexpectedLLM:
+        def generate_json(self, *args, **kwargs):
+            pytest.fail("Remote planning must stop before calling the model")
+
+    settings = replace(get_settings(), db_path=database, llm_provider="chatgpt",
+                       allow_remote_llm=True, remote_athlete_data_approved=False)
+    with pytest.raises(PermissionError) as error:
+        if request_kind == "week":
+            propose_week(START, settings=settings, llm=UnexpectedLLM(), today=START - timedelta(days=3))
+        else:
+            propose_requested_change("Move my Wednesday run", START, settings=settings,
+                                     user_id=1, llm=UnexpectedLLM(), today=START - timedelta(days=3))
+    assert "REMOTE_ATHLETE_DATA_APPROVED=true" in str(error.value)
+    assert "ALLOW_REMOTE_LLM=true" in str(error.value)
+
+
 def test_plain_plan_request_retries_invalid_json_then_creates_proposal_only(database):
     class FakeLLM:
         calls = 0

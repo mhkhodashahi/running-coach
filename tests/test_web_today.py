@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 
 from config import get_settings
 from db.migration_runner import upgrade_database
+from services.training_chat_service import TrainingChatReply
 from web.app import create_app
 from web.charts import load_bars, sparkline
 from web.formatting import sync_time
@@ -44,18 +45,40 @@ def client(web_db):
 def test_today_shows_decision_recovery_and_controls(client):
     response = client.get("/")
     assert response.status_code == 200
-    for word in ("Readiness", "TODAY'S DECISION", "Resting HR", "HRV", "Sleep", "Body Battery",
-                 "Training load", "This week", "Recent activities", "Rate your last session", "name=\"choice\""):
+    for word in ("Recovery", "Sleep", "Load", "Today's call", "This week", "Make it easy",
+                 "Rest today", "About: today", "Ask next", "name=\"choice\""):
         assert word in response.text
     assert "/static/js/htmx.min.js" in response.text
-    coach = response.text.split('<section id="coach-card"', 1)[1].split("</section>", 1)[0]
-    assert coach.index('class="coach-intro"') < coach.index('class="ranked-sports"')
-    assert coach.index('class="ranked-sports"') < coach.index('class="coach-bottom"')
-    assert coach.index('class="intensity-control"') < coach.index('class="coach-actions"')
-    assert coach.index('class="top-pick"') < coach.index('class="coach-bottom"')
-    assert "Coach: <strong>" not in coach
-    assert coach.count('name="choice"') == 3
-    assert "Football or volleyball: only with team training" in coach
+    assert response.text.count('class="v2-dial card') == 3
+    assert 'aria-current="page"' in response.text
+    assert 'hx-post="/today/ask"' in response.text
+    visible = re.sub(r"<[^>]+>", "", response.text).lower()
+    assert "readiness" not in visible and "load ratio" not in visible
+
+
+def test_today_panel_uses_existing_chat_service(monkeypatch, client):
+    calls = []
+
+    def fake_ask(settings, day, question, activity_id, llm):
+        calls.append((question, activity_id))
+        return TrainingChatReply("Use your easy cap today.", True, ({"metric": "HR cap", "display": "130 bpm"},))
+
+    monkeypatch.setattr("web.routes.pages.ask_coach", fake_ask)
+    response = client.post("/today/ask", data={"question": "Why easy?"}, headers={"HX-Request": "true"})
+    assert response.status_code == 200
+    assert calls == [("About today: Why easy?", None)]
+    assert "Use your easy cap today" in response.text
+    assert "130 bpm" in response.text
+
+
+def test_today_render_does_not_call_llm(web_db):
+    class ExplodingLLM:
+        def generate_json(self, *args, **kwargs):
+            raise AssertionError("Today render sent a coach request")
+
+    settings = replace(get_settings(), db_path=web_db, llm_provider="none")
+    with TestClient(create_app(settings, password="", llm=ExplodingLLM())) as browser:
+        assert browser.get("/").status_code == 200
 
 
 def test_today_uses_short_dates_deltas_and_clock_badge(client, web_db):
@@ -68,11 +91,8 @@ def test_today_uses_short_dates_deltas_and_clock_badge(client, web_db):
                            "WHERE date=?", (day.isoformat(),))
     response = client.get("/")
     assert response.status_code == 200
-    assert "+2 bpm vs baseline" in response.text
-    assert "-3 ms vs baseline" in response.text
-    assert "+1h 18m vs baseline" in response.text
     assert "8h 48m" in response.text
-    assert "Baseline 55 bpm" in response.text
+    assert "usual 7h 30m" in response.text
     assert sync_time(now_utc.isoformat(), day, "Europe/Berlin") in response.text
     assert 'class="desktop-sync"' not in response.text
     coach = response.text.split('<section id="coach-card"', 1)[1].split("</section>", 1)[0]
@@ -86,7 +106,7 @@ def test_provisional_badge_has_short_date_without_sync(client, web_db):
     response = client.get("/")
     coach = response.text.split('<section id="coach-card"', 1)[1].split("</section>", 1)[0]
     assert "Provisional · based on" in coach
-    assert 'viewBox="0 0 24 24"' in coach
+    assert 'class="chip st"' in coach
     assert "last sync" not in coach.lower()
 
 
@@ -158,20 +178,15 @@ def test_recent_sessions_and_rating_target_exclude_walking_and_show_units(client
                            "VALUES(343,1,?,'meditation',0,10,0)", (day.isoformat(),))
     response = client.get("/")
     assert response.status_code == 200
-    assert "4.0 km" in response.text and "27m" in response.text
     assert "/activities/341" in response.text and "/activities/342" not in response.text
     assert "/activities/343" not in response.text
-    assert "<td>—</td>" in response.text
-    assert 'name="activity_id" value="341"' in response.text
-    assert '<select id="rpe"' not in response.text
-    assert response.text.count('name="rpe" value=') == 11
-    assert response.text.count('<span>Below Z1</span>') == 1
-    assert 'href="/activities">All activities' in response.text
+    assert '/activities/341#effort-rating' in response.text
 
 
 def test_week_empty_has_plan_proposal_action(client):
     response = client.get("/")
-    assert 'action="/today/plan"' in response.text
+    assert 'href="/plan"' in response.text
+    assert "Nothing planned" in response.text
 
 
 def test_fixed_commitments_show_in_week_even_without_materialized_plan(client, web_db):

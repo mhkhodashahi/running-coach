@@ -1,0 +1,25 @@
+{% from 'components/v2_icons.html' import icon %}
+<section class="v2-training-week" aria-label="Week of {{ week.range_label }}">
+  <div class="v2-training-summary card">
+    <div><strong class="num">{{ week.done_count }} of {{ week.session_count }}</strong> <span class="cap">sessions done</span></div>
+    {% if week.total_percent is not none %}
+    <div class="v2-training-load"><div class="v2-training-track" role="img" aria-label="Done {{ week.actual_percent }}% of a usual week, {{ week.total_percent }}% with the plan"><span class="v2-training-actual" style="width:{{ [week.actual_percent,100]|min }}%"></span><span class="v2-training-planned" style="left:{{ [week.actual_percent,100]|min }}%;width:{{ [week.planned_percent,100-week.actual_percent]|min }}%"></span></div><small class="cap">Done {{ week.actual_percent }}% of a usual week · with the plan: {{ week.total_percent }}%</small></div>
+    {% else %}<span class="cap">No data · {{ week.sync }}</span>{% endif %}
+  </div>
+  {% if loop.first %}<div class="v2-mobile-proposal-banners">{% for proposal in weeks|map(attribute='proposals')|sum(start=[]) if proposal.status in ('pending','stale') %}{% include 'components/v2_proposal_banner.html' %}{% endfor %}</div>{% endif %}
+  <div class="v2-training-days">
+  {% for day in week.days %}<article class="v2-training-day{% if day.today %} is-today{% endif %}">
+    <div class="v2-training-date"><span class="cap">{{ 'Today' if day.today else day.weekday }}</span><strong class="num">{{ day.number }}</strong></div>
+    <div class="v2-training-items">
+      {% for entry in day.entries %}<div class="v2-training-item{% if entry.done %} is-done{% endif %}">
+        <div class="v2-training-item-top">{% if entry.activity_id %}<a href="/activities/{{ entry.activity_id }}"><strong>{{ entry.title }}</strong></a>{% else %}<strong>{{ entry.title }}</strong>{% endif %}{% if entry.done %}<span class="st">{{ icon('check') }} Done</span>{% endif %}</div>
+        <span class="cap">{{ entry.duration or 'No data' }}{% if entry.hr_cap %} · under {{ entry.hr_cap }} bpm{% endif %}</span>
+        {% if entry.badges %}<div class="v2-training-badges">{% for badge in entry.badges if badge != 'Done' %}<span class="chip">{{ badge }}</span>{% endfor %}</div>{% endif %}
+        {% if entry.rate_id %}<a class="v2-training-rate" href="/activities/{{ entry.rate_id }}#effort-rating">Rate effort</a>{% endif %}
+        {% if entry.session and entry.session.id and entry.session.origin != 'fixed' and not entry.done %}<details class="v2-training-edit"><summary>Edit session</summary><form method="post" action="/plan/edit/session"><input type="hidden" name="id" value="{{ entry.session.id }}"><label>Date <input type="date" name="date" value="{{ entry.session.date }}" required></label><label>Sport <select name="sport">{% for sport in ['running','gym','volleyball','football','mobility'] %}<option value="{{ sport }}" {% if entry.session.sport == sport %}selected{% endif %}>{{ sport|title }}</option>{% endfor %}</select></label><label>Intent <input name="intent" value="{{ entry.session.intent }}" required></label><label>Minutes <input type="number" name="duration_min" value="{{ entry.session.duration_min }}" min="15" max="300" required></label><label>HR cap <input type="number" name="hr_cap_bpm" value="{{ entry.session.hr_cap_bpm or '' }}"></label><label>Notes <input name="notes" value="{{ entry.session.notes or '' }}"></label><button class="btn" type="submit">Save</button></form><form method="post" action="/plan/edit/remove_session"><input type="hidden" name="id" value="{{ entry.session.id }}"><button class="btn" type="submit">Remove</button></form></details>{% endif %}
+      </div>{% endfor %}
+      {% if not day.entries %}<span class="cap">{{ day.empty }}</span>{% if day.empty == 'Nothing planned' and not day.past %}<a href="#add-session" class="v2-training-add">+ Add</a>{% endif %}{% endif %}
+    </div>
+  </article>{% endfor %}
+  </div>
+</section>

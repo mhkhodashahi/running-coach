@@ -779,7 +779,11 @@ def propose_week(start: date, *, settings: Settings | None = None, user_id: int 
         code_only = True
     if not code_only and settings.llm_provider in ("openai", "chatgpt") and not (
             settings.allow_remote_llm and settings.remote_athlete_data_approved):
-        raise PermissionError("Remote planning is disabled until athlete-data sharing is approved in .env")
+        raise PermissionError(
+            "Remote planning is disabled. To approve athlete-data sharing, set "
+            "ALLOW_REMOTE_LLM=true and REMOTE_ATHLETE_DATA_APPROVED=true in your private .env, "
+            "then restart the app."
+        )
     payload = {"week": week, "facts": facts, "load_rates": {f"{sport}:{intent}": round(rate, 3)
                for (sport, intent), rate in model.rates.items()}, "sport_rates": model.sport_rates,
                "load_cap": round(model.cap, 1) if model.cap is not None else None,
@@ -950,7 +954,11 @@ def propose_requested_change(request: str, start: date, *, settings: Settings,
         raise ValueError("Describe the requested plan change in at most 500 characters")
     if settings.llm_provider in ("openai", "chatgpt") and not (
             settings.allow_remote_llm and settings.remote_athlete_data_approved):
-        raise PermissionError("Remote planning is disabled until athlete-data sharing is approved in .env")
+        raise PermissionError(
+            "Remote planning is disabled. To approve athlete-data sharing, set "
+            "ALLOW_REMOTE_LLM=true and REMOTE_ATHLETE_DATA_APPROVED=true in your private .env, "
+            "then restart the app."
+        )
     start = monday(start)
     today = today or datetime.now(ZoneInfo(settings.local_timezone)).date()
     _read_version(settings.db_path)

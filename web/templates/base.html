@@ -1,31 +1,46 @@
 <!doctype html>
-<html lang="en"{% if request.cookies.get('theme') in ('night', 'day') %} data-theme="{{ request.cookies.get('theme') }}"{% endif %}>
+{% from 'components/v2_icons.html' import icon %}
+<html lang="en" data-theme="{% if request.cookies.get('theme') == 'day' %}day{% else %}night{% endif %}">
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}Today{% endblock %} · Pulse Coach</title>
   <link rel="stylesheet" href="{{ url_for('static', path='css/tokens.css') }}">
   <link rel="stylesheet" href="{{ url_for('static', path='css/app.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', path='css/v2.css') }}">
   <script defer src="{{ url_for('static', path='js/htmx.min.js') }}"></script>
+  <script defer src="{{ url_for('static', path='js/v2.js') }}"></script>
 </head>
-<body>
+<body class="v2{% if request.url.path == '/' %} v2-today{% endif %}">
   <a class="skip-link" href="#main">Skip to content</a>
-  <header class="site-header"><div class="header-inner">
-    <a class="brand" href="/">PULSE<span>COACH</span></a>
-    <nav class="top-nav" aria-label="Main navigation">
-      <a href="/" {% if request.url.path == '/' %}aria-current="page"{% endif %}>Today</a>
-      <a href="/activities" {% if request.url.path.startswith('/activities') %}aria-current="page"{% endif %}>Activities</a><a href="/trends" {% if request.url.path == '/trends' %}aria-current="page"{% endif %}>Trends</a><a href="/coach" {% if request.url.path == '/coach' %}aria-current="page"{% endif %}>Coach</a><a href="/plan" {% if request.url.path == '/plan' %}aria-current="page"{% endif %}>Plan</a><a href="/settings" {% if request.url.path == '/settings' %}aria-current="page"{% endif %}>Settings</a>
-    </nav>
-    <div class="header-end"><span class="sync">{{ sync or 'Never synced' }}</span>
-      <form action="/theme" method="post"><button class="icon-button" type="submit" name="theme" value="{% if request.cookies.get('theme') == 'day' %}night{% else %}day{% endif %}" title="Toggle theme" aria-label="Toggle theme">◐</button></form>
-    </div>
-  </div></header>
-  <main id="main" class="page">{% block content %}{% endblock %}</main>
-  <nav class="bottom-nav" aria-label="Mobile navigation">
-    <a href="/" {% if request.url.path == '/' %}aria-current="page"{% endif %}><span aria-hidden="true">⌂</span>Today</a>
-    <a href="/activities" {% if request.url.path.startswith('/activities') %}aria-current="page"{% endif %}><span aria-hidden="true">≡</span>Activities</a>
-    <a href="/trends" {% if request.url.path == '/trends' %}aria-current="page"{% endif %}><span aria-hidden="true">▥</span>Trends</a>
-    <a href="/coach" {% if request.url.path == '/coach' %}aria-current="page"{% endif %}><span aria-hidden="true">✧</span>Coach</a>
-    <a href="/plan" {% if request.url.path == '/plan' %}aria-current="page"{% endif %}><span aria-hidden="true">▦</span>Plan</a>
-    <a href="/settings" {% if request.url.path == '/settings' %}aria-current="page"{% endif %}><span aria-hidden="true">⚙</span>Settings</a>
+  {% if request.url.path == '/login' %}<main id="main" class="page">{% block login_content %}{% endblock %}</main>
+  {% else %}
+  <div class="v2-shell">
+    <aside class="v2-rail" aria-label="Site navigation">
+      <a class="v2-brand num" href="/">PULSE <span>COACH</span></a>
+      <nav class="v2-rail-links" aria-label="Main navigation">
+        <a class="v2-nav" href="/" {% if request.url.path == '/' %}aria-current="page"{% endif %}>{{ icon('sun') }}Today</a>
+        <a class="v2-nav" href="/plan" {% if request.url.path == '/plan' %}aria-current="page"{% endif %}>{{ icon('calendar') }}Training</a>
+        <a class="v2-nav" href="/trends" {% if request.url.path == '/trends' %}aria-current="page"{% endif %}>{{ icon('trend') }}Insights</a>
+        <button type="button" class="v2-nav v2-tablet-ask" data-open-coach aria-controls="v2-coach-panel" aria-expanded="false">{{ icon('chat') }}Ask</button>
+      </nav>
+      <div class="v2-rail-foot">
+        <a class="v2-nav" href="/settings" {% if request.url.path == '/settings' %}aria-current="page"{% endif %}>{{ icon('user') }}Me</a>
+        <span class="v2-sync cap">{{ icon('check') }} {{ sync or 'Never synced' }}</span>
+        <form action="/theme" method="post"><button class="v2-theme" type="submit" name="theme" value="{% if request.cookies.get('theme') == 'day' %}night{% else %}day{% endif %}" title="Toggle theme" aria-label="Toggle theme">{{ icon('theme') }}</button></form>
+      </div>
+    </aside>
+    <main id="main" class="v2-main page">{% block content %}{% endblock %}</main>
+    <aside id="v2-coach-panel" class="v2-coach-panel" aria-label="Coach">
+      <div class="v2-panel-head"><h2 class="num" tabindex="-1">Coach</h2><span class="chip v2-context">{{ icon('circle') }} About: {{ 'today' if request.url.path == '/' else 'this week' if request.url.path == '/plan' else 'this page' }}</span><button type="button" class="v2-panel-close" data-close-coach aria-label="Close coach">{{ icon('close') }}</button></div>
+      {% block coach_panel %}<p class="cap">Ask about your training.</p><a class="btn" href="/coach">Full chat {{ icon('chevron') }}</a>{% endblock %}
+    </aside>
+  </div>
+  <nav class="v2-bottom-nav" aria-label="Mobile navigation">
+    <a href="/" {% if request.url.path == '/' %}aria-current="page"{% endif %}>{{ icon('sun') }}Today</a>
+    <a href="/plan" {% if request.url.path == '/plan' %}aria-current="page"{% endif %}>{{ icon('calendar') }}Training</a>
+    <button type="button" class="v2-ask-tab" data-open-coach aria-controls="v2-coach-panel" aria-expanded="false"><span class="v2-ask-icon">{{ icon('chat') }}</span>Ask</button>
+    <a href="/trends" {% if request.url.path == '/trends' %}aria-current="page"{% endif %}>{{ icon('trend') }}Insights</a>
+    <a href="/settings" {% if request.url.path == '/settings' %}aria-current="page"{% endif %}>{{ icon('user') }}Me</a>
   </nav>
+  {% endif %}
 </body></html>

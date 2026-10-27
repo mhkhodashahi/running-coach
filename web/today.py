@@ -23,11 +23,21 @@ from web.formatting import (
     activity_distance,
     activity_duration,
     delta,
-    duration_minutes,
     metric,
     short_date,
     sleep_hours,
     sync_time,
+)
+from web.view_models.today import (
+    TODAY_FOLLOW_UPS,
+    call_headline,
+    coach_evidence,
+    dial_models,
+    display_decision_text,
+    display_duration,
+    purpose_line,
+    week_strip,
+    workout_model,
 )
 
 
@@ -64,8 +74,8 @@ def today_context(settings: Settings, *, day: date, llm: Any = None) -> dict[str
             "SELECT resting_hr,hrv,sleep_duration,body_battery FROM health_metrics WHERE user_id=? "
             "AND date<=? ORDER BY date DESC LIMIT 7", (user_id, decision.based_on)).fetchall()
         rows = connection.execute(
-            "SELECT id,date,type,distance,duration,avg_hr FROM activities WHERE user_id=? AND date<=? "
-            "ORDER BY date DESC,id DESC", (user_id, day.isoformat())).fetchall()
+            "SELECT id,date,type,distance,duration,avg_hr FROM activities WHERE user_id=? AND date<? "
+            "ORDER BY date DESC,id DESC", (user_id, (day + timedelta(days=1)).isoformat())).fetchall()
     sessions = {session.activity_id: session for session in snapshot.sessions}
     activities = []
     for row in rows:
@@ -92,7 +102,7 @@ def today_context(settings: Settings, *, day: date, llm: Any = None) -> dict[str
             for offset in range(13, -1, -1)]
     plan = get_weekly_plan(day, settings=settings, user_id=user_id)
     plan_sessions = [{**item, "date_label": short_date(item["date"]),
-                      "duration_label": duration_minutes(item["duration_min"])} for item in plan["sessions"]]
+                      "duration_label": display_duration(item["duration_min"])} for item in plan["sessions"]]
     recommendations = decision.sports
     body_baseline = (sum(row[0] for row in body_history) / len(body_history)) if len(body_history) >= 4 else None
     engine = create_engine(settings.db_url)
@@ -104,6 +114,16 @@ def today_context(settings: Settings, *, day: date, llm: Any = None) -> dict[str
             unrated = pending[0] if pending else None
     finally:
         engine.dispose()
+    week_start = day - timedelta(days=day.weekday())
+    week_activities = [{"id": row["id"], "date": row["date"][:10],
+                        "sport": sport_category(row["type"], day)} for row in rows
+                       if week_start.isoformat() <= row["date"][:10] and
+                       sport_category(row["type"], day) in RECOMMENDABLE_SPORTS]
+    unrated_id = unrated.id if unrated else None
+    dials = dial_models(decision.readiness, current.get("sleep_duration"),
+                        baselines.get(("sleep_duration", 28)), snapshot.load.acute.value,
+                        snapshot.load.chronic.value, sync)
+    workout = workout_model(decision, plan_sessions)
     return {"decision": decision, "ring": readiness_ring(decision.readiness), "sync": sync,
             "day": day, "day_label": short_date(day), "based_on_label": short_date(decision.based_on),
             "recommendations": recommendations, "readiness": metric(decision.readiness),
@@ -139,7 +159,13 @@ def today_context(settings: Settings, *, day: date, llm: Any = None) -> dict[str
             "team_rest_caution": any(item["label"] == "Skip team training or attend skills only"
                                      for item in decision.team_options),
             "unrated": {"id": unrated.id, "sport": unrated.type.replace("_", " ").title(),
-                        "date": short_date(unrated.date)} if unrated else None}
+                        "date": short_date(unrated.date)} if unrated else None,
+            "dials": dials,
+            "week_strip": week_strip(day, plan_sessions, week_activities, unrated_id, workout),
+            "workout": workout, "call_headline": call_headline(decision.intensity, workout),
+            "coach_evidence": coach_evidence(decision), "coach_follow_ups": TODAY_FOLLOW_UPS,
+            "purpose": purpose_line(workout, dials),
+            "decision_text": display_decision_text(decision.explanation)}
 
 
 def choose_intensity(settings: Settings, day: date, choice: str | None) -> None:

@@ -140,6 +140,15 @@ Sequence depends on the missing target contract. Acceptance criteria below are c
 - Acceptance: Settings covers profile, custom HR zones, sleep goal, goal management, Garmin sync, CSV import and read-only coach configuration; every old feature has an owner disposition in the parity document. Streamlit remains startable as an optional legacy extra, but is absent from the default run path.
 - Risks: editing local configuration must preserve credentials and file permissions; sync and import must not run during page rendering; old data remains intact.
 
+### 5e. UI v2
+
+- **5e-1, shell + stylesheet + Today:** one responsive layout, self-hosted styling, three dated dials, decision card, week strip and a no-LLM-on-render coach panel. Keep existing routes working.
+- **5e-2, Training + proposal review:** port the training calendar and grouped proposal approval to the v2 visual system.
+- **5e-3, Insights + Activity:** port the trends and activity views without changing metrics or opinion semantics.
+- **5e-4, Coach page, day theme, cleanup:** finish the conversation view and day palette, then remove old templates and CSS only after route parity is verified.
+- Acceptance for 5e-1: 390, 1024 and 1440 px screenshots; decision overrides and chat still work; no personal values or design-example numbers enter tracked files.
+- Risk: the old page CSS remains during the staged rollout and must be scoped so unfinished pages remain usable.
+
 ### Later
 
 - Goal readiness and prediction as a Trends Goal card.

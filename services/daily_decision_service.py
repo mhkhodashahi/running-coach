@@ -208,7 +208,7 @@ def build_daily_decision(requested: date, database: Path, user_id: int, timezone
               "no combined illness signal" if illness is False else "No data",
               "metrics_snapshot.readiness.illness_flag"),
         _fact("HARD_LAST_48H", "Hard session in last 48h",
-              session_cause(hard_recent) if hard_recent else "no hard session in last 48 hours",
+              session_cause(hard_recent) if hard_recent else "no hard session in the last 48 hours",
               "activities + HR zones"),
         _fact("BASED_ON_DATE", "Health day used", based_on.isoformat(), "health_metrics.date"),
         _fact("LAST_SYNC_TIME", "Last Garmin sync", sync_display, "garmin_sync_status.last_synced_at"),
@@ -249,7 +249,7 @@ def build_daily_decision(requested: date, database: Path, user_id: int, timezone
     last_team = max((item for item in recent if now - timedelta(hours=48) <= item.when < now and
                      item.sport in TEAM_SPORTS), key=lambda item: item.when, default=None)
     facts.append(_fact("TEAM_LAST_48H", "Team session last 48h",
-                       session_cause(last_team) if last_team else "no team session in last 48 hours",
+                       session_cause(last_team) if last_team else "no team session in the last 48 hours",
                        "activities.date,type"))
     facts.extend((_fact("HARD_LOOKBACK", "Hard-session lookback", "48 hours", "coach.decision.HARD_LOOKBACK"),
                   _fact("RECENT_SPORT_WINDOW", "Recent sport window", "24 hours", "coach.decision.RECENT_SPORT"),

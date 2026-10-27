@@ -4,10 +4,16 @@ import ast
 from pathlib import Path
 
 
-def test_default_navigation_includes_settings_and_all_primary_pages() -> None:
+def test_v2_navigation_keeps_all_routes_accessible() -> None:
     source = Path("web/templates/base.html").read_text()
-    for destination in ("/", "/activities", "/trends", "/coach", "/plan", "/settings"):
+    for destination in ("/", "/trends", "/plan", "/settings"):
         assert source.count(f'href="{destination}"') >= 2
+    assert 'href="/coach"' in source
+    assert 'href="/activities"' in Path("web/templates/trends.html").read_text()
+    assert 'data-open-coach' in source
+    assert 'aria-current="page"' in source
+    assert "v2-secondary-link" not in source
+    assert "icon('chat')" in source
 
 
 def test_active_python_never_imports_retired_ui() -> None:

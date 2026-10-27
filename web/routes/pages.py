@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 from fastapi import APIRouter, BackgroundTasks, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse
 
+from llm.base import NullLLMClient
 from web.activities import (
     add_recommendation,
     ask_activity,
@@ -18,6 +19,7 @@ from web.activities import (
 )
 from web.coach_page import ask_coach, coach_context
 from web.plan_page import (
+    apply_change_selection,
     apply_groups,
     create_day,
     create_week,
@@ -25,6 +27,7 @@ from web.plan_page import (
     edit_plan_item,
     fresh_proposal,
     plan_context,
+    preview_changes,
     revise_proposal,
     undo_coach_change,
 )
@@ -49,7 +52,7 @@ router = APIRouter()
 def _today(request: Request) -> dict:
     settings = request.app.state.settings
     day = datetime.now(ZoneInfo(settings.local_timezone)).date()
-    return today_context(settings, day=day, llm=request.app.state.llm)
+    return today_context(settings, day=day, llm=NullLLMClient())
 
 
 @router.get("/", response_class=HTMLResponse)
@@ -65,8 +68,27 @@ def override(request: Request, choice: str = Form(...)):
     data = _today(request)
     choose_intensity(request.app.state.settings, data["day"], None if choice == "clear" else choice)
     if request.headers.get("HX-Request") == "true":
-        return request.app.state.templates.TemplateResponse(request, "components/coach_card.html", _today(request))
+        return request.app.state.templates.TemplateResponse(request, "components/v2_today_call.html", _today(request))
     return RedirectResponse("/", status_code=303)
+
+
+@router.post("/today/ask", response_class=HTMLResponse)
+def today_ask(request: Request, question: str = Form(...)):
+    question = question.strip()
+    if not 1 <= len(question) <= 480:
+        raise HTTPException(400, "Ask a question of at most 480 characters")
+    reply = None
+    error = None
+    try:
+        reply = ask_coach(request.app.state.settings, _day(request), f"About today: {question}", None,
+                          request.app.state.llm)
+        if not reply.used_llm:
+            error = reply.text
+            reply = None
+    except (ValueError, RuntimeError, PermissionError) as exc:
+        error = str(exc)
+    return request.app.state.templates.TemplateResponse(
+        request, "components/v2_coach_answer.html", {"reply": reply, "error": error})
 
 
 @router.post("/today/rate", response_class=HTMLResponse)
@@ -221,9 +243,34 @@ def coach_ask(request: Request, question: str = Form(...), activity_id: int | No
 
 
 @router.get("/plan", response_class=HTMLResponse)
-def plan(request: Request):
+def plan(request: Request, start: str = "", view: str = "week"):
+    if view not in ("week", "month"):
+        raise HTTPException(400, "Choose Week or Month")
+    try:
+        selected = date.fromisoformat(start) if start else None
+    except ValueError as exc:
+        raise HTTPException(400, "Invalid week") from exc
     return request.app.state.templates.TemplateResponse(
-        request, "plan.html", plan_context(request.app.state.settings, _day(request)))
+        request, "plan.html", plan_context(request.app.state.settings, _day(request), start=selected, view=view))
+
+
+@router.post("/plan/ask", response_class=HTMLResponse)
+def plan_ask(request: Request, question: str = Form(...)):
+    question = question.strip()
+    if not 1 <= len(question) <= 480:
+        raise HTTPException(400, "Ask a question of at most 480 characters")
+    reply = None
+    error = None
+    try:
+        reply = ask_coach(request.app.state.settings, _day(request), f"About this week: {question}",
+                          None, request.app.state.llm)
+        if not reply.used_llm:
+            error = reply.text
+            reply = None
+    except (ValueError, RuntimeError, PermissionError) as exc:
+        error = str(exc)
+    return request.app.state.templates.TemplateResponse(
+        request, "components/v2_coach_answer.html", {"reply": reply, "error": error})
 
 
 @router.post("/plan/week")
@@ -257,10 +304,30 @@ def plan_day(request: Request, when: str = Form(...)):
 async def plan_apply(request: Request, proposal_id: int):
     form = await request.form()
     try:
-        apply_groups(request.app.state.settings, proposal_id, form.getlist("group_ids"))
+        change_ids = form.getlist("change_ids")
+        if change_ids:
+            apply_change_selection(request.app.state.settings, proposal_id,
+                                   [int(value) for value in change_ids])
+        else:
+            apply_groups(request.app.state.settings, proposal_id, form.getlist("group_ids"))
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from exc
+    if request.headers.get("HX-Request") == "true":
+        return request.app.state.templates.TemplateResponse(
+            request, "plan.html", plan_context(request.app.state.settings, _day(request)))
     return RedirectResponse("/plan", status_code=303)
+
+
+@router.post("/plan/proposals/{proposal_id}/preview", response_class=HTMLResponse)
+async def plan_preview(request: Request, proposal_id: int):
+    form = await request.form()
+    try:
+        selected = [int(value) for value in form.getlist("change_ids")]
+        result = preview_changes(request.app.state.settings, _day(request), proposal_id, selected)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return request.app.state.templates.TemplateResponse(
+        request, "components/v2_proposal_preview.html", result)
 
 
 @router.post("/plan/proposals/{proposal_id}/dismiss")
