@@ -7,13 +7,19 @@ from typing import Any
 
 from coach.planning import MAX_WEEKLY_INCREASE, estimate_load, is_hard
 from web.formatting import short_date
-from web.view_models.today import display_duration, session_name
+from web.view_models.today import dial_status, display_duration, session_name, week_day
 
-TRAINING_FOLLOW_UPS = (
-    "Could I move a session this week?",
-    "Is there room for an easy run?",
-    "Why is this week lighter?",
-)
+SAFE_LIMIT_PERCENT = round(MAX_WEEKLY_INCREASE * 100)
+LOAD_BAR_MAX_PERCENT = 130
+
+
+def training_follow_ups(status: str, proposal_open: bool) -> tuple[str, ...]:
+    first = "Should I review the coach's suggestions?" if proposal_open else "Could I move a session this week?"
+    if status == "Above usual":
+        return (first, "How can I make this week easier?", "Which session should I keep?")
+    if status == "Below usual":
+        return (first, "Is there room for an easy run?", "Why is this week lighter?")
+    return (first, "Is there room for an easy run?", "How does this week compare with usual?")
 
 
 def percentage(value: float | None, cap: float | None) -> int | None:
@@ -67,47 +73,42 @@ def proposal_view(proposal: dict[str, Any], week: dict[str, Any], model: Any,
             "stale": proposal["status"] == "stale"}
 
 
-def week_view(week: dict[str, Any], today: date, sync: str) -> dict[str, Any]:
+def week_view(week: dict[str, Any], today: date, sync: str,
+              recommendation: dict[str, Any] | None = None) -> dict[str, Any]:
     start = date.fromisoformat(week["start"])
-    sessions = [session for day in week["days"] for session in day["sessions"]]
     days = []
     for day in week["days"]:
         current = date.fromisoformat(day["date"])
-        entries = []
-        for activity in day["actuals"]:
-            entries.append({"title": session_name(activity["sport"], None).capitalize(),
-                            "duration": activity["duration"] or f"No data · {sync}",
-                            "activity_id": activity["id"], "done": True,
-                            "rate_id": activity.get("rate_id"), "badges": ("Done",)})
-        for session in day["sessions"]:
-            if session.get("status") == "skipped":
-                continue
-            if session.get("linked_activity_id") in {row["id"] for row in day["actuals"]}:
-                continue
-            origin = session.get("origin")
-            badges = tuple(value for value in (
-                "Fixed" if origin == "fixed" else "Habit" if origin == "protected" else None,
-                "Hard" if is_hard(session) else None) if value)
-            entries.append({"title": session_name(session["sport"], session.get("intent")).capitalize(),
-                            "duration": display_duration(session.get("duration_min")),
-                            "hr_cap": session.get("hr_cap_bpm"), "badges": badges,
-                            "done": False, "activity_id": None, "session": session})
-        days.append({**day, "weekday": current.strftime("%a"), "number": current.day,
-                     "today": current == today, "past": current < today, "entries": entries,
+        shared = week_day(current, today, day["sessions"], day["actuals"], recommendation=recommendation)
+        entries = [dict(entry, duration=entry.get("duration") or f"No data · {sync}")
+                   if entry["done"] else entry for entry in shared["entries"]]
+        days.append({**day, **shared, "today": current == today, "past": current < today, "entries": entries,
                      "empty": day["empty_label"], "estimated_load": day["estimated_load"]})
     done = sum(len(day["actuals"]) for day in week["days"])
     planned = sum(1 for day in week["days"] for session in day["sessions"]
                   if session.get("status") != "skipped" and session["sport"] not in ("rest", "mobility")
                   and not session.get("linked_activity_id"))
-    hard = sum(is_hard(session) for session in sessions if session.get("status") == "planned")
+    planned_hard = sum(any(entry.get("session") and is_hard(entry["session"])
+                           for entry in day["entries"] if not entry["done"]) for day in days)
+    hard = sum(any((entry.get("session") and is_hard(entry["session"])) or
+                   (entry.get("recommended") and is_hard(entry))
+                   for entry in day["entries"] if not entry["done"]) for day in days)
+    suggested_hard = next((entry["title"].lower() for day in days for entry in day["entries"]
+                           if entry.get("recommended") and is_hard(entry)), None)
     rest = sum(not day["entries"] and day["empty"] == "Rest day" for day in days)
     total_percent = percentage(week["total"], week["cap"])
     actual_percent = percentage(week["actual_total"], week["cap"])
+    status, status_icon = dial_status("load", float(total_percent) if total_percent is not None else None, 100)
     return {**week, "days": days, "done_count": done, "session_count": done + planned,
             "actual_percent": actual_percent, "total_percent": total_percent,
             "planned_percent": max(0, total_percent - actual_percent)
             if total_percent is not None and actual_percent is not None else None,
-            "hard_count": hard, "rest_count": rest, "sync": sync,
+            "hard_count": hard, "planned_hard_count": planned_hard, "rest_count": rest, "sync": sync,
+            "load_status": status, "load_icon": status_icon,
+            "bar_actual": min(100, round((actual_percent or 0) / LOAD_BAR_MAX_PERCENT * 100)),
+            "bar_total": min(100, round((total_percent or 0) / LOAD_BAR_MAX_PERCENT * 100)),
+            "safe_marker": round(SAFE_LIMIT_PERCENT / LOAD_BAR_MAX_PERCENT * 100),
+            "suggested_hard_title": suggested_hard,
             "range_label": f"{short_date(start)} – {short_date(start + timedelta(days=6))}"}
 
 
@@ -115,11 +116,25 @@ def coach_summary(week: dict[str, Any]) -> tuple[str, tuple[dict[str, str], ...]
     hard = week["hard_count"]
     rest = week["rest_count"]
     percent = week["total_percent"]
+    chips = []
+    if hard:
+        chips.append({"label": "Hard days", "value": str(hard)})
+    if percent is not None:
+        chips.append({"label": "Load", "value": f"{percent}% of usual"})
+    if rest:
+        chips.append({"label": "Rest days", "value": str(rest)})
     if percent is None:
-        return (f"{hard} hard days and {rest} rest days are planned. Load: No data ({week['sync']}).",
-                ({"label": "Hard days", "value": str(hard)}, {"label": "Rest days", "value": str(rest)}))
-    return (f"This week has {hard} hard days and {rest} rest days. "
-            f"With the plan, load is {percent}% of usual.",
-            ({"label": "Hard days", "value": str(hard)},
-             {"label": "Load", "value": f"{percent}% of usual"},
-             {"label": "Rest days", "value": str(rest)}))
+        return f"Load: No data · {week['sync']}.", tuple(chips)
+    summary = f"Your plan puts load at {percent}% of usual"
+    if percent > SAFE_LIMIT_PERCENT:
+        summary += f", above the {SAFE_LIMIT_PERCENT}% safe limit"
+    else:
+        summary += f", {week['load_status'].lower()}"
+    summary += "."
+    if week["suggested_hard_title"]:
+        title = week["suggested_hard_title"]
+        summary += (f" No hard session is planned; today's {title} is suggested." if not
+                    week["planned_hard_count"] else f" Today's {title} is suggested as well as the plan.")
+    elif hard:
+        summary += f" {hard} hard {'day is' if hard == 1 else 'days are'} in the plan."
+    return summary, tuple(chips)

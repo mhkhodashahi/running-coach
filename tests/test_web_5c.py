@@ -142,7 +142,7 @@ def test_plan_now_buttons_route_to_the_requested_day(data, monkeypatch):
     monkeypatch.setattr("web.routes.pages.create_week", fake_week)
     with TestClient(create_app(settings, password="")) as client:
         page = client.get("/plan")
-        for label in ("Plan today", "Plan tomorrow", "Plan this week", "Plan next week"):
+        for label in ("Suggest a plan", "Today", "Tomorrow", "This week", "Next week"):
             assert label in page.text
         for when in ("today", "tomorrow"):
             response = client.post("/plan/day", data={"when": when})

@@ -29,16 +29,17 @@ from coach.proposals import (
 from config import Settings
 from metrics import get_daily_snapshot
 from metrics.sports import RECOMMENDABLE_SPORTS, sport_category
+from services.daily_decision_service import build_daily_decision
 from services.effort_service import unrated_activities
 from web.formatting import short_date
 from web.today import sync_label
-from web.view_models.today import display_duration
+from web.view_models.today import display_duration, workout_model
 from web.view_models.training import (
-    TRAINING_FOLLOW_UPS,
     coach_summary,
     percentage,
     proposal_view,
     selected_groups,
+    training_follow_ups,
     week_view,
 )
 
@@ -169,6 +170,10 @@ def plan_context(settings: Settings, day: date, *, notice: str | None = None,
     """Render this and next week without changing the plan."""
     start = monday(start or day)
     actuals, rest_choices = _actuals(settings, day, start)
+    decision = build_daily_decision(day, settings.db_path, settings.default_user_id,
+                                    settings.local_timezone, settings.sleep_goal_hours, settings.hr_zones)
+    today_plan = get_week(settings.db_path, settings.default_user_id, monday(day))["sessions"]
+    recommendation = workout_model(decision, today_plan)
     weeks = []
     for offset in ((0, 7) if view == "week" else (0, 7, 14, 21)):
         week_start = start + timedelta(days=offset)
@@ -204,10 +209,14 @@ def plan_context(settings: Settings, day: date, *, notice: str | None = None,
                       "actual_percent": min(100, round(breakdown["actual_total"] / breakdown["cap"] * 100))
                       if breakdown["cap"] and breakdown["actual_total"] is not None else None,
                       "proposals": proposed}
-        shown = week_view(raw_week, day, sync_label(settings, day))
+        shown = week_view(raw_week, day, sync_label(settings, day), recommendation)
         shown["proposals"] = [proposal_view(item, raw_week, model) for item in proposed]
         weeks.append(shown)
-    return {"weeks": weeks, "commitments": list_commitments(settings.db_path, settings.default_user_id),
+    review_items = sorted(({"proposal": proposal, "week": week} for week in weeks
+                           for proposal in week["proposals"] if proposal["status"] in ("pending", "stale")),
+                          key=lambda item: (item["proposal"]["status"] != "pending", -item["proposal"]["id"]))
+    return {"weeks": weeks, "review_items": review_items,
+            "commitments": list_commitments(settings.db_path, settings.default_user_id),
             "habits": list_protected_habits(settings.db_path, settings.default_user_id),
             "notice": notice, "error": error, "sync": sync_label(settings, day),
             "weekdays": tuple(enumerate(("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"))),
@@ -217,7 +226,10 @@ def plan_context(settings: Settings, day: date, *, notice: str | None = None,
                                          if proposal["status"] == "pending"), None),
             "previous_start": (start - timedelta(days=7)).isoformat(),
             "next_start": (start + timedelta(days=7)).isoformat(),
-            "coach_summary": coach_summary(weeks[0]), "training_follow_ups": TRAINING_FOLLOW_UPS}
+            "coach_summary": coach_summary(weeks[0]),
+            "training_follow_ups": training_follow_ups(weeks[0]["load_status"],
+                                                    any(item["proposal"]["status"] == "pending"
+                                                        for item in review_items))}
 
 
 def create_week(settings: Settings, day: date, start: date, llm: Any = None) -> dict[str, Any]:

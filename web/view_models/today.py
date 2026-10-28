@@ -6,6 +6,7 @@ import re
 from datetime import date, timedelta
 from typing import Any
 
+from coach.planning import is_hard
 from web.formatting import sleep_hours
 
 TODAY_FOLLOW_UPS = (
@@ -149,6 +150,7 @@ def workout_model(decision: Any, sessions: list[dict[str, Any]]) -> dict[str, An
     if planned:
         structure = planned.get("structure")
         return {"title": session_name(planned["sport"], planned.get("intent")),
+                "intent": planned.get("intent"),
                 "duration": display_duration(planned.get("duration_min")),
                 "structure": structure, "steps": tuple(part.strip() for part in structure.split(",") if part.strip())
                 if structure else (), "sport": planned["sport"], "purpose": planned.get("purpose")}
@@ -156,8 +158,54 @@ def workout_model(decision: Any, sessions: list[dict[str, Any]]) -> dict[str, An
         return None
     session = ranked["session"]
     return {"title": session_name(ranked["sport"], session.get("intent")),
+            "intent": session.get("intent"),
             "duration": display_duration(session["duration_min"]), "structure": session.get("structure") or "",
             "steps": (), "sport": ranked["sport"], "purpose": None}
+
+
+def week_day(current: date, today: date, planned: list[dict[str, Any]], logged: list[dict[str, Any]],
+             unrated_id: int | None = None, recommendation: dict[str, Any] | None = None
+             ) -> dict[str, Any]:
+    """One source for Today strip and Training day contents."""
+    planned = [item for item in planned if item.get("status") != "skipped"]
+    key = current.isoformat()
+    entries = []
+    logged_ids = {item["id"] for item in logged}
+    for actual in logged:
+        entries.append({"title": session_name(actual["sport"], actual.get("intent")).capitalize(),
+                        "done": True, "activity_id": actual["id"], "duration": actual.get("duration"),
+                        "rate_id": actual.get("rate_id") or (actual["id"] if actual["id"] == unrated_id else None),
+                        "badges": ("Done",)})
+    for item in planned:
+        if item["sport"] == "rest" or item.get("linked_activity_id") in logged_ids or item.get("status") == "done":
+            continue
+        origin = item.get("origin")
+        badges = tuple(value for value in (
+            "Fixed" if origin == "fixed" else "Habit" if origin == "protected" else None,
+            "Hard" if is_hard(item) else None) if value)
+        entries.append({"title": session_name(item["sport"], item.get("intent")).capitalize(),
+                        "done": False, "origin": origin, "duration": display_duration(item.get("duration_min")),
+                        "hr_cap": item.get("hr_cap_bpm"), "badges": badges,
+                        "activity_id": None, "session": item})
+    if current == today and recommendation and not planned:
+        entries.append({"title": recommendation["title"].capitalize(), "done": False,
+                        "duration": recommendation.get("duration"), "recommended": True,
+                        "intent": recommendation.get("intent"), "sport": recommendation.get("sport"),
+                        "badges": ("Suggested",), "activity_id": None})
+    rest = any(item["sport"] == "rest" for item in planned)
+    state = "done" if logged else "rest" if rest else "planned" if entries else "empty"
+    if current == today:
+        state = "done today" if state == "done" else "today"
+    phone_next = next((entry["title"] for entry in entries if not entry["done"]), None)
+    phone_done = next((entry["title"] for entry in entries if entry["done"]), None)
+    return {"date": key, "weekday": current.strftime("%a"), "number": current.day,
+            "day_label": f"{current:%a} {current.day}", "state": state,
+            "icon": "check" if logged else "minus" if state in ("rest", "empty") else "circle",
+            "entries": tuple(entries),
+            "title": entries[0]["title"] if entries else "Rest day" if rest else "Nothing planned",
+            "phone_title": ((phone_next.split()[0] if current == today else phone_next) if phone_next else
+                            "Rest" if rest else "—" if not phone_done else phone_done),
+            "phone_done": phone_done if phone_next else None}
 
 
 def week_strip(day: date, sessions: list[dict[str, Any]], activities: list[dict[str, Any]],
@@ -168,38 +216,7 @@ def week_strip(day: date, sessions: list[dict[str, Any]], activities: list[dict[
     for offset in range(7):
         current = start + timedelta(days=offset)
         key = current.isoformat()
-        planned = [item for item in sessions if item["date"] == key and item.get("status") != "skipped"]
+        planned = [item for item in sessions if item["date"] == key]
         logged = [item for item in activities if item["date"] == key]
-        entries = []
-        for actual in logged:
-            entries.append({"title": session_name(actual["sport"], actual.get("intent")).capitalize(),
-                            "done": True, "activity_id": actual["id"],
-                            "rate_id": actual["id"] if actual["id"] == unrated_id else None})
-        for item in planned:
-            if item["sport"] == "rest":
-                continue
-            if item.get("linked_activity_id") in {actual["id"] for actual in logged}:
-                continue
-            if item.get("status") == "done":
-                continue
-            entries.append({"title": session_name(item["sport"], item.get("intent")).capitalize(),
-                            "done": False, "origin": item.get("origin"),
-                            "duration": display_duration(item.get("duration_min"))})
-        if current == day and recommendation and not planned:
-            entries.append({"title": recommendation["title"].capitalize(), "done": False,
-                            "duration": recommendation.get("duration"), "recommended": True})
-        rest = bool(planned and any(item["sport"] == "rest" for item in planned))
-        state = "done" if logged else "rest" if rest else "planned" if entries else "empty"
-        if current == day:
-            state = "today" if state != "done" else "done today"
-        phone_next = next((entry["title"] for entry in entries if not entry["done"]), None)
-        phone_done = next((entry["title"] for entry in entries if entry["done"]), None)
-        result.append({"date": key, "weekday": current.strftime("%a"),
-                       "day_label": f"{current:%a} {current.day}", "state": state,
-                       "icon": "check" if logged else "minus" if state in ("rest", "empty") else "circle",
-                       "entries": tuple(entries),
-                       "title": entries[0]["title"] if entries else "Rest day" if rest else "Nothing planned",
-                       "phone_title": ((phone_next.split()[0] if current == day else phone_next) if phone_next else
-                                       "Rest" if rest else "—" if not phone_done else phone_done),
-                       "phone_done": phone_done if phone_next else None})
+        result.append(week_day(current, day, planned, logged, unrated_id, recommendation))
     return tuple(result)

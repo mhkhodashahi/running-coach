@@ -12,7 +12,8 @@ from coach.proposals import create_proposal, get_proposal
 from config import get_settings
 from db.migration_runner import upgrade_database
 from web.app import create_app
-from web.view_models.training import coach_summary, percentage, selected_groups, week_view
+from web.view_models.today import week_day, week_strip
+from web.view_models.training import coach_summary, percentage, selected_groups, training_follow_ups, week_view
 
 
 def test_load_percentage_and_missing_data():
@@ -45,7 +46,75 @@ def test_week_states_and_coach_copy():
     summary, chips = coach_summary(week)
     assert "80% of usual" in summary and chips[1] == {"label": "Load", "value": "80% of usual"}
     week["total_percent"] = None
-    assert "No data (Synced 09:00)" in coach_summary(week)[0]
+    assert "No data · Synced 09:00" in coach_summary(week)[0]
+
+
+def test_today_and_training_share_done_and_suggested_day():
+    today = date(2026, 10, 27)
+    days = [{"date": date.fromordinal(today.toordinal() - today.weekday() + offset).isoformat(),
+             "sessions": [], "actuals": [], "empty_label": "Nothing planned", "estimated_load": 0}
+            for offset in range(7)]
+    actual = {"id": 10, "date": today.isoformat(), "sport": "gym", "duration": "30 min"}
+    days[1]["actuals"] = [actual]
+    suggestion = {"title": "tempo run", "sport": "running", "intent": "tempo", "duration": "45 min"}
+    shown = week_view({"start": days[0]["date"], "days": days, "total": 113,
+                       "actual_total": 25, "cap": 110}, today, "Synced 09:00", suggestion)
+    strip = week_strip(today, [], [actual], recommendation=suggestion)
+    assert [(item["title"], item["done"]) for item in shown["days"][1]["entries"]] == [
+        (item["title"], item["done"]) for item in strip[1]["entries"]]
+    assert shown["hard_count"] == 1
+    assert shown["load_status"] == "Normal"
+    assert "110% safe limit" in coach_summary(shown)[0]
+    assert "suggested" in coach_summary(shown)[0]
+    assert all(chip["value"] != "0" for chip in coach_summary(shown)[1])
+
+
+def test_skills_only_team_session_is_not_badged_hard():
+    day = date(2026, 10, 27)
+    shown = week_day(day, day, [{"date": day.isoformat(), "sport": "football", "intent": "skills only",
+                                 "duration_min": 30, "status": "planned"}], [])
+    assert "Hard" not in shown["entries"][0]["badges"]
+
+
+@pytest.mark.parametrize("percent,status", [(79, "Below usual"), (80, "Normal"),
+                                           (130, "Normal"), (131, "Above usual")])
+def test_training_load_status_thresholds(percent, status):
+    start = date(2026, 10, 26)
+    days = [{"date": date.fromordinal(start.toordinal() + offset).isoformat(), "sessions": [],
+             "actuals": [], "empty_label": "Nothing planned", "estimated_load": 0} for offset in range(7)]
+    shown = week_view({"start": start.isoformat(), "days": days, "total": percent,
+                       "actual_total": 0, "cap": 110}, start, "Synced 09:00")
+    assert shown["load_status"] == status
+    if percent > 110:
+        assert shown["safe_marker"] < shown["bar_total"]
+
+
+def test_followups_change_with_load_and_proposal():
+    above = training_follow_ups("Above usual", True)
+    assert "suggestions" in above[0]
+    assert not any("lighter" in item for item in above)
+    assert any("lighter" in item for item in training_follow_ups("Below usual", False))
+    assert not any("lighter" in item for item in training_follow_ups("Normal", False))
+
+
+def test_proposal_order_pending_before_stale(client_data):
+    client, settings, today = client_data
+    monday = today.fromordinal(today.toordinal() - today.weekday())
+    facts = [{"id": "HABIT", "metric": "Habit", "display": "one run", "source": "fixture"}]
+    def make(day, title):
+        return create_proposal(settings.db_path, settings.default_user_id, "weekly_plan", title, facts,
+                               [{"change_type": "add", "session": {"id": None, "date": day.isoformat(),
+                                 "sport": "running", "intent": "easy", "duration_min": 30,
+                                 "hr_cap_bpm": None, "notes": None, "status": "planned"},
+                                 "reason": "A gentle run.", "fact_ids": ["HABIT"],
+                                 "group_id": title.replace(" ", "-")}])
+    stale = make(monday, "Old suggestion")
+    with sqlite3.connect(settings.db_path) as connection:
+        connection.execute("UPDATE coach_proposals SET status='stale' WHERE id=?", (stale["id"],))
+    make(monday, "Current suggestion")
+    page = client.get("/plan").text
+    assert page.index("Current suggestion") < page.index("Old suggestion")
+    assert "suggestion is out of date" in page and "Request a fresh one" in page
 
 
 def test_group_selection_is_atomic():

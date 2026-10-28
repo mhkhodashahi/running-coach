@@ -20,18 +20,13 @@ document.addEventListener('keydown', function (event) {
 document.addEventListener('click', function (event) {
   const opener = event.target.closest('[data-open-proposal]');
   const closer = event.target.closest('[data-close-proposal]');
-  const reopen = event.target.closest('[data-reopen-proposal]');
-  if (!opener && !closer && !reopen) return;
-  const id = opener?.dataset.openProposal || closer?.dataset.closeProposal || reopen?.dataset.reopenProposal;
+  if (!opener && !closer) return;
+  const id = opener?.dataset.openProposal || closer?.dataset.closeProposal;
   const wrapper = document.querySelector('#proposal-' + id);
   wrapper?.classList.toggle('is-open', Boolean(opener));
-  if (closer && window.matchMedia('(min-width: 768px)').matches) wrapper?.classList.add('is-deferred');
-  if (reopen) wrapper?.classList.remove('is-deferred');
   document.querySelector('[data-open-proposal="' + id + '"]')?.setAttribute('aria-expanded', String(Boolean(opener)));
   if (opener) wrapper?.querySelector('.v2-proposal h2')?.focus();
-  if (closer) (window.matchMedia('(min-width: 768px)').matches
-    ? wrapper?.querySelector('[data-reopen-proposal]')
-    : document.querySelector('[data-open-proposal="' + id + '"]'))?.focus();
+  if (closer) document.querySelector('[data-open-proposal="' + id + '"]')?.focus();
 });
 document.addEventListener('change', function (event) {
   const checkbox = event.target.closest('.v2-proposal-change input[type=checkbox]');
