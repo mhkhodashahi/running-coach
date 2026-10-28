@@ -95,9 +95,14 @@ def week_view(week: dict[str, Any], today: date, sync: str,
                    for entry in day["entries"] if not entry["done"]) for day in days)
     suggested_hard = next((entry["title"].lower() for day in days for entry in day["entries"]
                            if entry.get("recommended") and is_hard(entry)), None)
+    suggested_title = next((entry["title"].lower() for day in days for entry in day["entries"]
+                            if entry.get("recommended")), None)
     rest = sum(not day["entries"] and day["empty"] == "Rest day" for day in days)
     total_percent = percentage(week["total"], week["cap"])
     actual_percent = percentage(week["actual_total"], week["cap"])
+    suggested_load = week.get("suggested_load")
+    suggested_percent = (percentage(week["total"] + suggested_load, week["cap"])
+                         if week["total"] is not None and suggested_load is not None else None)
     status, status_icon = dial_status("load", float(total_percent) if total_percent is not None else None, 100)
     return {**week, "days": days, "done_count": done, "session_count": done + planned,
             "actual_percent": actual_percent, "total_percent": total_percent,
@@ -109,6 +114,8 @@ def week_view(week: dict[str, Any], today: date, sync: str,
             "bar_total": min(100, round((total_percent or 0) / LOAD_BAR_MAX_PERCENT * 100)),
             "safe_marker": round(SAFE_LIMIT_PERCENT / LOAD_BAR_MAX_PERCENT * 100),
             "suggested_hard_title": suggested_hard,
+            "suggested_title": suggested_title,
+            "with_suggested_percent": suggested_percent,
             "range_label": f"{short_date(start)} – {short_date(start + timedelta(days=6))}"}
 
 
@@ -128,6 +135,8 @@ def coach_summary(week: dict[str, Any]) -> tuple[str, tuple[dict[str, str], ...]
     summary = f"Your plan puts load at {percent}% of usual"
     if percent > SAFE_LIMIT_PERCENT:
         summary += f", above the {SAFE_LIMIT_PERCENT}% safe limit"
+    elif percent == SAFE_LIMIT_PERCENT:
+        summary += f", right at the {SAFE_LIMIT_PERCENT}% safe limit"
     else:
         summary += f", {week['load_status'].lower()}"
     summary += "."
@@ -137,4 +146,6 @@ def coach_summary(week: dict[str, Any]) -> tuple[str, tuple[dict[str, str], ...]
                     week["planned_hard_count"] else f" Today's {title} is suggested as well as the plan.")
     elif hard:
         summary += f" {hard} hard {'day is' if hard == 1 else 'days are'} in the plan."
+    if week["suggested_title"] and week["with_suggested_percent"] is not None:
+        summary += f" With today's {week['suggested_title']}: {week['with_suggested_percent']}% of usual."
     return summary, tuple(chips)

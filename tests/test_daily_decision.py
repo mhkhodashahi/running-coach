@@ -1,6 +1,7 @@
 """Invented fixture tests for daily decision rules, explanation and storage."""
 
 import json
+import re
 import sqlite3
 from dataclasses import replace
 from datetime import date, datetime, timedelta
@@ -22,6 +23,7 @@ from coach.decision import (
 from config import get_settings
 from db.migration_runner import upgrade_database
 from services.daily_decision_service import (
+    _validate_explanation,
     build_daily_decision,
     explain_decision,
     fallback_explanation,
@@ -352,6 +354,16 @@ def test_natural_fallback_for_each_rule(decision_db, rule, phrase):
     assert "1_5" not in text
     assert "last sync" not in text.lower()
     assert "provisional" not in text.lower()
+    assert all(sentence[:1].isupper() for sentence in re.split(r"(?<=[.!?])\s+", text))
+
+
+def test_llm_decision_copy_rejects_lowercase_sentence_start(decision_db):
+    decision = build_daily_decision(DAY, decision_db, 1, "Europe/Berlin", 7.5)
+    ids = [item["id"] for item in decision.facts][:2]
+    with pytest.raises(ValueError, match="capital letter"):
+        _validate_explanation({"headline": "Keep it easy", "explanation": "Stay steady. recovery matters.",
+                               "evidence_ids": ids,
+                               "follow_ups": ["Why easy?", "What next?"]}, decision)
 
 
 def test_provisional_llm_does_not_receive_or_repeat_sync_details(decision_db):

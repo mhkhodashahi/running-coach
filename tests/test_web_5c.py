@@ -47,7 +47,7 @@ def test_three_pages_render_with_invented_data(data, mode):
     if mode != "empty":
         fill_data(settings, day, partial=mode == "partial")
     with TestClient(create_app(settings, password="")) as client:
-        for path, expected in (("/trends?range=7", "Resting heart rate"),
+        for path, expected in (("/trends?range=7", "Resting HR"),
                                ("/coach", "Attach a session"), ("/plan", "Protected habits")):
             response = client.get(path)
             assert response.status_code == 200, (path, response.text[:400])

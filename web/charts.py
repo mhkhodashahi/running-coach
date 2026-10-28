@@ -113,15 +113,15 @@ def trend_line(values: list[tuple[str, float | None]], label: str, color: str,
 
 
 def trend_bars(values: list[tuple[str, float | None]], label: str,
-               goal: float, color: str) -> dict[str, str]:
+               goal: float | None, color: str) -> dict[str, str]:
     if color not in TREND_COLORS:
         raise ValueError("Unknown trend color")
     known = [value for _, value in values if value is not None]
     summary = (f"{label}: {len(known)} of {len(values)} days have data; "
-               f"goal {display_hours(goal)}; gaps mean missing data.")
+               f"{'goal ' + str(display_hours(goal)) + '; ' if goal is not None else ''}gaps mean missing data.")
     if not known:
         return {"svg": "", "summary": summary}
-    maximum = max(known + [goal, 1]) * 1.08
+    maximum = max(known + [goal or 0, 1]) * 1.08
     bars = []
     width = TREND_WIDTH / max(len(values), 1)
     for index, (stamp, value) in enumerate(values):
@@ -136,20 +136,53 @@ def trend_bars(values: list[tuple[str, float | None]], label: str,
                     f'width="{max(width - 2, 1):.1f}" '
                     f'height="{height:.1f}" fill="{TREND_COLORS[color]}"><title>{escape(stamp)}: '
                     f'{display_hours(value)}</title></rect>')
-    goal_y = TREND_TOP + TREND_HEIGHT - goal / maximum * TREND_HEIGHT
+    goal_line = ""
+    if goal is not None:
+        goal_y = TREND_TOP + TREND_HEIGHT - goal / maximum * TREND_HEIGHT
+        goal_line = (f'<line x1="{TREND_X}" y1="{goal_y:.1f}" '
+                     f'x2="{TREND_X + TREND_WIDTH}" y2="{goal_y:.1f}" '
+                     'stroke="var(--ink-muted)" stroke-dasharray="5 4"/>')
     latest_index, (_, latest) = next((index, pair) for index, pair in reversed(list(enumerate(values)))
                                      if pair[1] is not None)
     latest_x = TREND_X + (latest_index + .5) * width
     latest_y = TREND_TOP + TREND_HEIGHT - latest / maximum * TREND_HEIGHT
     svg = (f'<svg class="trend-chart" viewBox="0 0 604 205" role="img" aria-label="{escape(summary)}">'
-           f'<title>{escape(summary)}</title><line x1="{TREND_X}" y1="{goal_y:.1f}" '
-           f'x2="{TREND_X + TREND_WIDTH}" y2="{goal_y:.1f}" '
-           'stroke="var(--ink-muted)" stroke-dasharray="5 4"/>'
+           f'<title>{escape(summary)}</title>{goal_line}'
            f'{_axis_limits(0, maximum, "h")}{_axis_dates(values)}' + ''.join(bars) +
            f'<text x="{min(latest_x, 545):.1f}" y="{latest_y - 7:.1f}" text-anchor="end" '
            f'class="latest-label">{escape(display_hours(latest) or "No data")}</text></svg>')
     summary += f" Latest {display_hours(latest)}."
     return {"svg": svg, "summary": summary}
+
+
+def weekly_percent_bars(weeks: list[tuple[str, float | None]]) -> dict[str, str]:
+    """Weekly load as percent of the existing usual-week reference; None stays a gap."""
+    known = [value for _, value in weeks if value is not None]
+    summary = (f"Weekly load: {len(known)} of {len(weeks)} weeks have a usable comparison. "
+               "The dashed line is the 110% safe limit.")
+    if not known:
+        return {"svg": "", "summary": summary}
+    maximum = max(130, ceil(max(known) / 10) * 10)
+    width = TREND_WIDTH / max(len(weeks), 1)
+    base = TREND_TOP + TREND_HEIGHT
+    safe_y = base - 110 / maximum * TREND_HEIGHT
+    parts = [_axis_limits(0, maximum, "%"),
+             f'<line x1="{TREND_X}" x2="{TREND_X + TREND_WIDTH}" y1="{safe_y:.1f}" '
+             f'y2="{safe_y:.1f}" stroke="var(--ink-muted)" stroke-dasharray="5 4"/>',
+             f'<text x="{TREND_X + TREND_WIDTH}" y="{safe_y - 4:.1f}" '
+             'text-anchor="end" class="axis-label">110%</text>']
+    for index, (stamp, value) in enumerate(weeks):
+        x = TREND_X + index * width + width * .18
+        if value is not None:
+            height = min(value / maximum, 1) * TREND_HEIGHT
+            parts.append(f'<rect x="{x:.1f}" y="{base - height:.1f}" width="{width * .64:.1f}" '
+                         f'height="{height:.1f}" fill="var(--load)"><title>{escape(short_date(stamp))}: '
+                         f'{round(value)}% of usual</title></rect>')
+        parts.append(f'<text x="{x + width * .32:.1f}" y="190" text-anchor="middle" '
+                     f'class="axis-label">{escape(short_date(stamp))}</text>')
+    return {"svg": (f'<svg class="trend-chart" viewBox="0 0 604 205" role="img" '
+                    f'aria-label="{escape(summary)}"><title>{escape(summary)}</title>' +
+                    ''.join(parts) + '</svg>'), "summary": summary}
 
 
 def weekly_sport_bars(weeks: dict[str, dict[str, float]], sports: tuple[str, ...],

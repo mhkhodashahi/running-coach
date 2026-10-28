@@ -2,8 +2,8 @@
 {% from 'components/ui.html' import empty %}
 {% block title %}Activities{% endblock %}
 {% block content %}
-<div class="page-heading"><div><span class="eyebrow">TRAINING LOG</span><h1>Activities</h1></div></div>
-<form class="activity-filters" method="get" action="/activities" aria-label="Filter activities">
+<div class="v2-activities-head"><a href="/trends" class="cap">‹ Insights</a><h1 class="num">All activities</h1></div>
+<form class="activity-filters v2-activity-filters" method="get" action="/activities" aria-label="Filter activities">
   <label>Sport<select name="sport"><option value="">All sports</option>{% for value in ['running','volleyball','football','gym','other','walking'] %}<option value="{{ value }}" {% if sport_filter == value %}selected{% endif %}>{{ value|title }}</option>{% endfor %}</select></label>
   <label>From<input type="date" name="start" value="{{ start }}"></label>
   <label>To<input type="date" name="end" value="{{ end }}"></label>

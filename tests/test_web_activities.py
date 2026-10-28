@@ -77,13 +77,13 @@ def browser(activity_db):
 def test_list_groups_filters_and_walks(browser):
     html = browser.get("/activities").text
     assert "Fri 23 Oct" in html and "Fri 16 Oct" in html
-    assert html.count('class="activity-week"') == 2
+    assert html.count('class="v2-activity-week"') == 2
     assert "/activities/101" in html and "/activities/105" not in html
     assert "/activities/106" not in html
     assert "4.2 km" in html and "28m" in html
     assert "3 sessions" in html
-    assert html.count("✓ Coach") == 2
-    assert "TRIMP" in html or "Load: No data" in html
+    assert html.count("Coach review") >= 2
+    assert "load" in html or "No data" in html
     walked = browser.get("/activities?show_walks=true").text
     assert "/activities/105" in walked and "/activities/106" not in walked
     assert "Walking" in walked
@@ -97,16 +97,16 @@ def test_list_load_more_paginates_twenty(browser, activity_db):
             connection.execute("INSERT INTO activities(id,user_id,date,type,distance,duration) "
                                "VALUES(?,1,?,'running',3,20)", (identifier, DAY.isoformat()))
     first = browser.get("/activities")
-    assert first.text.count('class="unrated-cell"') == 20
+    assert first.text.count('class="v2-activity-row"') == 20
     assert 'hx-get="/activities?' in first.text
     second = browser.get("/activities?page=2", headers={"HX-Request": "true"})
     assert second.status_code == 200
-    assert "activity-week" in second.text
+    assert "v2-activity-week" in second.text
     assert "<!doctype html>" not in second.text
 
 
 @pytest.mark.parametrize("identifier,expected", [(101, "Controlled progression."), (102, "Legacy session summary"),
-                                                 (103, "Gym"), (104, "Get coach opinion")])
+                                                 (103, "Gym"), (104, "Get a coach review")])
 def test_detail_renders_sports_opinions_and_missing_samples(browser, identifier, expected):
     response = browser.get(f"/activities/{identifier}")
     assert response.status_code == 200
@@ -114,6 +114,7 @@ def test_detail_renders_sports_opinions_and_missing_samples(browser, identifier,
     assert "Effort rating" in response.text
     assert "Ask about this" in response.text
     if identifier == 101:
+        assert "28:24" in response.text
         assert "Heart rate over" in response.text
         assert "5.25 m" in response.text and "Partial · excluded" in response.text
         assert "What worked" in response.text and "What to fix" in response.text
@@ -135,8 +136,8 @@ def test_legacy_and_v2_opinions_mark_matching_rows_without_rewriting(browser, ac
         detail = browser.get(f"/activities/{identifier}").text
         assert headline in detail and "No coach opinion yet" not in detail
         list_html = browser.get("/activities").text
-        row = list_html.split(f'href="/activities/{identifier}"', 1)[1].split("</tr>", 1)[0]
-        assert "✓ Coach" in row
+        row = list_html.split(f'href="/activities/{identifier}?from=activities"', 1)[1].split("</a>", 1)[0]
+        assert "Coach review" in row
     with sqlite3.connect(activity_db) as connection:
         assert connection.execute("SELECT activity_id,payload_json FROM activity_coaching_insights "
                                   "ORDER BY activity_id").fetchall() == before
@@ -189,10 +190,41 @@ def test_evidence_source_labels(source, label):
 
 
 def test_nonrunning_opinion_action_is_hidden(browser):
-    for identifier, sport in ((102, "volleyball"), (103, "gym")):
-        html = browser.get(f"/activities/{identifier}").text
-        assert f"Coach opinions for {sport} are coming soon" in html
-        assert "Get coach opinion</button>" not in html
+    legacy = browser.get("/activities/102").text
+    assert "Legacy session summary" in legacy
+    assert "Get a coach review</button>" not in legacy
+    gym = browser.get("/activities/103").text
+    assert "Coach reviews for gym are coming soon" in gym
+    assert "Get a coach review</button>" not in gym
+
+
+def test_v2_activity_tabs_and_back_links_only_show_available_data(browser):
+    run = browser.get("/activities/101?from=training").text
+    assert 'href="/plan"' in run
+    assert 'href="#activity-review"' in run
+    assert 'href="#activity-laps"' in run
+    assert "Read the full review" in run
+    assert "Heart rate" in run
+    missing = browser.get("/activities/104").text
+    assert 'href="#activity-review"' not in missing
+    assert 'href="#activity-laps"' not in missing
+    assert "Get a coach review" in missing
+    team = browser.get("/activities/102").text
+    assert "Heart-rate load can miss jumps and sprints" in team
+
+
+def test_insights_range_and_render_do_not_call_llm(browser, monkeypatch):
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Insights page render must not use an LLM")
+
+    monkeypatch.setattr("web.trends.cached_trend_summary", forbidden)
+    for days in (7, 28, 90):
+        response = browser.get(f"/trends?range={days}")
+        assert response.status_code == 200
+        assert f"Last {days} days" in response.text
+        assert 'aria-current="page"' in response.text
+        assert "All activities" in response.text
+        assert "Recovery" in response.text and "Weekly load" in response.text
 
 
 def test_structured_stride_laps_render_as_work_and_recovery(browser, activity_db):
@@ -240,7 +272,7 @@ def test_team_and_gym_similar_rows_show_duration_hr_and_efficiency(
     assert expected_delta.replace("-", "−") in html
     assert "−10 bpm" in html
     assert "similar" in html or "more efficient" in html
-    assert "Readiness —" in html
+    assert "Recovery —" in html
     assert ("1h 20m" if activity_id == 102 else "40m") in html
     assert "50:07 /km" not in html
 

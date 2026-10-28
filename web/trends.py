@@ -143,7 +143,8 @@ def cached_trend_summary(settings: Settings, day: date, days: int, facts: list[F
         return result
 
 
-def trends_context(settings: Settings, day: date, days: int, llm: Any = None) -> dict[str, Any]:
+def trends_context(settings: Settings, day: date, days: int, llm: Any = None,
+                   *, include_summary: bool = True) -> dict[str, Any]:
     """Build gap-preserving series and sport-week totals for the chosen range."""
     if days not in RANGES:
         raise ValueError("Choose 7, 28 or 90 days")
@@ -155,7 +156,7 @@ def trends_context(settings: Settings, day: date, days: int, llm: Any = None) ->
     model = load_model(settings.db_path, settings.default_user_id, monday(day) + timedelta(days=7), settings)
     values: dict[str, list[tuple[str, float | None]]] = {key: [] for key in
                                                            ("rhr", "hrv", "sleep", "readiness", "ratio")}
-    baselines: dict[str, list[tuple[str, float | None]]] = {key: [] for key in ("rhr", "hrv")}
+    baselines: dict[str, list[tuple[str, float | None]]] = {key: [] for key in ("rhr", "hrv", "sleep")}
     weekly: dict[str, dict[str, float]] = {}
     decisions: dict[str, str] = {}
     for snapshot in snapshots:
@@ -166,6 +167,7 @@ def trends_context(settings: Settings, day: date, days: int, llm: Any = None) ->
             values[key].append((stamp, health.get(field)))
         baselines["rhr"].append((stamp, baseline.get(("resting_hr", 7))))
         baselines["hrv"].append((stamp, baseline.get(("hrv", 28))))
+        baselines["sleep"].append((stamp, baseline.get(("sleep_duration", 28))))
         daily = build_daily_decision(date.fromisoformat(stamp), settings.db_path,
                                      settings.default_user_id, settings.local_timezone,
                                      settings.sleep_goal_hours, settings.hr_zones)
@@ -197,7 +199,7 @@ def trends_context(settings: Settings, day: date, days: int, llm: Any = None) ->
         for fact in facts:
             if fact["id"] == "READINESS" and latest_decision.readiness is not None:
                 fact["display"] = f"{round(latest_decision.readiness)}/100"
-    summary = cached_trend_summary(settings, day, days, facts, llm)
+    summary = cached_trend_summary(settings, day, days, facts, llm) if include_summary else _fallback(facts)
     charts = [
         {"title": "Resting heart rate", "svg": trend_line(values["rhr"], "Resting heart rate", "heart",
                                                          baselines["rhr"], unit="bpm"), "unit": "bpm"},
@@ -212,6 +214,27 @@ def trends_context(settings: Settings, day: date, days: int, llm: Any = None) ->
         {"title": "Weekly load by sport", "svg": weekly_sport_bars(weekly, SPORTS, model.cap), "unit": "TRIMP"},
     ]
     return {"days": days, "ranges": RANGES, "summary": summary, "charts": charts,
+            "series": values, "baselines": baselines, "weekly": weekly,
+            "reference": model.previous_weekly_average, "facts": facts,
             "sport_legend": tuple({"sport": sport.title(), "opacity": f"{.35 + index * .2:.2f}"}
                                   for index, sport in enumerate(SPORTS)),
             "from_label": short_date(start), "to_label": short_date(day), "sync": sync_label(settings, day)}
+
+
+def insights_context(settings: Settings, day: date, days: int) -> dict[str, Any]:
+    """Use computed trend series, with no model call or cache write on render."""
+    from web.view_models.insights import build_insights_view
+
+    data = trends_context(settings, day, days, include_summary=False)
+    start = day - timedelta(days=days - 1)
+    with sqlite3.connect(settings.db_path.resolve().as_uri() + "?mode=ro", uri=True) as connection:
+        goal = connection.execute("SELECT goal_type,target_distance_km FROM goals WHERE user_id=? AND is_active=1 "
+                                  "ORDER BY id DESC LIMIT 1", (settings.default_user_id,)).fetchone()
+        runs = connection.execute("SELECT date,type,distance,duration FROM activities WHERE user_id=? "
+                                  "AND date BETWEEN ? AND ?", (settings.default_user_id,
+                                  start.isoformat(), day.isoformat())).fetchall()
+    from metrics.sports import sport_category
+
+    running = [(row[2], row[3]) for row in runs
+               if sport_category(row[1], date.fromisoformat(row[0])) == "running"]
+    return build_insights_view(data, goal, running, settings.sleep_goal_hours)

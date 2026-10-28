@@ -51,7 +51,8 @@ SYSTEM_PROMPT = (
     "The explanation and headline are statements, never questions. Put questions only in follow_ups. "
     "The explanation must be 2 or 3 short sentences. Give 2 or 3 short, answerable follow-up questions. "
     "Do not mention internal rules, scores, thresholds, dates or durations unless their exact display appears in facts. "
-    "Never mention sync time, provisional status or the health day used; the UI displays those separately."
+    "Never mention sync time, provisional status or the health day used; the UI displays those separately. "
+    "Start every sentence with a capital letter."
 )
 
 
@@ -301,8 +302,10 @@ def fallback_explanation(decision: DailyDecision) -> str:
                                    f"(load ratio {load_ratio})."),
         "load_ratio_above_1_3": (f"Keep today easy. Your load ratio is {load_ratio}, above the range "
                                    "for a hard session."),
-        "hard_allowed": (f"A hard session is available today. Readiness is {readiness}, and recent load "
-                         f"is within range (ratio {load_ratio})."),
+        "hard_allowed": (f"A hard session is available today. Recovery is {readiness} and your load "
+                         f"is {round(float(load_ratio) * 100)}% of usual."
+                         if load_ratio not in (None, "No data") else
+                         f"A hard session is available today. Recovery is {readiness}."),
         "hard_in_last_48h": "Keep today easy. You had a hard session in the last 48 hours.",
         "otherwise_easy": (f"Keep today easy. Readiness is {readiness}; the conditions for a hard session "
                            "are not all met."),
@@ -332,6 +335,8 @@ def _validate_explanation(payload: Any, decision: DailyDecision) -> DecisionExpl
     if "?" in text or re.search(r"(?:^|[.!]\s+)(?:what|why|how|should|would|could|do|did|is|are|can|when|where)\b",
                                text, flags=re.IGNORECASE):
         raise ValueError("Headline and explanation must be statements; put questions in follow_ups")
+    if any(re.search(r"(?:^|[.!?]\s+)[a-z]", part) for part in (result.headline, result.explanation)):
+        raise ValueError("Start every sentence with a capital letter")
     if any(re.search(rf"(?<![A-Za-z0-9_]){re.escape(fact_id)}(?![A-Za-z0-9_])", text) for fact_id in facts):
         raise ValueError("Fact ID in prose")
     if re.search(r"\b(?:provisional|last sync|synced)\b", text, re.IGNORECASE) or decision.based_on in text:

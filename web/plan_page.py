@@ -10,7 +10,15 @@ from typing import Any
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
-from coach.planning import apply_draft, load_model, propose_day, propose_week, revise_week, week_load_breakdown
+from coach.planning import (
+    apply_draft,
+    estimate_load,
+    load_model,
+    propose_day,
+    propose_week,
+    revise_week,
+    week_load_breakdown,
+)
 from coach.proposals import (
     apply,
     dismiss,
@@ -164,6 +172,22 @@ def _mobile_rows(days: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return rows
 
 
+def _undo_label(settings: Settings) -> str | None:
+    with sqlite3.connect(settings.db_path.resolve().as_uri() + "?mode=ro", uri=True) as connection:
+        row = connection.execute("SELECT snapshot_json FROM plan_snapshots WHERE user_id=? AND undone_at IS NULL "
+                                 "ORDER BY id DESC LIMIT 1", (settings.default_user_id,)).fetchone()
+    if not row:
+        return None
+    snapshot = json.loads(row[0])
+    count = sum(len({item["id"] for item in state["before"]} ^
+                    {item["id"] for item in state["after"]}) +
+                sum(1 for before in state["before"] for after in state["after"]
+                    if before["id"] == after["id"] and before != after)
+                for state in snapshot.values())
+    first = min(snapshot)
+    return f"Undo: {count} {'session' if count == 1 else 'sessions'} from {short_date(first)}"
+
+
 def plan_context(settings: Settings, day: date, *, notice: str | None = None,
                  error: str | None = None, start: date | None = None,
                  view: str = "week") -> dict[str, Any]:
@@ -209,6 +233,8 @@ def plan_context(settings: Settings, day: date, *, notice: str | None = None,
                       "actual_percent": min(100, round(breakdown["actual_total"] / breakdown["cap"] * 100))
                       if breakdown["cap"] and breakdown["actual_total"] is not None else None,
                       "proposals": proposed}
+        if week_start <= day <= week_start + timedelta(days=6) and recommendation and not recommendation["planned"]:
+            raw_week["suggested_load"] = estimate_load(recommendation, model)
         shown = week_view(raw_week, day, sync_label(settings, day), recommendation)
         shown["proposals"] = [proposal_view(item, raw_week, model) for item in proposed]
         weeks.append(shown)
@@ -218,6 +244,7 @@ def plan_context(settings: Settings, day: date, *, notice: str | None = None,
     return {"weeks": weeks, "review_items": review_items,
             "commitments": list_commitments(settings.db_path, settings.default_user_id),
             "habits": list_protected_habits(settings.db_path, settings.default_user_id),
+            "undo_label": _undo_label(settings),
             "notice": notice, "error": error, "sync": sync_label(settings, day),
             "weekdays": tuple(enumerate(("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"))),
             "pending_proposals": any(proposal["status"] == "pending" for week in weeks

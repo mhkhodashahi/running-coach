@@ -32,6 +32,7 @@ from services.workout_laps import interpret_laps
 from web.charts import heart_rate_chart
 from web.formatting import activity_distance, activity_duration, metric, short_date
 from web.today import sync_label
+from web.view_models.activity import build_activity_view, list_row
 
 PAGE_SIZE = 20
 INTENTS = ("recovery", "easy", "steady", "tempo", "race")
@@ -140,6 +141,7 @@ def list_context(settings: Settings, *, sport: str | None = None, start: date | 
 
     filtered = [row for row in rows if visible(row)]
     chosen = filtered[(page - 1) * PAGE_SIZE:page * PAGE_SIZE]
+    sync = sync_label(settings, _local_day(settings))
     weeks: dict[date, list[dict[str, Any]]] = defaultdict(list)
     snapshot_cache: dict[date, dict[int, Any]] = {}
 
@@ -157,6 +159,9 @@ def list_context(settings: Settings, *, sport: str | None = None, start: date | 
         category = _sport(row)
         session = session_for(row)
         zone_items = _zones(session)
+        row_view = list_row(row["activity_name"], category,
+                            activity_distance(row["distance"]) if category == "running" else None,
+                            session.load.value if session else None, sync)
         weeks[_week_start(day)].append({
             "id": row["id"], "date": short_date(day), "sport": _display_sport(row),
             "distance": activity_distance(row["distance"]) if category == "running" or
@@ -164,6 +169,7 @@ def list_context(settings: Settings, *, sport: str | None = None, start: date | 
             "duration": activity_duration(row["duration"]), "zones": zone_items,
             "zone_pairs": [(zone["name"], zone["percent"] or 0) for zone in zone_items],
             "rpe": row["rpe"], "opinion": row["opinion_id"] is not None,
+            **row_view,
         })
     all_weeks: dict[date, list[sqlite3.Row]] = defaultdict(list)
     for row in filtered:
@@ -185,7 +191,7 @@ def list_context(settings: Settings, *, sport: str | None = None, start: date | 
             "filter_query": filter_query,
             "sport_filter": sport or "", "start": start.isoformat() if start else "",
             "end": end.isoformat() if end else "", "show_walks": show_walks,
-            "sync": sync_label(settings, _local_day(settings))}
+            "sync": sync}
 
 
 def _first_time(connection: sqlite3.Connection, activity_id: int, day: date) -> str | None:
@@ -209,14 +215,16 @@ def _stats(row: sqlite3.Row, session: Any,
     walking = row["type"].strip().lower() == "walking"
     if sport == "running" or walking:
         values.extend((("Distance", activity_distance(row["distance"])),
-                       ("Time", activity_duration(row["duration"])),
+                       ("Time", lap_duration(row["duration"]) if sport == "running" else
+                        activity_duration(row["duration"])),
                        ("Avg pace", format_pace(row["pace"])),
                        ("Avg HR", metric(row["avg_hr"], "bpm")),
                        ("Max HR", metric(row["max_hr"], "bpm"))))
         if sport == "running":
             values.extend((("Cadence", f"{round(cadence[0])}–{round(cadence[1])} spm"
                             if cadence[0] and cadence[1] else None),
-                           ("Elevation", metric(row["elevation"], "m"))))
+                           ("Elevation", metric(row["elevation"], "m")),
+                           ("Session load", metric(session.load.value, "TRIMP") if session else None)))
             if row["rpe"] is not None:
                 values.append(("Effort", f"{row['rpe']}/10"))
                 if effort_label:
@@ -265,7 +273,7 @@ def _similar(settings: Settings, activity_id: int) -> list[dict[str, Any]]:
     return items
 
 
-def detail_context(settings: Settings, activity_id: int) -> dict[str, Any]:
+def detail_context(settings: Settings, activity_id: int, *, from_page: str = "activities") -> dict[str, Any]:
     with _db(settings.db_path) as connection:
         row = connection.execute("SELECT a.*,e.rpe FROM activities a LEFT JOIN activity_efforts e "
                                  "ON e.activity_id=a.id WHERE a.id=? AND a.user_id=?",
@@ -325,7 +333,7 @@ def detail_context(settings: Settings, activity_id: int) -> dict[str, Any]:
         abs(only_lap["distance_km"] - row["distance"]) <= max(.02, row["distance"] * .02)
         or only_lap["distance_km"] is None and only_lap["duration"] is not None
         and abs(only_lap["duration"] - row["duration"]) <= 1))
-    return {"activity": {"id": activity_id, "name": row["activity_name"] or _display_sport(row),
+    context = {"activity": {"id": activity_id, "name": row["activity_name"] or _display_sport(row),
                          "date": short_date(day), "time": clock, "sport": _display_sport(row),
                          "category": _sport(row), "planned_intent": row["planned_intent"], "rpe": row["rpe"],
                          "rateable": row["type"].strip().lower() != "walking" and
@@ -339,7 +347,11 @@ def detail_context(settings: Settings, activity_id: int) -> dict[str, Any]:
             "laps": [] if whole_lap else laps, "workout": workout, "hr_chart": hr_chart,
             "similar": _similar(settings, activity_id), "intents": INTENTS,
             "ask_suggestions": RUN_SUGGESTIONS if _sport(row) == "running" else OTHER_SUGGESTIONS,
-            "sync": sync_label(settings, _local_day(settings))}
+            "sync": sync_label(settings, _local_day(settings)),
+            "back_url": "/plan" if from_page == "training" else "/activities",
+            "back_label": "Training" if from_page == "training" else "Activities"}
+    context["v2_activity"] = build_activity_view(context, _tools(settings).get_activity(activity_id)["facts"])
+    return context
 
 
 def set_planned_intent(settings: Settings, activity_id: int, intent: str | None) -> None:

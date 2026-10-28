@@ -93,9 +93,10 @@ def purpose_line(workout: dict[str, Any] | None, dials: tuple[dict[str, Any], ..
 def display_decision_text(text: str) -> str:
     """Change only web wording and units; leave the stored explanation intact."""
     result = re.sub(r"\b(?:your )?readiness(?:\s+(?:is|of)|\s*:)?\s+(\d+(?:\.\d+)?)/100\b",
-                    r"recovery is \1", text,
+                    lambda match: f"{'Recovery' if match.group(0)[0].isupper() else 'recovery'} is {match.group(1)}", text,
                     flags=re.IGNORECASE)
-    result = re.sub(r"\breadiness\b", "recovery", result, flags=re.IGNORECASE)
+    result = re.sub(r"\breadiness\b", lambda match: "Recovery" if match.group(0)[0].isupper()
+                    else "recovery", result, flags=re.IGNORECASE)
 
     def ratio(match: re.Match[str]) -> str:
         return f"load is {float(match.group(1)) * 100:.0f}% of usual"
@@ -151,6 +152,7 @@ def workout_model(decision: Any, sessions: list[dict[str, Any]]) -> dict[str, An
         structure = planned.get("structure")
         return {"title": session_name(planned["sport"], planned.get("intent")),
                 "intent": planned.get("intent"),
+                "planned": True, "duration_min": planned.get("duration_min"),
                 "duration": display_duration(planned.get("duration_min")),
                 "structure": structure, "steps": tuple(part.strip() for part in structure.split(",") if part.strip())
                 if structure else (), "sport": planned["sport"], "purpose": planned.get("purpose")}
@@ -159,6 +161,7 @@ def workout_model(decision: Any, sessions: list[dict[str, Any]]) -> dict[str, An
     session = ranked["session"]
     return {"title": session_name(ranked["sport"], session.get("intent")),
             "intent": session.get("intent"),
+            "planned": False, "duration_min": session.get("duration_min"),
             "duration": display_duration(session["duration_min"]), "structure": session.get("structure") or "",
             "steps": (), "sport": ranked["sport"], "purpose": None}
 

@@ -69,6 +69,23 @@ def test_today_and_training_share_done_and_suggested_day():
     assert all(chip["value"] != "0" for chip in coach_summary(shown)[1])
 
 
+def test_training_safe_limit_and_suggestion_are_displayed_separately():
+    start = date(2026, 10, 26)
+    days = [{"date": date.fromordinal(start.toordinal() + offset).isoformat(), "sessions": [],
+             "actuals": [], "empty_label": "Nothing planned", "estimated_load": 0} for offset in range(7)]
+    suggestion = {"title": "tempo run", "sport": "running", "intent": "tempo", "duration": "45 min"}
+    at_limit = week_view({"start": start.isoformat(), "days": days, "total": 110,
+                          "actual_total": 0, "cap": 110, "suggested_load": 20},
+                         start, "Synced 09:00", suggestion)
+    assert at_limit["total_percent"] == 110
+    assert at_limit["with_suggested_percent"] == 130
+    summary = coach_summary(at_limit)[0]
+    assert "right at the 110% safe limit" in summary
+    assert "With today's tempo run: 130% of usual" in summary
+    above = {**at_limit, "total_percent": 111}
+    assert "above the 110% safe limit" in coach_summary(above)[0]
+
+
 def test_skills_only_team_session_is_not_badged_hard():
     day = date(2026, 10, 27)
     shown = week_day(day, day, [{"date": day.isoformat(), "sport": "football", "intent": "skills only",

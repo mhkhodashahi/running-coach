@@ -57,3 +57,14 @@ document.addEventListener('htmx:afterSwap', function () {
     if (bar) bar.style.width = value === '' ? '0%' : Math.min(100, Number(value)) + '%';
   });
 });
+document.addEventListener('click', function (event) {
+  const edit = event.target.closest('[data-open-recurring]');
+  const add = event.target.closest('[data-open-add-session]');
+  if (!edit && !add) return;
+  event.preventDefault();
+  const editor = document.querySelector('.v2-recurring-editor');
+  if (!editor) return;
+  editor.open = true;
+  if (add) document.querySelector('#add-session').open = true;
+  (add ? document.querySelector('#add-session') : editor).scrollIntoView({block: 'nearest'});
+});

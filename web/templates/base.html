@@ -31,7 +31,7 @@
     </aside>
     <main id="main" class="v2-main page">{% block content %}{% endblock %}</main>
     <aside id="v2-coach-panel" class="v2-coach-panel" aria-label="Coach">
-      <div class="v2-panel-head"><h2 class="num" tabindex="-1">Coach</h2><span class="chip v2-context">{{ icon('circle') }} About: {{ 'today' if request.url.path == '/' else 'this week' if request.url.path == '/plan' else 'this page' }}</span><button type="button" class="v2-panel-close" data-close-coach aria-label="Close coach">{{ icon('close') }}</button></div>
+      <div class="v2-panel-head"><h2 class="num" tabindex="-1">Coach</h2><span class="chip v2-context">{{ icon('circle') }} About: {{ 'today' if request.url.path == '/' else 'this week' if request.url.path == '/plan' else 'last ' ~ days ~ ' days' if request.url.path == '/trends' else 'this ' ~ ('run' if activity.category == 'running' else 'session') if request.url.path.startswith('/activities/') and activity is defined else 'this page' }}</span><button type="button" class="v2-panel-close" data-close-coach aria-label="Close coach">{{ icon('close') }}</button></div>
       {% block coach_panel %}<p class="cap">Ask about your training.</p><a class="btn" href="/coach">Full chat {{ icon('chevron') }}</a>{% endblock %}
     </aside>
   </div>

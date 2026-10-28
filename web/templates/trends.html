@@ -1,8 +1,18 @@
 {% extends 'base.html' %}
 {% from 'components/v2_icons.html' import icon %}
-{% block title %}Trends{% endblock %}
+{% block title %}Insights{% endblock %}
 {% block content %}
-<div class="section-heading"><div><span class="eyebrow">TRAINING OVER TIME</span><h1>Trends</h1><p class="subtle">{{ from_label }}–{{ to_label }}</p><a href="/activities">All activities {{ icon('chevron') }}</a></div><nav class="range-control" aria-label="Time range">{% for item in ranges %}<a href="/trends?range={{ item }}" {% if item == days %}aria-current="page"{% endif %}>{{ item }} days</a>{% endfor %}</nav></div>
-<section class="card trend-summary" aria-labelledby="trend-summary-heading"><div><span class="eyebrow">COACH · LAST {{ days }} DAYS</span><h2 id="trend-summary-heading">{{ summary.headline }}</h2><p>{{ summary.explanation }}</p>{% if summary.notice %}<p class="subtle">{{ summary.notice }}</p>{% endif %}</div><a class="button button-primary" href="/plan">See the plan</a></section>
-<div class="trend-grid">{% for chart in charts %}<section class="card trend-panel"><div class="panel-heading"><h2>{{ chart.title }}</h2><span class="subtle">{{ chart.unit }}</span></div>{% if chart.svg.svg %}{{ chart.svg.svg|safe }}{% else %}<p class="empty-value">No data · {{ sync }}</p>{% endif %}{% if chart.title == 'Readiness' %}<p class="subtle decision-marker-legend"><span>■ Rest</span><span>● Easy</span><span>▲ Hard</span></p>{% elif chart.title == 'Weekly load by sport' %}<p class="subtle sport-load-legend">{% for item in sport_legend %}<span><i style="opacity:{{ item.opacity }}"></i>{{ item.sport }}</span>{% endfor %}</p>{% endif %}<p class="subtle chart-summary">{{ chart.svg.summary }}</p></section>{% endfor %}</div>
+<div class="v2-insights-head"><div><span class="eyebrow">{{ from_label }} – {{ to_label }}</span><h1 class="num">Insights</h1></div><nav class="v2-segment" aria-label="Time range">{% for item in ranges %}<a href="/trends?range={{ item }}" {% if item == days %}aria-current="page"{% endif %}>{{ item }} days</a>{% endfor %}</nav></div>
+<section class="v2-insights-summary card" aria-label="Recovery summary"><span class="eyebrow">Last {{ days }} days</span><p>{{ summary_text }}</p></section>
+<div class="v2-insights-grid">
+  {% for card in metric_cards %}<section class="v2-insights-card card" aria-label="{{ card.title }}">
+    <div class="v2-insights-card-head"><h2>{{ card.title }}</h2><strong class="num">{{ card.value }}</strong></div>
+    <span class="st">{{ icon(card.icon) }} {{ card.status }}{% if card.usual %} · {{ card.usual }}{% endif %}</span>
+    {% if card.chart.svg %}{{ card.chart.svg|safe }}{% else %}<p class="cap">No data · {{ sync }}</p>{% endif %}
+    {% if card.gap_note %}<p class="cap v2-gap-note">{{ card.gap_note }}</p>{% endif %}
+  </section>{% endfor %}
+  {% if goal_view %}<section class="v2-insights-goal card"><h2>{{ goal_view.title }}</h2><div class="v2-goal-metrics"><div><strong class="num">{{ goal_view.runs }}</strong><span class="cap">runs</span></div><div><strong class="num">{{ goal_view.distance }}</strong><span class="cap">distance</span></div><div><strong class="num">{{ goal_view.longest }}</strong><span class="cap">longest run</span></div></div></section>{% endif %}
+</div>
+<a class="v2-insights-all card" href="/activities">All activities {{ icon('chevron') }}</a>
 {% endblock %}
+{% block coach_panel %}<div class="v2-coach-explanation"><p>{{ panel_summary }}</p></div><a class="v2-full-chat cap" href="/coach">Full chat {{ icon('chevron') }}</a><span class="eyebrow">Ask next</span><div class="v2-follow-ups">{% for question in panel_follow_ups %}<form method="post" hx-post="/trends/ask" hx-target="#v2-coach-answer" hx-swap="innerHTML"><button class="fu" name="question" value="{{ question }}">{{ question }} {{ icon('chevron') }}</button></form>{% endfor %}</div><div id="v2-coach-answer" aria-live="polite"></div><form class="v2-coach-compose" method="post" hx-post="/trends/ask" hx-target="#v2-coach-answer" hx-swap="innerHTML"><label class="v2-sr-only" for="v2-trends-question">Ask about your trends</label><input id="v2-trends-question" name="question" placeholder="Ask about your trends" maxlength="480" required><button type="submit" aria-label="Send question">{{ icon('arrow') }}</button></form>{% endblock %}

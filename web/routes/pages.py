@@ -4,7 +4,7 @@ import json
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, BackgroundTasks, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from llm.base import NullLLMClient
@@ -44,7 +44,7 @@ from web.settings_page import (
     uploaded_csv,
 )
 from web.today import choose_intensity, create_week_proposal, save_rating, today_context
-from web.trends import trends_context
+from web.trends import insights_context
 
 router = APIRouter()
 
@@ -111,9 +111,9 @@ def plan_today(request: Request):
     except (ValueError, PermissionError, RuntimeError) as exc:
         raise HTTPException(503, str(exc)) from exc
     return RedirectResponse("/plan", status_code=303)
-def _detail(request: Request, activity_id: int) -> dict:
+def _detail(request: Request, activity_id: int, *, from_page: str = "activities") -> dict:
     try:
-        return detail_context(request.app.state.settings, activity_id)
+        return detail_context(request.app.state.settings, activity_id, from_page=from_page)
     except ValueError as exc:
         raise HTTPException(404, str(exc)) from exc
 
@@ -133,8 +133,9 @@ def activities(request: Request, sport: str = "", start: str = "", end: str = ""
 
 
 @router.get("/activities/{activity_id}", response_class=HTMLResponse)
-def activity_detail(request: Request, activity_id: int):
-    return request.app.state.templates.TemplateResponse(request, "activity_detail.html", _detail(request, activity_id))
+def activity_detail(request: Request, activity_id: int, from_page: str = Query("activities", alias="from")):
+    return request.app.state.templates.TemplateResponse(
+        request, "activity_detail.html", _detail(request, activity_id, from_page=from_page))
 
 
 @router.post("/activities/{activity_id}/intent", response_class=HTMLResponse)
@@ -208,10 +209,29 @@ def _day(request: Request) -> date:
 @router.get("/trends", response_class=HTMLResponse)
 def trends(request: Request, range: int = 28):
     try:
-        context = trends_context(request.app.state.settings, _day(request), range, request.app.state.llm)
+        context = insights_context(request.app.state.settings, _day(request), range)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     return request.app.state.templates.TemplateResponse(request, "trends.html", context)
+
+
+@router.post("/trends/ask", response_class=HTMLResponse)
+def trends_ask(request: Request, question: str = Form(...)):
+    question = question.strip()
+    if not 1 <= len(question) <= 480:
+        raise HTTPException(400, "Ask a question of at most 480 characters")
+    reply = None
+    error = None
+    try:
+        reply = ask_coach(request.app.state.settings, _day(request), f"About recent recovery: {question}", None,
+                          request.app.state.llm)
+        if not reply.used_llm:
+            error = reply.text
+            reply = None
+    except (ValueError, RuntimeError, PermissionError) as exc:
+        error = str(exc)
+    return request.app.state.templates.TemplateResponse(
+        request, "components/v2_coach_answer.html", {"reply": reply, "error": error})
 
 
 @router.get("/coach", response_class=HTMLResponse)
