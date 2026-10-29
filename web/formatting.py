@@ -32,7 +32,16 @@ def activity_duration(minutes: float | None) -> str | None:
     """Activity.duration is stored in minutes."""
     if minutes is None or minutes <= 0:
         return None
-    return duration_minutes(minutes)
+    rounded = round(minutes)
+    return f"{rounded} min" if rounded < 60 else duration_minutes(minutes)
+
+
+def lap_time(value: str | None) -> str | None:
+    """Drop only a leading minute zero, retaining short-lap times like 0:20."""
+    if value is None:
+        return None
+    parts = value.split(":", 1)
+    return f"{int(parts[0])}:{parts[1]}" if len(parts) == 2 and parts[0].isdigit() else value
 
 
 def activity_distance(kilometres: float | None) -> str | None:

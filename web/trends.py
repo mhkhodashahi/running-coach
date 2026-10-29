@@ -171,9 +171,10 @@ def trends_context(settings: Settings, day: date, days: int, llm: Any = None,
         daily = build_daily_decision(date.fromisoformat(stamp), settings.db_path,
                                      settings.default_user_id, settings.local_timezone,
                                      settings.sleep_goal_hours, settings.hr_zones)
-        values["readiness"].append((stamp, daily.readiness))
+        has_health_today = any(item.value is not None for _, item in snapshot.current_health)
+        values["readiness"].append((stamp, daily.readiness if has_health_today else None))
         values["ratio"].append((stamp, snapshot.load.ratio.value))
-        if daily.readiness is not None:
+        if daily.readiness is not None and has_health_today:
             decisions[stamp] = daily.intensity
         week = monday(date.fromisoformat(stamp)).isoformat()
         weekly.setdefault(week, {})
@@ -213,8 +214,11 @@ def trends_context(settings: Settings, day: date, days: int, llm: Any = None,
                                               safe_band=(0.8, 1.3), unit=""), "unit": "ratio"},
         {"title": "Weekly load by sport", "svg": weekly_sport_bars(weekly, SPORTS, model.cap), "unit": "TRIMP"},
     ]
+    reference_week_counts = {week: sum(recorded < week for recorded in model.recorded_week_dates)
+                             for week in weekly}
     return {"days": days, "ranges": RANGES, "summary": summary, "charts": charts,
             "series": values, "baselines": baselines, "weekly": weekly,
+            "reference_week_counts": reference_week_counts,
             "reference": model.previous_weekly_average, "facts": facts,
             "sport_legend": tuple({"sport": sport.title(), "opacity": f"{.35 + index * .2:.2f}"}
                                   for index, sport in enumerate(SPORTS)),
@@ -233,6 +237,16 @@ def insights_context(settings: Settings, day: date, days: int) -> dict[str, Any]
         runs = connection.execute("SELECT date,type,distance,duration FROM activities WHERE user_id=? "
                                   "AND date BETWEEN ? AND ?", (settings.default_user_id,
                                   start.isoformat(), day.isoformat())).fetchall()
+        earlier_start = start - timedelta(days=days)
+        previous_rows = connection.execute(
+            "SELECT date,resting_hr,hrv,sleep_duration FROM health_metrics WHERE user_id=? "
+            "AND date BETWEEN ? AND ?", (settings.default_user_id, earlier_start.isoformat(),
+                                          (start - timedelta(days=1)).isoformat())).fetchall()
+    by_day = {row[0]: row for row in previous_rows}
+    data["previous"] = {key: [(stamp, by_day[stamp][index] if stamp in by_day else None)
+                              for stamp in ((earlier_start + timedelta(days=offset)).isoformat()
+                                            for offset in range(days))]
+                        for key, index in (("rhr", 1), ("hrv", 2), ("sleep", 3))}
     from metrics.sports import sport_category
 
     running = [(row[2], row[3]) for row in runs

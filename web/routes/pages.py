@@ -45,6 +45,7 @@ from web.settings_page import (
 )
 from web.today import choose_intensity, create_week_proposal, save_rating, today_context
 from web.trends import insights_context
+from web.view_models.coach import context_question, proposed_change_question
 
 router = APIRouter()
 
@@ -235,31 +236,56 @@ def trends_ask(request: Request, question: str = Form(...)):
 
 
 @router.get("/coach", response_class=HTMLResponse)
-def coach(request: Request, activity_id: int | None = None):
+def coach(request: Request, activity_id: int | None = None, context: str = "today"):
     try:
-        context = coach_context(request.app.state.settings, _day(request), attached_id=activity_id)
+        page = coach_context(request.app.state.settings, _day(request), attached_id=activity_id,
+                             context=context)
     except ValueError as exc:
         raise HTTPException(404, str(exc)) from exc
-    return request.app.state.templates.TemplateResponse(request, "coach.html", context)
+    return request.app.state.templates.TemplateResponse(request, "coach.html", page)
 
 
 @router.post("/coach/ask", response_class=HTMLResponse)
-def coach_ask(request: Request, question: str = Form(...), activity_id: int | None = Form(None)):
+def coach_ask(request: Request, question: str = Form(...), activity_id: int | None = Form(None),
+              context: str = Form("today")):
     error = None
     reply = None
     try:
-        reply = ask_coach(request.app.state.settings, _day(request), question, activity_id,
-                          request.app.state.llm)
+        current = coach_context(request.app.state.settings, _day(request), attached_id=activity_id, context=context)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    try:
+        if current["availability"]["disabled"]:
+            error = current["availability"]["reason"]
+        else:
+            reply = ask_coach(request.app.state.settings, _day(request),
+                              context_question(question, context) if activity_id is None else question,
+                              activity_id, request.app.state.llm)
     except (ValueError, RuntimeError, PermissionError) as exc:
         error = str(exc)
     try:
-        context = coach_context(request.app.state.settings, _day(request), reply=reply,
-                                question=question, attached_id=activity_id)
+        page = coach_context(request.app.state.settings, _day(request), reply=reply,
+                             question=question, attached_id=activity_id, context=context)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
-    context["error"] = error
-    template = "components/coach_thread.html" if request.headers.get("HX-Request") == "true" else "coach.html"
-    return request.app.state.templates.TemplateResponse(request, template, context)
+    page["error"] = error
+    template = "components/coach_conversation.html" if request.headers.get("HX-Request") == "true" else "coach.html"
+    return request.app.state.templates.TemplateResponse(request, template, page)
+
+
+@router.post("/coach/suggest", response_class=HTMLResponse)
+def coach_suggest(request: Request, answer: str = Form(...), activity_id: int | None = Form(None)):
+    current = coach_context(request.app.state.settings, _day(request), attached_id=activity_id)
+    if current["availability"]["disabled"]:
+        current["error"] = current["availability"]["reason"]
+        return request.app.state.templates.TemplateResponse(request, "coach.html", current, status_code=429)
+    try:
+        ask_coach(request.app.state.settings, _day(request), proposed_change_question(answer),
+                  activity_id, request.app.state.llm)
+    except (ValueError, RuntimeError, PermissionError) as exc:
+        current["error"] = str(exc)
+        return request.app.state.templates.TemplateResponse(request, "coach.html", current, status_code=400)
+    return RedirectResponse("/plan", status_code=303)
 
 
 @router.get("/plan", response_class=HTMLResponse)

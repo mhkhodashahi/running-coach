@@ -1,6 +1,15 @@
-<div id="coach-thread" class="coach-thread" aria-live="polite">
-{% for turn in thread %}<article class="chat-turn"><div class="chat-question">{{ turn.question }}</div><div class="chat-answer"><span class="eyebrow">COACH</span><p>{{ turn.answer }}</p>{% if turn.evidence %}<details class="chat-evidence"><summary>Evidence · {{ turn.evidence|length }}</summary><div class="evidence-chips">{% for fact in turn.evidence %}<span class="chip" title="{{ fact.source }}">{{ fact.metric }}: {{ fact.display }}</span>{% endfor %}</div></details>{% endif %}{% for card in turn.cards or [] %}<a class="attached-card" href="/activities/{{ card.id }}"><strong>{{ card.label }}</strong><span>{{ card.date }}</span></a>{% endfor %}{% if 'proposal' in turn.answer|lower %}<a class="button button-secondary" href="/plan">Review proposal</a>{% endif %}</div></article>{% else %}<p class="subtle">Ask about your training, sleep or recovery.</p>{% endfor %}
-{% if error %}<p class="form-error" role="alert">{{ error }}</p>{% endif %}
-{% if reply and not reply.used_llm and reply.text %}<p class="chat-fallback" role="status">{{ reply.text }}</p>{% endif %}
-{% if follow_ups %}<div class="follow-ups">{% for follow_up in follow_ups %}<form method="post" action="/coach/ask" hx-post="/coach/ask" hx-target="#coach-thread" hx-swap="outerHTML"><input type="hidden" name="question" value="{{ follow_up }}">{% if attached_id %}<input type="hidden" name="activity_id" value="{{ attached_id }}">{% endif %}<button class="button button-secondary" type="submit">{{ follow_up }}</button></form>{% endfor %}</div>{% endif %}
+{% from 'components/v2_icons.html' import icon %}
+<div id="coach-thread" class="v2-chat-thread" aria-live="polite">
+{% for turn in thread %}<article class="v2-chat-turn">
+  <div class="v2-chat-user"><p>{{ turn.display_question }}</p><a class="chip" href="{{ turn.context_chip.href }}">{{ turn.context_chip.label }}</a></div>
+  <div class="v2-chat-answer"><span class="eyebrow">COACH</span><p>{{ turn.answer }}</p>
+    {% if turn.evidence_chips %}<div class="v2-chat-evidence" aria-label="Evidence">{% for fact in turn.evidence_chips %}<span class="chip" title="{{ fact.source }}">{{ fact.label }} {{ fact.value }}</span>{% endfor %}</div>{% endif %}
+    {% for card in turn.cards or [] %}<a class="v2-chat-attached" href="/activities/{{ card.id }}">{{ card.label }} · {{ card.date }}</a>{% endfor %}
+    {% if turn.proposal_link %}<a class="btn" href="/plan">Review proposal {{ icon('chevron') }}</a>
+    {% elif turn.suggest_change and not availability.disabled %}<form method="post" action="/coach/suggest"><input type="hidden" name="answer" value="{{ turn.answer }}"><button class="btn" type="submit">Suggest this change</button></form>{% endif %}
+  </div>
+</article>{% else %}<p class="cap">Ask about your training, sleep or recovery.</p>{% endfor %}
+{% if error %}<p class="settings-error" role="alert">{{ error }}</p>{% endif %}
+{% if reply and not reply.used_llm and reply.text %}<p class="cap" role="status">{{ reply.text }}</p>{% endif %}
+{% if follow_ups and not availability.disabled %}<div class="v2-chat-followups">{% for follow_up in follow_ups %}<form method="post" action="/coach/ask" hx-post="/coach/ask" hx-target="#coach-conversation" hx-swap="outerHTML"><input type="hidden" name="question" value="{{ follow_up }}"><input type="hidden" name="context" value="{{ context_kind }}">{% if attached_id %}<input type="hidden" name="activity_id" value="{{ attached_id }}">{% endif %}<button class="btn" type="submit">{{ follow_up }}</button></form>{% endfor %}</div>{% endif %}
 </div>

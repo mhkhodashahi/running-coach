@@ -5,6 +5,7 @@ from datetime import date
 from html import escape
 from math import ceil, floor
 from typing import Any
+from xml.etree import ElementTree
 
 from services.fact_display import hours as display_hours
 from web.formatting import short_date
@@ -15,6 +16,18 @@ TREND_X = 48
 TREND_WIDTH = 510
 TREND_TOP = 28
 TREND_HEIGHT = 126
+
+
+def plot_only(svg: str, *, heart_rate: bool = False) -> str:
+    """Use a trusted generated SVG as marks only; HTML owns responsive axis text."""
+    root = ElementTree.fromstring(svg)
+    root.set("viewBox", "45 30 660 145" if heart_rate else "48 28 510 126")
+    root.set("preserveAspectRatio", "none")
+    for parent in root.iter():
+        for child in list(parent):
+            if child.tag == "text":
+                parent.remove(child)
+    return ElementTree.tostring(root, encoding="unicode")
 
 
 def _axis_dates(values: list[tuple[str, float | None]]) -> str:
@@ -53,14 +66,15 @@ def _trend_path(values: list[tuple[str, float | None]], low: float, high: float,
 def trend_line(values: list[tuple[str, float | None]], label: str, color: str,
                baseline: list[tuple[str, float | None]] | None = None,
                *, markers: dict[str, str] | None = None,
-               safe_band: tuple[float, float] | None = None, unit: str = "") -> dict[str, str]:
+               safe_band: tuple[float, float] | None = None, unit: str = "") -> dict[str, Any]:
     if color not in TREND_COLORS:
         raise ValueError("Unknown trend color")
     known = [value for _, value in values if value is not None]
     reference = [value for _, value in baseline or [] if value is not None]
     if safe_band:
         reference += list(safe_band)
-    last = (f"{known[-1]:.2f}" if unit == "" else f"{round(known[-1])} {unit}") if known else "No data"
+    last = (f"{known[-1]:.2f}" if label.lower() == "load ratio" else
+            f"{round(known[-1])}{' ' + unit if unit else ''}") if known else "No data"
     summary = (f"{label}: {len(known)} of {len(values)} days have data; "
                f"{len(values) - len(known)} missing. Latest {last}.")
     if not known:
@@ -109,11 +123,11 @@ def trend_line(values: list[tuple[str, float | None]], label: str, color: str,
            f'<title>{escape(summary)}</title>{band}{grid}{base}{_axis_limits(low, high, unit)}{_axis_dates(values)}'
            f'<path d="{_trend_path(values, low, high)}" fill="none" stroke="{TREND_COLORS[color]}" '
            'stroke-width="2.5" vector-effect="non-scaling-stroke"/>' + ''.join(marks) + marker + '</svg>')
-    return {"svg": svg, "summary": summary}
+    return {"svg": svg, "summary": summary, "y_min": low, "y_max": high}
 
 
 def trend_bars(values: list[tuple[str, float | None]], label: str,
-               goal: float | None, color: str) -> dict[str, str]:
+               goal: float | None, color: str) -> dict[str, Any]:
     if color not in TREND_COLORS:
         raise ValueError("Unknown trend color")
     known = [value for _, value in values if value is not None]
@@ -152,17 +166,21 @@ def trend_bars(values: list[tuple[str, float | None]], label: str,
            f'<text x="{min(latest_x, 545):.1f}" y="{latest_y - 7:.1f}" text-anchor="end" '
            f'class="latest-label">{escape(display_hours(latest) or "No data")}</text></svg>')
     summary += f" Latest {display_hours(latest)}."
-    return {"svg": svg, "summary": summary}
+    return {"svg": svg, "summary": summary, "y_min": 0, "y_max": maximum}
 
 
-def weekly_percent_bars(weeks: list[tuple[str, float | None]]) -> dict[str, str]:
+def weekly_percent_bars(weeks: list[tuple[str, float | None]],
+                        building: set[str] | None = None) -> dict[str, Any]:
     """Weekly load as percent of the existing usual-week reference; None stays a gap."""
-    known = [value for _, value in weeks if value is not None]
+    building = building or set()
+    known = [value for stamp, value in weeks if value is not None and stamp not in building]
     summary = (f"Weekly load: {len(known)} of {len(weeks)} weeks have a usable comparison. "
                "The dashed line is the 110% safe limit.")
-    if not known:
+    if building:
+        summary += " Muted weeks: baseline still building."
+    if not any(value is not None for _, value in weeks):
         return {"svg": "", "summary": summary}
-    maximum = max(130, ceil(max(known) / 10) * 10)
+    maximum = max(130, ceil(max(known, default=0) / 10) * 10)
     width = TREND_WIDTH / max(len(weeks), 1)
     base = TREND_TOP + TREND_HEIGHT
     safe_y = base - 110 / maximum * TREND_HEIGHT
@@ -175,14 +193,15 @@ def weekly_percent_bars(weeks: list[tuple[str, float | None]]) -> dict[str, str]
         x = TREND_X + index * width + width * .18
         if value is not None:
             height = min(value / maximum, 1) * TREND_HEIGHT
+            color = "var(--ink-muted)" if stamp in building else "var(--load)"
             parts.append(f'<rect x="{x:.1f}" y="{base - height:.1f}" width="{width * .64:.1f}" '
-                         f'height="{height:.1f}" fill="var(--load)"><title>{escape(short_date(stamp))}: '
+                         f'height="{height:.1f}" fill="{color}"><title>{escape(short_date(stamp))}: '
                          f'{round(value)}% of usual</title></rect>')
         parts.append(f'<text x="{x + width * .32:.1f}" y="190" text-anchor="middle" '
                      f'class="axis-label">{escape(short_date(stamp))}</text>')
     return {"svg": (f'<svg class="trend-chart" viewBox="0 0 604 205" role="img" '
                     f'aria-label="{escape(summary)}"><title>{escape(summary)}</title>' +
-                    ''.join(parts) + '</svg>'), "summary": summary}
+                    ''.join(parts) + '</svg>'), "summary": summary, "y_min": 0, "y_max": maximum}
 
 
 def weekly_sport_bars(weeks: dict[str, dict[str, float]], sports: tuple[str, ...],
@@ -239,7 +258,7 @@ def weekly_sport_bars(weeks: dict[str, dict[str, float]], sports: tuple[str, ...
 
 
 def heart_rate_chart(points: list[dict[str, Any]], zones: tuple[tuple[str, int, int | None], ...],
-                     max_hr: int | None, duration_min: float | None) -> dict[str, str] | None:
+                     max_hr: int | None, duration_min: float | None) -> dict[str, Any] | None:
     """Render at most one mean HR sample per 10 s; never send raw samples to the template."""
     buckets: dict[int, list[float]] = defaultdict(list)
     for point in points:
@@ -291,7 +310,8 @@ def heart_rate_chart(points: list[dict[str, Any]], zones: tuple[tuple[str, int, 
            f'aria-label="{escape(summary)}"><title>{escape(summary)}</title>' + "".join(bands + grid) +
            f'<polyline points="{path}" fill="none" stroke="var(--heart)" stroke-width="2" '
            'vector-effect="non-scaling-stroke"/></svg>')
-    return {"svg": svg, "summary": summary}
+    return {"svg": svg, "summary": summary, "y_min": low, "y_max": high,
+            "x_max": round(max_time / 60)}
 
 
 def readiness_ring(value: float | None) -> str:

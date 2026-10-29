@@ -20,9 +20,9 @@
 </section>
 {% endblock %}
 {% block coach_panel %}
-<div class="v2-coach-explanation"><span class="eyebrow">Why {{ 'a ' + decision.intensity + ' day' if decision.intensity != 'rest' else 'rest today' }}</span><p>{{ decision_text }}</p></div>
+<div class="v2-coach-explanation"><span class="eyebrow">{{ coach_heading }}</span><p>{{ decision_text }}</p></div>
 <div class="v2-coach-facts">{% for fact in coach_evidence %}<span class="chip" title="{{ fact.source }}">{{ fact.label }} {{ fact.value }}</span>{% endfor %}</div>
-<a class="v2-full-chat cap" href="/coach">Full chat {{ icon('chevron') }}</a>
+<a class="v2-full-chat cap" href="/coach?context=today">Full chat {{ icon('chevron') }}</a>
 <span class="eyebrow">Ask next</span>
 <div class="v2-follow-ups">{% for question in coach_follow_ups %}<form hx-post="/today/ask" hx-target="#v2-coach-answer" hx-swap="innerHTML" method="post"><button class="fu" type="submit" name="question" value="{{ question }}">{{ question }} {{ icon('chevron') }}</button></form>{% endfor %}</div>
 <div id="v2-coach-answer" aria-live="polite"></div>

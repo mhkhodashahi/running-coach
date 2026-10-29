@@ -261,9 +261,9 @@ def test_sparkline_needs_two_observations_and_escapes_label():
 
 def test_selected_intensity_border_has_three_to_one_contrast_in_both_themes():
     styles = Path(__file__).resolve().parents[1] / "web" / "static" / "css"
-    css = (styles / "app.css").read_text()
+    css = (styles / "v2.css").read_text()
     assert ".segmented button[aria-pressed=true]{border:2px solid var(--ink);font-weight:600}" in css
-    tokens = (styles / "tokens.css").read_text()
+    tokens = (styles / "v2.css").read_text()
 
     def luminance(color):
         channels = [int(color[index:index + 2], 16) / 255 for index in (1, 3, 5)]

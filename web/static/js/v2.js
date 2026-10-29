@@ -1,21 +1,77 @@
+let coachOpener = null;
+const proposalOpeners = new Map();
+const focusableSelector = 'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),summary,[tabindex]:not([tabindex="-1"])';
+
+function scrollCoachToNewest() {
+  const thread = document.querySelector('#coach-thread');
+  if (thread) thread.scrollTop = thread.scrollHeight;
+}
+
+document.addEventListener('DOMContentLoaded', function () {
+  requestAnimationFrame(scrollCoachToNewest);
+});
+document.addEventListener('htmx:afterSwap', function () {
+  if (document.body.classList.contains('v2-coach-page')) requestAnimationFrame(scrollCoachToNewest);
+});
+
+function trapFocus(event, panel) {
+  const candidates = [...panel.querySelectorAll(focusableSelector)].filter((item) => item.getClientRects().length);
+  if (!candidates.length) return;
+  const first = candidates[0];
+  const last = candidates.at(-1);
+  if (event.shiftKey && (document.activeElement === first || document.activeElement === panel.querySelector('h2'))) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
+}
+
+function closeCoach() {
+  document.body.classList.remove('v2-coach-open');
+  const panel = document.querySelector('#v2-coach-panel');
+  panel?.removeAttribute('role');
+  panel?.removeAttribute('aria-modal');
+  document.querySelectorAll('[data-open-coach]').forEach((button) => button.setAttribute('aria-expanded', 'false'));
+  coachOpener?.focus();
+}
+
+function closeProposal(wrapper) {
+  wrapper.classList.remove('is-open');
+  const id = wrapper.id.split('-').at(-1);
+  const proposal = wrapper.querySelector('.v2-proposal');
+  proposal?.removeAttribute('role');
+  proposal?.removeAttribute('aria-modal');
+  document.querySelector('[data-open-proposal="' + id + '"]')?.setAttribute('aria-expanded', 'false');
+  proposalOpeners.get(id)?.focus();
+}
+
 document.addEventListener('click', function (event) {
   const open = event.target.closest('[data-open-coach]');
   const close = event.target.closest('[data-close-coach]');
   if (!open && !close) return;
-  document.body.classList.toggle('v2-coach-open', Boolean(open));
+  if (close) { closeCoach(); return; }
+  coachOpener = open;
+  document.body.classList.add('v2-coach-open');
   document.querySelectorAll('[data-open-coach]').forEach(function (button) {
-    button.setAttribute('aria-expanded', String(Boolean(open)));
+    button.setAttribute('aria-expanded', 'true');
   });
-  if (open) document.querySelector('#v2-coach-panel h2')?.focus();
-  if (close) document.querySelector('[data-open-coach]')?.focus();
+  const panel = document.querySelector('#v2-coach-panel');
+  panel?.setAttribute('role', 'dialog');
+  panel?.setAttribute('aria-modal', 'true');
+  panel?.querySelector('h2')?.focus();
 });
 document.addEventListener('keydown', function (event) {
-  if (event.key !== 'Escape' || !document.body.classList.contains('v2-coach-open')) return;
-  document.body.classList.remove('v2-coach-open');
-  document.querySelectorAll('[data-open-coach]').forEach(function (button) {
-    button.setAttribute('aria-expanded', 'false');
-  });
-  document.querySelector('[data-open-coach]')?.focus();
+  const proposal = matchMedia('(max-width:767px)').matches ? document.querySelector('.v2-proposal-wrap.is-open') : null;
+  const panel = proposal?.querySelector('.v2-proposal') ||
+    (document.body.classList.contains('v2-coach-open') ? document.querySelector('#v2-coach-panel') : null);
+  if (event.key === 'Tab' && panel) { trapFocus(event, panel); return; }
+  if (event.key !== 'Escape') return;
+  if (proposal) { closeProposal(proposal); return; }
+  if (panel) { closeCoach(); return; }
+  const menu = [...document.querySelectorAll('details[open]')].at(-1);
+  if (menu) { menu.open = false; menu.querySelector('summary')?.focus(); }
 });
 document.addEventListener('click', function (event) {
   const opener = event.target.closest('[data-open-proposal]');
@@ -23,10 +79,16 @@ document.addEventListener('click', function (event) {
   if (!opener && !closer) return;
   const id = opener?.dataset.openProposal || closer?.dataset.closeProposal;
   const wrapper = document.querySelector('#proposal-' + id);
-  wrapper?.classList.toggle('is-open', Boolean(opener));
-  document.querySelector('[data-open-proposal="' + id + '"]')?.setAttribute('aria-expanded', String(Boolean(opener)));
-  if (opener) wrapper?.querySelector('.v2-proposal h2')?.focus();
-  if (closer) document.querySelector('[data-open-proposal="' + id + '"]')?.focus();
+  if (!wrapper) return;
+  if (closer) { closeProposal(wrapper); return; }
+  proposalOpeners.set(id, opener);
+  wrapper.classList.add('is-open');
+  opener.setAttribute('aria-expanded', 'true');
+  if (matchMedia('(max-width:767px)').matches) {
+    wrapper.querySelector('.v2-proposal')?.setAttribute('role', 'dialog');
+    wrapper.querySelector('.v2-proposal')?.setAttribute('aria-modal', 'true');
+  }
+  wrapper.querySelector('.v2-proposal h2')?.focus();
 });
 document.addEventListener('change', function (event) {
   const checkbox = event.target.closest('.v2-proposal-change input[type=checkbox]');

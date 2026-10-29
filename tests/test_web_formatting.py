@@ -7,6 +7,7 @@ from web.formatting import (
     activity_duration,
     delta,
     duration_minutes,
+    lap_time,
     metric,
     short_date,
     sleep_hours,
@@ -35,10 +36,13 @@ def test_durations_and_baseline_deltas():
 def test_stored_activity_units_for_running_walking_and_strength():
     # activities.distance is kilometres; activities.duration is minutes.
     assert activity_distance(4.04) == "4.0 km"
-    assert activity_duration(27.27) == "27m"
+    assert activity_duration(27.27) == "27 min"
     assert activity_distance(0.87) == "0.9 km"
-    assert activity_duration(9.57) == "10m"
+    assert activity_duration(9.57) == "10 min"
     assert activity_distance(0) is None  # Gym distance does not apply.
-    assert activity_duration(28.16) == "28m"
+    assert activity_duration(28.16) == "28 min"
     assert activity_duration(0) is None
     assert activity_duration(92) == "1h 32m"
+    assert lap_time("06:50") == "6:50"
+    assert lap_time("00:20") == "0:20"
+    assert lap_time("1:03 h") == "1:03 h"

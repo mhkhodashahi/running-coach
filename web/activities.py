@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from collections import defaultdict
 from datetime import date, datetime, timedelta
@@ -29,10 +30,10 @@ from services.fact_display import duration as lap_duration
 from services.fact_display import pace as format_pace
 from services.training_chat_service import TrainingChatService
 from services.workout_laps import interpret_laps
-from web.charts import heart_rate_chart
-from web.formatting import activity_distance, activity_duration, metric, short_date
+from web.charts import heart_rate_chart, plot_only
+from web.formatting import activity_distance, activity_duration, lap_time, metric, short_date
 from web.today import sync_label
-from web.view_models.activity import build_activity_view, list_row
+from web.view_models.activity import build_activity_view, difference_words, display_opinion, list_row
 
 PAGE_SIZE = 20
 INTENTS = ("recovery", "easy", "steady", "tempo", "race")
@@ -165,7 +166,7 @@ def list_context(settings: Settings, *, sport: str | None = None, start: date | 
         weeks[_week_start(day)].append({
             "id": row["id"], "date": short_date(day), "sport": _display_sport(row),
             "distance": activity_distance(row["distance"]) if category == "running" or
-            row["type"].strip().lower() == "walking" else "—",
+            row["type"].strip().lower() == "walking" else None,
             "duration": activity_duration(row["duration"]), "zones": zone_items,
             "zone_pairs": [(zone["name"], zone["percent"] or 0) for zone in zone_items],
             "rpe": row["rpe"], "opinion": row["opinion_id"] is not None,
@@ -224,7 +225,7 @@ def _stats(row: sqlite3.Row, session: Any,
             values.extend((("Cadence", f"{round(cadence[0])}–{round(cadence[1])} spm"
                             if cadence[0] and cadence[1] else None),
                            ("Elevation", metric(row["elevation"], "m")),
-                           ("Session load", metric(session.load.value, "TRIMP") if session else None)))
+                           ("Session load", metric(session.load.value) if session else None)))
             if row["rpe"] is not None:
                 values.append(("Effort", f"{row['rpe']}/10"))
                 if effort_label:
@@ -233,7 +234,7 @@ def _stats(row: sqlite3.Row, session: Any,
         values.extend((("Duration", activity_duration(row["duration"])),
                        ("Avg HR", metric(row["avg_hr"], "bpm")),
                        ("Max HR", metric(row["max_hr"], "bpm")),
-                       ("Session load", metric(session.load.value, "TRIMP") if session else None),
+                       ("Session load", metric(session.load.value) if session else None),
                        ("Effort", f"{row['rpe']}/10" if row["rpe"] is not None else None)))
         if effort_label:
             values.append(("Effort vs HR", effort_label))
@@ -250,8 +251,8 @@ def _similar(settings: Settings, activity_id: int) -> list[dict[str, Any]]:
         return []
     items = []
     with _db(settings.db_path) as connection:
-        durations = {row["id"]: row["duration"] for row in connection.execute(
-            "SELECT id,duration FROM activities WHERE user_id=? AND id IN (" +
+        details = {row["id"]: row for row in connection.execute(
+            "SELECT id,duration,date FROM activities WHERE user_id=? AND id IN (" +
             ",".join("?" for _ in result["sessions"]) + ")",
             (settings.default_user_id, *(item["activity_id"] for item in result["sessions"]))).fetchall()} if result["sessions"] else {}
     for row in result["sessions"][:5]:
@@ -259,17 +260,20 @@ def _similar(settings: Settings, activity_id: int) -> list[dict[str, Any]]:
                  for fact in row["facts"]}
         by_id = {fact["id"]: fact["display"] for fact in row["facts"]}
         identifier = row["activity_id"]
-        efficiency = by_id.get(f"COMPARE_{identifier}_EFFICIENCY_LABEL", "similar")
-        difference = by_id.get(f"COMPARE_{identifier}_DURATION_DELTA" if result["sport"] in
-                               ("volleyball", "football", "gym") else f"COMPARE_{identifier}_PACE_DELTA")
-        hr_difference = by_id.get(f"COMPARE_{identifier}_HR_DELTA")
-        differences = " · ".join(part.replace("-", "−") for part in (difference, hr_difference) if part)
+        duration_based = result["sport"] in ("volleyball", "football", "gym")
+        efficiency = None if duration_based else by_id.get(f"COMPARE_{identifier}_EFFICIENCY_LABEL", "similar")
+        differences = difference_words(
+            by_id.get(f"COMPARE_{identifier}_PACE_DELTA") if not duration_based else None,
+            by_id.get(f"COMPARE_{identifier}_DURATION_DELTA") if duration_based else None,
+            by_id.get(f"COMPARE_{identifier}_HR_DELTA"))
+        similar_session = _session_snapshot(settings, date.fromisoformat(row["date"]), identifier)
+        load = metric(similar_session.load.value) if similar_session else None
         items.append({"id": row["activity_id"], "date": short_date(row["date"]),
                       "pace": facts.get("AVG_PACE") if result["sport"] == "running" else None,
-                      "duration": activity_duration(durations.get(row["activity_id"])),
+                      "duration": activity_duration(details[row["activity_id"]]["duration"]), "load": load,
                       "hr": facts.get("AVG_HR"), "readiness": facts.get("READINESS")
                       if facts.get("READINESS") != "No data" else None,
-                      "difference": differences or None, "efficiency": efficiency})
+                      "difference": differences, "efficiency": efficiency})
     return items
 
 
@@ -292,6 +296,8 @@ def detail_context(settings: Settings, activity_id: int, *, from_page: str = "ac
         user = connection.execute("SELECT max_hr,age FROM users WHERE id=?", (settings.default_user_id,)).fetchone()
         opinion_row = connection.execute("SELECT * FROM activity_coaching_insights WHERE activity_id=? AND user_id=?",
                                          (activity_id, settings.default_user_id)).fetchone()
+        calls = connection.execute("SELECT COUNT(*) FROM coach_llm_calls WHERE user_id=? AND local_day=?",
+                                   (settings.default_user_id, _local_day(settings).isoformat())).fetchone()[0]
         prev_row = connection.execute("SELECT id FROM activities WHERE user_id=? AND "
                                       "(date<? OR (date=? AND id<?)) ORDER BY date DESC,id DESC LIMIT 1",
                                       (settings.default_user_id, row["date"], row["date"], activity_id)).fetchone()
@@ -300,7 +306,9 @@ def detail_context(settings: Settings, activity_id: int, *, from_page: str = "ac
                                       (settings.default_user_id, row["date"], row["date"], activity_id)).fetchone()
         clock = _first_time(connection, activity_id, day)
     session = _session_snapshot(settings, day, activity_id)
-    opinion = load_opinion(dict(opinion_row)).model_dump() if opinion_row else None
+    raw_opinion = load_opinion(dict(opinion_row)).model_dump() if opinion_row else None
+    opinion = display_opinion(raw_opinion, json.loads(opinion_row["payload_json"]) if opinion_row else None,
+                              legacy=bool(opinion_row and opinion_row["schema_version"] is None))
     zones = _zones(session)
     low_zone_share = (sum(zone["percent"] or 0 for zone in zones
                           if zone["name"].startswith(("Below Z1", "Z1", "Z2")))
@@ -322,11 +330,13 @@ def detail_context(settings: Settings, activity_id: int, *, from_page: str = "ac
         lap["pace_label"] = (format_pace(interpreted.pace_min_km)
                              if _sport(row) == "running" and interpreted.distance_km is not None
                              and interpreted.distance_km >= 0.05 else None)
-        lap["duration_label"] = lap_duration(lap["duration"])
+        lap["duration_label"] = lap_time(lap_duration(lap["duration"]))
         lap["zone"] = next((name.split()[0] for name, low, high in bounds if not lap["partial"]
                             and lap["avg_hr"] is not None
                             and low <= lap["avg_hr"] < (high if high is not None else float("inf"))), None)
     hr_chart = heart_rate_chart(points, settings.hr_zones, max_hr, row["duration"])
+    if hr_chart:
+        hr_chart = {**hr_chart, "svg": plot_only(hr_chart["svg"], heart_rate=True)}
     only_lap = laps[0] if len(laps) == 1 else None
     whole_lap = (only_lap is not None and (
         only_lap["distance_km"] is not None and
@@ -341,6 +351,10 @@ def detail_context(settings: Settings, activity_id: int, *, from_page: str = "ac
             "prev_id": prev_row[0] if prev_row else None, "next_id": next_row[0] if next_row else None,
             "stats": _stats(row, session, cadence, effort_label), "opinion": opinion,
             "opinion_meta": dict(opinion_row) if opinion_row else None,
+            "review_provider": {"openai": "OpenAI", "chatgpt": "OpenAI", "ollama": "Ollama",
+                                "none": "No provider configured"}.get(settings.llm_provider,
+                                                                         settings.llm_provider.title()),
+            "review_calls_left": max(0, settings.coach_daily_call_limit - calls),
             "opinion_supported": supports_activity_coach_opinion(row["type"]),
             "evidence_source_label": evidence_source_label,
             "zones": sorted(zones, key=lambda zone: zone["name"][:2], reverse=True),

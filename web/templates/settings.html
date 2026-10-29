@@ -1,11 +1,11 @@
 {% extends 'base.html' %}
-{% block title %}Settings{% endblock %}
+{% block title %}Me{% endblock %}
 {% block content %}
-<div class="page-heading"><div><span class="eyebrow">Account and data</span><h1>Settings</h1></div></div>
+<div class="v2-me-head"><span class="eyebrow">ACCOUNT AND DATA</span><h1 class="num">Me</h1></div>
 {% if message %}<p class="settings-notice" role="status">✓ {{ message }}</p>{% endif %}
 {% if error %}<p class="settings-error" role="alert">{{ error }}</p>{% endif %}
-<div class="settings-layout">
-  <nav class="settings-nav" aria-label="Settings sections"><a href="#profile">Profile</a><a href="#zones">Heart-rate zones</a><a href="#sleep">Sleep goal</a><a href="#goals">Goals</a><a href="#data">Data</a><a href="#coach-settings">Coach</a><a href="#messages">Messages</a></nav>
+<div class="settings-layout v2-me-layout">
+  <nav class="settings-nav" aria-label="Me sections"><a href="#profile">Profile</a><a href="#goals">Goals</a><a href="#data">Garmin sync</a><a href="#coach-settings">Coach</a><a href="#messages">Telegram & jobs</a><a href="#appearance">Appearance</a><a href="#about">About</a></nav>
   <div class="settings-content">
     <section id="profile" class="settings-section"><h2>Profile</h2>
       <form method="post" action="/settings/profile" class="settings-form">
@@ -18,13 +18,10 @@
         <div class="settings-actions"><button class="button button-secondary" type="submit">Save profile</button></div>
       </form>
     </section>
-    <section id="zones" class="settings-section"><h2>Heart-rate zones</h2><p class="subtle">{% if custom_zones %}Custom bounds from HR_ZONES in .env{% else %}Default bounds calculated from max HR{% endif %}</p>
-      <form method="post" action="/settings/config" class="settings-form"><input type="hidden" name="key" value="HR_ZONES">
-        {% for zone in zones %}<div class="zone-setting"><strong>{{ zone[0] }}</strong><label>From (bpm)<input type="number" name="zone_{{ loop.index }}_lower" min="0" max="240" required value="{{ zone[1] }}"></label><label>To (bpm)<input type="number" name="zone_{{ loop.index }}_upper" min="0" max="240" value="{{ zone[2] if zone[2] is not none else '' }}" {% if loop.index < 5 %}required{% endif %}></label></div>{% endfor %}
-        <div class="settings-actions"><button class="button button-secondary" type="submit">Save zones</button>{% if custom_zones %}<button class="button button-secondary" type="submit" name="clear" value="1" formnovalidate>Use defaults</button>{% endif %}</div>
-      </form>
+    <section id="zones" class="settings-section"><h2>Heart-rate zones</h2><p class="cap">{{ 'Custom bounds' if custom_zones else 'Default bounds calculated from max HR' }} · Set in .env</p>
+      <div class="v2-me-zones">{% for zone in zones %}<span class="chip">{{ zone[0] }} {{ zone[1] }}–{{ zone[2] if zone[2] is not none else 'max' }} bpm</span>{% endfor %}</div>
     </section>
-    <section id="sleep" class="settings-section"><h2>Sleep goal</h2><form method="post" action="/settings/config" class="settings-form"><input type="hidden" name="key" value="SLEEP_GOAL_HOURS"><label>Hours per night<input type="number" name="value" min="4" max="12" step="0.25" value="{{ sleep_goal }}" required></label><div class="settings-actions"><button class="button button-secondary" type="submit">Save sleep goal</button></div></form></section>
+    <section id="sleep" class="settings-section"><h2>Sleep goal</h2><p>{{ sleep_goal }} h per night <span class="cap">· Set in .env</span></p></section>
     <section id="goals" class="settings-section"><h2>Goals and races</h2>
       {% for goal in goals %}<details class="goal-editor"><summary><strong>{{ goal.name }}</strong><span>{{ goal.distance }} km · {{ goal.time_text }} · {% if goal.active %}Active{% else %}{{ goal.status|title }}{% endif %}</span></summary>
         <form method="post" action="/settings/goals" class="settings-form"><input type="hidden" name="id" value="{{ goal.id }}"><label>Name<input name="name" value="{{ goal.name }}" required maxlength="80"></label><label>Type<select name="goal_type">{% for kind,label,distance in goal_types %}<option value="{{ kind }}" {% if goal.goal_type == kind %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></label><label>Distance (km)<input type="number" name="target_distance_km" min="1" max="300" step="0.1" value="{{ goal.distance }}" required></label><label>Target time (HH:MM:SS)<input name="target_time" value="{{ goal.time_text }}" pattern="[0-9]{2}:[0-5][0-9]:[0-5][0-9]" required></label><label>Race date<input type="date" name="target_date" value="{{ goal.date or '' }}"></label><label>Priority<select name="priority">{% for priority in ['A','B','C'] %}<option {% if goal.priority == priority %}selected{% endif %}>{{ priority }}</option>{% endfor %}</select></label><label class="settings-wide">Notes<input name="notes" maxlength="500" value="{{ goal.notes or '' }}"></label><div class="settings-actions"><button class="button button-secondary" type="submit">Save goal</button></div></form>
@@ -32,12 +29,14 @@
       </details>{% else %}<p class="subtle">No goals yet.</p>{% endfor %}
       <details class="goal-editor"><summary>Add goal</summary><form method="post" action="/settings/goals" class="settings-form"><label>Name<input name="name" maxlength="80" required></label><label>Type<select name="goal_type">{% for kind,label,distance in goal_types %}<option value="{{ kind }}">{{ label }}</option>{% endfor %}</select></label><label>Distance (km)<input type="number" name="target_distance_km" min="1" max="300" step="0.1" required></label><label>Target time (HH:MM:SS)<input name="target_time" placeholder="00:30:00" pattern="[0-9]{2}:[0-5][0-9]:[0-5][0-9]" required></label><label>Race date<input type="date" name="target_date"></label><label>Priority<select name="priority"><option>A</option><option>B</option><option>C</option></select></label><label class="settings-wide">Notes<input name="notes" maxlength="500"></label><div class="settings-actions"><button class="button button-secondary" type="submit">Add goal</button></div></form></details>
     </section>
-    <section id="data" class="settings-section"><h2>Data</h2><p>Garmin <strong>{{ last_sync }}</strong></p>{% include 'components/sync_status.html' %}
+    <section id="data" class="settings-section"><h2>Garmin sync</h2><p>Garmin <strong>{{ last_sync }}</strong> · Credentials {{ me.garmin_status }}</p>{% include 'components/sync_status.html' %}
       <form method="post" action="/settings/sync" class="settings-actions"><button class="button button-secondary" type="submit" {% if sync_state.status == 'running' %}disabled{% endif %}>Sync now</button></form>
       <form method="post" action="/settings/import" enctype="multipart/form-data" class="settings-form"><label>Activities CSV<input type="file" name="activities_file" accept=".csv,text/csv"></label><label>Health metrics CSV<input type="file" name="health_file" accept=".csv,text/csv"></label><div class="settings-actions"><button class="button button-secondary" type="submit">Import CSV</button></div></form>
     </section>
-    <section id="coach-settings" class="settings-section"><h2>Coach</h2><dl class="settings-facts"><div><dt>Provider</dt><dd>{{ provider }}</dd></div><div><dt>Model</dt><dd>{{ model }}</dd></div><div><dt>Remote athlete-data sharing</dt><dd>{{ 'On' if remote_sharing else 'Off' }}</dd></div><div><dt>Calls today</dt><dd>{{ usage }} of {{ call_limit }}</dd></div></dl></section>
-    <section id="messages" class="settings-section"><h2>Messages</h2>
+    <section id="coach-settings" class="settings-section"><h2>Coach</h2><dl class="settings-facts"><div><dt>Provider</dt><dd>{{ provider }} · {{ me.provider_location }}</dd></div><div><dt>Model</dt><dd>{{ model }}</dd></div><div><dt>Remote athlete-data sharing</dt><dd>{{ 'Approved' if remote_sharing else 'Off' }} · Set in .env</dd></div><div><dt>Calls today</dt><dd>{{ usage }} of {{ call_limit }} · Set in .env</dd></div></dl>
+      <p class="cap">Heart-rate zones, sleep goal and coach provider are configured in .env.</p></section>
+    <section id="messages" class="settings-section"><h2>Telegram and scheduled jobs</h2>
+      <dl class="settings-facts"><div><dt>Telegram</dt><dd>{{ me.telegram_status }} · Set in .env</dd></div><div><dt>Public link</dt><dd>{{ me.public_link_status }} · Set in .env</dd></div></dl>
       <form method="post" action="/settings/messages" class="settings-form">
         <label><input type="checkbox" name="morning_enabled" {% if messages.morning_enabled %}checked{% endif %}> Morning call</label>
         <label>Latest morning time<input type="time" name="morning_latest" value="{{ messages.morning_latest }}"></label>
@@ -54,6 +53,8 @@
       <p>Worker {{ 'running' if worker_running else 'not running' }}. {{ 'Scheduled messages paused' if messages.paused else 'Scheduled messages active' }}.</p>
       <h3>Recent worker jobs</h3><ul>{% for row in worker_runs %}<li>{{ row.run_date }} · {{ row.job }} · {{ row.status }}{% if row.error %} · {{ row.error }}{% endif %}</li>{% else %}<li>No worker jobs yet.</li>{% endfor %}</ul>
     </section>
+    <section id="appearance" class="settings-section"><h2>Appearance</h2><p class="cap">Theme</p><form action="/theme" method="post"><button class="btn" type="submit" name="theme" value="{% if request.cookies.get('theme') == 'day' %}night{% else %}day{% endif %}">Switch to {{ 'night' if request.cookies.get('theme') == 'day' else 'day' }} theme</button></form></section>
+    <section id="about" class="settings-section"><h2>About</h2><dl class="settings-facts"><div><dt>Version</dt><dd>{{ me.version }}</dd></div><div><dt>Licence</dt><dd>AGPL-3.0</dd></div></dl><a href="{{ me.source_url }}" rel="noopener noreferrer">Source code</a></section>
   </div>
 </div>
 {% endblock %}

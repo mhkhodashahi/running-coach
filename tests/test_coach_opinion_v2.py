@@ -301,7 +301,9 @@ def test_regeneration_archives_legacy_payload_in_same_transaction(opinion_db):
         history = session.scalars(select(ActivityCoachingOpinionHistory)).one()
         assert history.payload_json == original and history.prompt_context_json == context
         assert history.schema_version is None and history.replaced_at is not None
-        assert repository.get_activity_coaching_insight(session, activity_id, 1).schema_version == "2"
+        current = repository.get_activity_coaching_insight(session, activity_id, 1)
+        assert current.schema_version == "2" and current.payload_json != original
+        assert session.scalars(select(ActivityCoachingOpinionHistory)).one().payload_json == original
 
 
 def test_v2_memory_entry_uses_assessment_and_points(monkeypatch):

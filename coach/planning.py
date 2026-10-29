@@ -112,6 +112,7 @@ class LoadModel:
     imputed_sessions: int = 0
     expected_walking_weekly: float = 0.0
     reference_weeks: tuple[tuple[str, float], ...] = ()
+    recorded_week_dates: tuple[str, ...] = ()
 
     @property
     def cap(self) -> float | None:
@@ -156,7 +157,8 @@ def habit_pattern(rows: list[dict[str, Any]], start: date) -> HabitPattern:
                          for sport, values in durations.items()})
 
 
-def weekly_load_reference(rows: list[tuple[date, str, float | None]], cutoff: date
+def weekly_load_reference(rows: list[tuple[date, str, float | None]], cutoff: date,
+                          limit: int | None = 8
                           ) -> tuple[tuple[str, float], ...]:
     """Last eight complete recorded training weeks, excluding walking and missing-load weeks."""
     totals: dict[date, float] = {}
@@ -169,7 +171,9 @@ def weekly_load_reference(rows: list[tuple[date, str, float | None]], cutoff: da
         if load is None:
             unknown.add(week)
     selected = [(week.isoformat(), totals[week]) for week in sorted(totals, reverse=True)
-                if week not in unknown][:8]
+                if week not in unknown]
+    if limit is not None:
+        selected = selected[:limit]
     return tuple(selected)
 
 
@@ -657,9 +661,11 @@ def load_model(database: Path, user_id: int, start: date, settings: Settings) ->
         reference_rows.append((activity.day, label, load))
         if label == "walking" and activity.day >= end - timedelta(days=27) and load is not None:
             walking_total += load
-    weeks = weekly_load_reference(reference_rows, cutoff)
+    recorded = weekly_load_reference(reference_rows, cutoff, limit=None)
+    weeks = recorded[:8]
     reference = median(load for _, load in weeks) if len(weeks) >= 3 else None
-    return LoadModel(reference, rates, sport_rates, imputed, walking_total / 4, weeks)
+    return LoadModel(reference, rates, sport_rates, imputed, walking_total / 4, weeks,
+                     tuple(week for week, _ in recorded))
 
 
 def _context(database: Path, user_id: int, start: date, settings: Settings,

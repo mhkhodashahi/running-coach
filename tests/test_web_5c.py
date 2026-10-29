@@ -208,6 +208,7 @@ def test_plan_request_creates_proposal_not_session(data, monkeypatch):
 
 def test_coach_chat_attaches_user_session_and_renders_stored_thread(data, monkeypatch):
     settings, day = data
+    settings = replace(settings, llm_provider="ollama")
     fill_data(settings, day)
     monkeypatch.setattr("web.routes.pages.ask_coach", lambda *args, **kwargs:
                         TrainingChatReply("I see the attached run.", True, (), (201,), ("How was recovery?",)))

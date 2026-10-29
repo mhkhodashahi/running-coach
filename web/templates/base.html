@@ -4,13 +4,11 @@
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}Today{% endblock %} · Pulse Coach</title>
-  <link rel="stylesheet" href="{{ url_for('static', path='css/tokens.css') }}">
-  <link rel="stylesheet" href="{{ url_for('static', path='css/app.css') }}">
   <link rel="stylesheet" href="{{ url_for('static', path='css/v2.css') }}">
   <script defer src="{{ url_for('static', path='js/htmx.min.js') }}"></script>
   <script defer src="{{ url_for('static', path='js/v2.js') }}"></script>
 </head>
-<body class="v2{% if request.url.path == '/' %} v2-today{% endif %}">
+<body class="v2{% if request.url.path == '/' %} v2-today{% elif request.url.path == '/coach' %} v2-coach-page{% endif %}">
   <a class="skip-link" href="#main">Skip to content</a>
   {% if request.url.path == '/login' %}<main id="main" class="page">{% block login_content %}{% endblock %}</main>
   {% else %}
@@ -21,7 +19,7 @@
         <a class="v2-nav" href="/" {% if request.url.path == '/' %}aria-current="page"{% endif %}>{{ icon('sun') }}Today</a>
         <a class="v2-nav" href="/plan" {% if request.url.path == '/plan' %}aria-current="page"{% endif %}>{{ icon('calendar') }}Training</a>
         <a class="v2-nav" href="/trends" {% if request.url.path == '/trends' %}aria-current="page"{% endif %}>{{ icon('trend') }}Insights</a>
-        <button type="button" class="v2-nav v2-tablet-ask" data-open-coach aria-controls="v2-coach-panel" aria-expanded="false">{{ icon('chat') }}Ask</button>
+        {% if request.url.path == '/coach' %}<a class="v2-nav v2-tablet-ask" href="/coach" aria-current="page">{{ icon('chat') }}Ask</a>{% else %}<button type="button" class="v2-nav v2-tablet-ask" data-open-coach aria-controls="v2-coach-panel" aria-expanded="false">{{ icon('chat') }}Ask</button>{% endif %}
       </nav>
       <div class="v2-rail-foot">
         <a class="v2-nav" href="/settings" {% if request.url.path == '/settings' %}aria-current="page"{% endif %}>{{ icon('user') }}Me</a>
@@ -38,7 +36,7 @@
   <nav class="v2-bottom-nav" aria-label="Mobile navigation">
     <a href="/" {% if request.url.path == '/' %}aria-current="page"{% endif %}>{{ icon('sun') }}Today</a>
     <a href="/plan" {% if request.url.path == '/plan' %}aria-current="page"{% endif %}>{{ icon('calendar') }}Training</a>
-    <button type="button" class="v2-ask-tab" data-open-coach aria-controls="v2-coach-panel" aria-expanded="false"><span class="v2-ask-icon">{{ icon('chat') }}</span>Ask</button>
+    {% if request.url.path == '/coach' %}<a class="v2-ask-tab" href="/coach" aria-current="page"><span class="v2-ask-icon">{{ icon('chat') }}</span>Ask</a>{% else %}<button type="button" class="v2-ask-tab" data-open-coach aria-controls="v2-coach-panel" aria-expanded="false"><span class="v2-ask-icon">{{ icon('chat') }}</span>Ask</button>{% endif %}
     <a href="/trends" {% if request.url.path == '/trends' %}aria-current="page"{% endif %}>{{ icon('trend') }}Insights</a>
     <a href="/settings" {% if request.url.path == '/settings' %}aria-current="page"{% endif %}>{{ icon('user') }}Me</a>
   </nav>

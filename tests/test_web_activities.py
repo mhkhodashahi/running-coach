@@ -11,9 +11,11 @@ from fastapi.testclient import TestClient
 
 from config import get_settings
 from db.migration_runner import upgrade_database
+from services.daily_decision_service import build_daily_decision
 from web.activities import evidence_source_label
 from web.app import create_app
 from web.charts import heart_rate_chart
+from web.trends import trends_context
 
 DAY = date(2026, 10, 23)
 
@@ -80,7 +82,7 @@ def test_list_groups_filters_and_walks(browser):
     assert html.count('class="v2-activity-week"') == 2
     assert "/activities/101" in html and "/activities/105" not in html
     assert "/activities/106" not in html
-    assert "4.2 km" in html and "28m" in html
+    assert "4.2 km" in html and "28 min" in html
     assert "3 sessions" in html
     assert html.count("Coach review") >= 2
     assert "load" in html or "No data" in html
@@ -151,7 +153,7 @@ def test_selected_effort_and_effort_vs_hr_stats(browser, activity_db):
     assert 'name="rpe" value="8" aria-pressed="true"' in html
     assert 'name="rpe" value="7" aria-pressed="false"' in html
     assert "Effort vs HR" in html
-    stylesheet = (Path(__file__).resolve().parents[1] / "web/static/css/app.css").read_text()
+    stylesheet = (Path(__file__).resolve().parents[1] / "web/static/css/v2.css").read_text()
     assert '.rating-controls button[aria-pressed="true"]{border:2px solid var(--ink);font-weight:600' in stylesheet
 
 
@@ -227,6 +229,17 @@ def test_insights_range_and_render_do_not_call_llm(browser, monkeypatch):
         assert "Recovery" in response.text and "Weekly load" in response.text
 
 
+def test_insights_recovery_gap_does_not_change_today_fallback(activity_db):
+    missing = DAY - timedelta(days=1)
+    with sqlite3.connect(activity_db) as connection:
+        connection.execute("DELETE FROM health_metrics WHERE user_id=1 AND date=?", (missing.isoformat(),))
+    settings = replace(get_settings(), db_path=activity_db, llm_provider="none")
+    data = trends_context(settings, DAY, 7, include_summary=False)
+    assert (missing.isoformat(), None) in data["series"]["readiness"]
+    assert build_daily_decision(missing, activity_db, 1, settings.local_timezone,
+                                settings.sleep_goal_hours, settings.hr_zones).readiness is not None
+
+
 def test_structured_stride_laps_render_as_work_and_recovery(browser, activity_db):
     with sqlite3.connect(activity_db) as connection:
         connection.execute("INSERT INTO activities(id,user_id,date,type,distance,duration,pace,avg_hr) "
@@ -242,6 +255,7 @@ def test_structured_stride_laps_render_as_work_and_recovery(browser, activity_db
     assert "2 × 20 s efforts" in html
     assert ">Work</td>" in html and ">Recovery</td>" in html
     assert "80.00 m" in html and "Partial · excluded" not in html
+    assert "Avg HR (bpm)" in html and "Cadence (spm)" in html
 
 
 def test_hr_chart_has_five_or_ten_minute_ticks_twenty_bpm_grid_and_zone_names():
@@ -269,12 +283,37 @@ def test_team_and_gym_similar_rows_show_duration_hr_and_efficiency(
                            "VALUES(?,1,?,?,0,?,?)",
                            (activity_id + 100, (DAY - timedelta(days=50)).isoformat(), sport, duration, 120))
     html = browser.get(f"/activities/{activity_id}").text
-    assert expected_delta.replace("-", "−") in html
-    assert "−10 bpm" in html
-    assert "similar" in html or "more efficient" in html
-    assert "Recovery —" in html
-    assert ("1h 20m" if activity_id == 102 else "40m") in html
+    assert expected_delta.replace("-", "").replace("min", "min shorter") in html
+    assert "10 bpm lower" in html
+    assert "more efficient" not in html
+    assert "load" in html
+    assert ("1h 20m" if activity_id == 102 else "40 min") in html
     assert "50:07 /km" not in html
+    assert "<th>Duration</th>" in html and "<th>Load</th>" not in html
+    assert "<th>Status</th>" not in html
+
+
+def test_running_compare_has_headers_and_relative_wording(browser, activity_db):
+    with sqlite3.connect(activity_db) as connection:
+        connection.execute("INSERT INTO activities(id,user_id,date,type,distance,duration,pace,avg_hr) "
+                           "VALUES(220,1,?,'running',4.1,27,6.38,157)",
+                           ((DAY - timedelta(days=14)).isoformat(),))
+    html = browser.get("/activities/101#activity-compare").text
+    for heading in ("Date", "Pace", "Avg HR", "Difference", "Status"):
+        assert f"<th>{heading}</th>" in html
+    assert "s/km faster" in html and "bpm higher" in html
+
+
+def test_lap_time_has_no_leading_minute_zero(browser):
+    html = browser.get("/activities/101#activity-laps").text
+    assert ">6:42</td>" in html and ">06:42</td>" not in html
+    assert "<th>Avg HR (bpm)</th>" in html and "<th>Cadence (spm)</th>" in html
+
+
+def test_gym_coach_panel_has_no_distance_chip(browser):
+    html = browser.get("/activities/103").text
+    panel = html.split('class="v2-coach-panel"', 1)[1]
+    assert "0.0 km" not in panel and "Distance" not in panel
 
 
 def test_intent_change_does_not_regenerate_or_rewrite_opinion(browser, activity_db, monkeypatch):
@@ -314,6 +353,53 @@ def test_regeneration_failure_keeps_opinion(browser, activity_db, monkeypatch):
     assert "Controlled progression." in response.text
     with sqlite3.connect(activity_db) as connection:
         assert connection.execute("SELECT payload_json FROM activity_coaching_insights WHERE activity_id=101").fetchone()[0] == before
+
+
+def test_review_confirmation_is_secondary_and_names_provider_and_history(browser):
+    html = browser.get("/activities/101").text
+    assert "Get a new review" in html
+    assert "Your current review will be saved in its history." in html
+    assert "Provider: No provider configured." in html
+    assert "coach calls remain today." in html
+    assert '<input type="hidden" name="regenerate" value="true">' in html
+    assert 'class="button button-primary" type="submit">Regenerate' not in html
+
+
+def test_legacy_dict_section_renders_rows_not_raw_json(browser, activity_db):
+    payload = {"brutally_honest_conclusion": "Start under control. Then settle.",
+               "overall_assessment": "Start under control. Your pacing held.",
+               "pacing_analysis": {"avg_pace": "5:58", "hr_drift": 16.4,
+                                   "zone_distribution": {"Z3": 58}},
+               "what_was_good": ["Stayed steady"]}
+    original = json.dumps(payload)
+    with sqlite3.connect(activity_db) as connection:
+        connection.execute("UPDATE activity_coaching_insights SET payload_json=? WHERE activity_id=102", (original,))
+    html = browser.get("/activities/102#activity-review").text
+    assert "Start under control." in html and "Then settle." in html
+    assert html.count("Your pacing held.") == 1
+    assert "Avg pace" in html and "5:58 /km" in html
+    assert "HR drift" in html and "16.4 bpm" in html
+    assert "Z3" in html and "58%" in html
+    assert "{&#39;" not in html and "&quot;avg_pace&quot;" not in html
+    assert "<strong>Stayed steady</strong>" not in html
+    assert 'class="v2-activity-head"' in html and 'id="activity-review"' in html
+    with sqlite3.connect(activity_db) as connection:
+        assert connection.execute("SELECT payload_json FROM activity_coaching_insights WHERE activity_id=102").fetchone()[0] == original
+
+
+def test_legacy_json_text_sections_render_bullets_without_rewrite(browser, activity_db):
+    payload = {"brutally_honest_conclusion": "Keep it steady.",
+               "pacing_analysis": json.dumps({"zone_distribution": {"Z3": 58}, "avg_pace": "5:58"}),
+               "mental_performance_insights": json.dumps(["Steady focus", "Relaxed finish"])}
+    original = json.dumps(payload)
+    with sqlite3.connect(activity_db) as connection:
+        connection.execute("UPDATE activity_coaching_insights SET payload_json=? WHERE activity_id=102", (original,))
+    html = browser.get("/activities/102#activity-review").text
+    assert "Z3" in html and "58%" in html and "5:58 /km" in html
+    assert "<li>Steady focus</li>" in html and "<li>Relaxed finish</li>" in html
+    assert "&quot;zone_distribution&quot;" not in html
+    with sqlite3.connect(activity_db) as connection:
+        assert connection.execute("SELECT payload_json FROM activity_coaching_insights WHERE activity_id=102").fetchone()[0] == original
 
 
 def test_add_to_plan_creates_proposal_only(browser, activity_db, monkeypatch):

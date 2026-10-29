@@ -16,6 +16,7 @@ from services.training_chat_service import TrainingChatReply, TrainingChatServic
 from web.formatting import short_date
 from web.plan_page import plan_context
 from web.today import sync_label
+from web.view_models.coach import QUICK_QUESTIONS, coach_availability, coach_turns, context_chip
 from worker.state import history as worker_history
 
 COACH_DATA_LIST = ("Activities", "Laps", "Samples", "Health metrics", "Metrics snapshot",
@@ -29,7 +30,8 @@ def _db(settings: Settings) -> sqlite3.Connection:
 
 
 def coach_context(settings: Settings, day: date, *, reply: TrainingChatReply | None = None,
-                  question: str | None = None, attached_id: int | None = None) -> dict[str, Any]:
+                  question: str | None = None, attached_id: int | None = None,
+                  context: str = "today") -> dict[str, Any]:
     """Read one user's thread, recent sessions, plan and today's call count."""
     with _db(settings) as connection:
         rows = connection.execute("SELECT id,date,type,activity_name,duration FROM activities WHERE user_id=? "
@@ -39,11 +41,15 @@ def coach_context(settings: Settings, day: date, *, reply: TrainingChatReply | N
                    "sport": sport_category(row["type"], day),
                    "label": row["activity_name"] or row["type"].replace("_", " ").title()}
                   for row in rows if sport_category(row["type"], day) in RECOMMENDABLE_SPORTS][:20]
-        if attached_id is not None and not any(item["id"] == attached_id for item in recent):
-            owner = connection.execute("SELECT 1 FROM activities WHERE id=? AND user_id=?",
+        attached = next((item for item in recent if item["id"] == attached_id), None)
+        if attached_id is not None and attached is None:
+            owner = connection.execute("SELECT id,date,type,activity_name FROM activities WHERE id=? AND user_id=?",
                                        (attached_id, settings.default_user_id)).fetchone()
             if owner is None:
                 raise ValueError("Attached session not found")
+            attached = {"id": owner["id"], "date": short_date(owner["date"]),
+                        "sport": sport_category(owner["type"], day),
+                        "label": owner["activity_name"] or owner["type"].replace("_", " ").title()}
         calls = connection.execute("SELECT COUNT(*) FROM coach_llm_calls WHERE user_id=? AND local_day=?",
                                    (settings.default_user_id, day.isoformat())).fetchone()[0]
     plan = plan_context(settings, day)
@@ -55,7 +61,8 @@ def coach_context(settings: Settings, day: date, *, reply: TrainingChatReply | N
         with _db(settings) as connection:
             placeholders = ",".join("?" for _ in referenced)
             cards = {row["id"]: {"id": row["id"], "label": row["activity_name"] or
-                      row["type"].replace("_", " ").title(), "date": short_date(row["date"])}
+                      row["type"].replace("_", " ").title(), "date": short_date(row["date"]),
+                      "sport": sport_category(row["type"], day)}
                      for row in connection.execute(
                          f"SELECT id,date,type,activity_name FROM activities WHERE user_id=? AND id IN ({placeholders})",
                          (settings.default_user_id, *referenced))}
@@ -63,10 +70,15 @@ def coach_context(settings: Settings, day: date, *, reply: TrainingChatReply | N
             turn["cards"] = [cards[activity_id] for activity_id in turn["activity_ids"] if activity_id in cards]
     follow_ups = reply.follow_ups if reply else ("How has my recovery changed?",
                  "What does my latest activity show?") if thread else ()
-    return {"thread": thread, "reply": reply, "follow_ups": follow_ups,
+    availability = coach_availability(settings.llm_provider, calls, settings.coach_daily_call_limit,
+                                      settings.allow_remote_llm and settings.remote_athlete_data_approved)
+    return {"thread": coach_turns(thread), "reply": reply, "follow_ups": follow_ups,
             "question": question, "attached_id": attached_id,
             "sessions": recent, "days": days, "data_list": COACH_DATA_LIST,
             "calls": calls, "call_limit": settings.coach_daily_call_limit,
+            "availability": availability, "context_kind": context,
+            "selected_context": context_chip(context, attached),
+            "quick_questions": QUICK_QUESTIONS,
             "sync": sync_label(settings, day),
             "messages": [row for row in worker_history(settings.db_path, settings.default_user_id)
                          if row["message_text"] and row["job"] in ("morning", "day_review", "weekly_review")]}

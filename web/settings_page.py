@@ -6,6 +6,7 @@ import logging
 import os
 import re
 import threading
+import tomllib
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import replace
@@ -26,6 +27,7 @@ from services.hr_zones import heart_rate_zone_bounds
 from services.import_service import GarminImportService, ImportSummary
 from utils.formatting import format_goal_time
 from web.formatting import sync_time
+from web.view_models.me import me_view
 from worker.state import history as worker_history
 from worker.state import preferences, save_preferences, worker_running
 
@@ -73,7 +75,7 @@ def settings_context(settings: Settings, sync_state: dict[str, str]) -> dict:
         if goal["goal_type"] not in known_types:
             goal_types.append((goal["goal_type"], GoalService.label_for(goal["goal_type"]), goal["distance"]))
             known_types.add(goal["goal_type"])
-    return {"profile": profile, "goals": goal_rows, "goal_types": goal_types,
+    context = {"profile": profile, "goals": goal_rows, "goal_types": goal_types,
             "zones": bounds, "custom_zones": bool(settings.hr_zones), "sleep_goal": settings.sleep_goal_hours,
             "last_sync": sync_label, "sync_state": sync_state.copy(), "provider": settings.llm_provider,
             "model": (settings.openai_model if settings.llm_provider in ("openai", "chatgpt") else
@@ -83,6 +85,12 @@ def settings_context(settings: Settings, sync_state: dict[str, str]) -> dict:
             "sync": sync_label, "messages": preferences(settings.db_path, settings.default_user_id),
             "worker_runs": worker_history(settings.db_path, settings.default_user_id, 8),
             "worker_running": worker_running(settings.db_path)}
+    project = tomllib.loads((BASE_DIR / "pyproject.toml").read_text(encoding="utf-8"))["project"]
+    context["me"] = me_view(context, telegram_configured=bool(settings.telegram_bot_token and
+                             settings.telegram_chat_id), garmin_configured=bool(settings.garmin_email and
+                             settings.garmin_password), public_link_configured=bool(settings.public_url),
+                             version=project["version"], source_url=project["urls"]["Repository"])
+    return context
 
 
 def save_messages(settings: Settings, fields: dict[str, str]) -> None:

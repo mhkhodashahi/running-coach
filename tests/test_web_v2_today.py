@@ -7,6 +7,7 @@ from web.view_models.today import (
     TODAY_FOLLOW_UPS,
     call_headline,
     coach_evidence,
+    coach_heading,
     dial_models,
     dial_status,
     display_decision_text,
@@ -49,6 +50,26 @@ def test_call_headline_purpose_and_duration():
     assert purpose_line({"purpose": "Build easy endurance"}, dials) == (
         "Build easy endurance. You're recovered and your load is below usual.")
     assert "0.70" not in purpose_line(None, dials)
+
+
+def test_planned_lighter_session_names_session_and_explains_hard_allowance():
+    workout = {"title": "light gym", "intent": "light upper body", "planned": True}
+    dials = dial_models(72, 8, 7, 70, 100, "Synced 08:00")
+    assert call_headline("hard", workout) == "Light gym today"
+    assert coach_heading("hard", workout) == "Why light gym is fine today"
+    assert purpose_line(workout, dials, "hard") == (
+        "You're recovered and your load is below usual. A harder session would also be fine.")
+
+
+def test_planned_equal_session_and_no_plan_keep_distinct_copy():
+    dials = dial_models(72, 8, 7, 70, 100, "Synced 08:00")
+    planned = {"title": "tempo run", "intent": "tempo", "planned": True}
+    suggested = {"title": "tempo run", "intent": "tempo", "planned": False}
+    assert call_headline("hard", planned) == "Tempo run today"
+    assert coach_heading("hard", planned) == "Why tempo run is fine today"
+    assert purpose_line(planned, dials, "hard") == "You're recovered and your load is below usual."
+    assert call_headline("hard", suggested) == "Hard day — tempo run"
+    assert coach_heading("hard", suggested) == "Why a hard day"
 
 
 def test_evidence_chips_have_one_label_and_unit():

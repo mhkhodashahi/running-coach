@@ -505,6 +505,7 @@ def test_reference_skips_empty_walking_only_unknown_and_unfinished_weeks():
                  (cutoff - timedelta(weeks=3), "gym", None)])
     weeks = weekly_load_reference(rows, cutoff)
     assert len(weeks) == 8
+    assert len(weekly_load_reference(rows, cutoff, limit=None)) == 11
     assert all(day < cutoff.isoformat() for day, _ in weeks)
     assert all(day != (cutoff - timedelta(weeks=3)).isoformat() for day, _ in weeks)
     assert weeks[0][1] == 10.0

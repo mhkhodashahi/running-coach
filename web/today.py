@@ -32,6 +32,7 @@ from web.view_models.today import (
     TODAY_FOLLOW_UPS,
     call_headline,
     coach_evidence,
+    coach_heading,
     dial_models,
     display_decision_text,
     display_duration,
@@ -163,8 +164,9 @@ def today_context(settings: Settings, *, day: date, llm: Any = None) -> dict[str
             "dials": dials,
             "week_strip": week_strip(day, plan_sessions, week_activities, unrated_id, workout),
             "workout": workout, "call_headline": call_headline(decision.intensity, workout),
+            "coach_heading": coach_heading(decision.intensity, workout),
             "coach_evidence": coach_evidence(decision), "coach_follow_ups": TODAY_FOLLOW_UPS,
-            "purpose": purpose_line(workout, dials),
+            "purpose": purpose_line(workout, dials, decision.intensity),
             "decision_text": display_decision_text(decision.explanation)}
 
 

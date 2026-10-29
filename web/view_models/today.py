@@ -37,8 +37,16 @@ def call_headline(intensity: str, workout: dict[str, Any] | None) -> str:
     if intensity == "rest":
         return "Rest day"
     if workout:
+        if workout.get("planned"):
+            return f"{workout['title'].capitalize()} today"
         return f"{intensity.title()} day — {workout['title'].lower()}"
     return f"{intensity.title()} day"
+
+
+def coach_heading(intensity: str, workout: dict[str, Any] | None) -> str:
+    if workout and workout.get("planned") and intensity != "rest":
+        return f"Why {workout['title'].lower()} is fine today"
+    return "Why rest today" if intensity == "rest" else f"Why a {intensity} day"
 
 
 def dial_status(kind: str, value: float | None, usual: float | None) -> tuple[str, str]:
@@ -79,7 +87,8 @@ def dial_models(readiness: float | None, sleep: float | None, sleep_baseline: fl
     return tuple(result)
 
 
-def purpose_line(workout: dict[str, Any] | None, dials: tuple[dict[str, Any], ...]) -> str:
+def purpose_line(workout: dict[str, Any] | None, dials: tuple[dict[str, Any], ...],
+                 intensity: str | None = None) -> str:
     states = {item["kind"]: item["status"] for item in dials}
     recovery = {"Good": "You're recovered", "Fair": "Recovery is fair", "Low": "Recovery is low"}.get(
         states.get("recovery"), "Recovery data is missing")
@@ -87,7 +96,12 @@ def purpose_line(workout: dict[str, Any] | None, dials: tuple[dict[str, Any], ..
             "Normal": "your load is normal"}.get(states.get("load"))
     sentence = f"{recovery} and {load}." if load else f"{recovery}."
     purpose = (workout or {}).get("purpose")
-    return f"{purpose.rstrip('.').strip()}. {sentence}" if purpose else sentence
+    result = f"{purpose.rstrip('.').strip()}. {sentence}" if purpose else sentence
+    if workout and workout.get("planned") and intensity == "hard":
+        intent = str(workout.get("intent") or "").lower()
+        if intent in ("easy", "recovery", "skills only") or intent.startswith("light"):
+            result += " A harder session would also be fine."
+    return result
 
 
 def display_decision_text(text: str) -> str:
