@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from llm.ollama_client import OLLAMA_INPUT_TOKEN_LIMIT, OllamaClient, estimate_input_tokens
-from llm.schemas import CoachOpinionV2, CoachOpinionV21, OpinionDraftV22, OpinionDraftV23
+from llm.schemas import CoachOpinionV2, CoachOpinionV21, OpinionDraftV22, OpinionDraftV23, OpinionDraftV26
 
 
 def test_ollama_client_rejects_prompts_at_token_limit(monkeypatch) -> None:
@@ -86,7 +86,8 @@ def test_ollama_v22_sends_draft_only_schema(monkeypatch) -> None:
     assert "intent" not in seen["format"]["properties"]
 
 
-def test_ollama_v23_sends_recommendation_fact_ids(monkeypatch) -> None:
+@pytest.mark.parametrize("schema", [OpinionDraftV23, OpinionDraftV26])
+def test_ollama_v23_sends_recommendation_fact_ids(monkeypatch, schema) -> None:
     seen = {}
 
     class Response:
@@ -102,7 +103,7 @@ def test_ollama_v23_sends_recommendation_fact_ids(monkeypatch) -> None:
 
     monkeypatch.setattr("llm.ollama_client.requests.post", post)
     OllamaClient(base_url="http://localhost:11434", model="synthetic").generate_json(
-        "system", "prompt", response_schema=OpinionDraftV23)
+        "system", "prompt", response_schema=schema)
     recommendation = seen["format"]["$defs"]["OpinionDraftRecommendationV23"]
     assert "evidence_ids" in recommendation["properties"]
     assert recommendation["additionalProperties"] is False

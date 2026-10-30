@@ -18,6 +18,7 @@
       <nav class="v2-rail-links" aria-label="Main navigation">
         <a class="v2-nav" href="/" {% if request.url.path == '/' %}aria-current="page"{% endif %}>{{ icon('sun') }}Today</a>
         <a class="v2-nav" href="/plan" {% if request.url.path == '/plan' %}aria-current="page"{% endif %}>{{ icon('calendar') }}Training</a>
+        <a class="v2-nav" href="/activities" {% if request.url.path.startswith('/activities') %}aria-current="page"{% endif %}>{{ icon('activity') }}Activities</a>
         <a class="v2-nav" href="/trends" {% if request.url.path == '/trends' %}aria-current="page"{% endif %}>{{ icon('trend') }}Insights</a>
         {% if request.url.path == '/coach' %}<a class="v2-nav v2-tablet-ask" href="/coach" aria-current="page">{{ icon('chat') }}Ask</a>{% else %}<button type="button" class="v2-nav v2-tablet-ask" data-open-coach aria-controls="v2-coach-panel" aria-expanded="false">{{ icon('chat') }}Ask</button>{% endif %}
       </nav>
@@ -38,6 +39,7 @@
     <a href="/" {% if request.url.path == '/' %}aria-current="page"{% endif %}>{{ icon('sun') }}Today</a>
     <a href="/plan" {% if request.url.path == '/plan' %}aria-current="page"{% endif %}>{{ icon('calendar') }}Training</a>
     {% if request.url.path == '/coach' %}<a class="v2-ask-tab" href="/coach" aria-current="page"><span class="v2-ask-icon">{{ icon('chat') }}</span>Ask</a>{% else %}<button type="button" class="v2-ask-tab" data-open-coach aria-controls="v2-coach-panel" aria-expanded="false"><span class="v2-ask-icon">{{ icon('chat') }}</span>Ask</button>{% endif %}
+    <a href="/activities" {% if request.url.path.startswith('/activities') %}aria-current="page"{% endif %}>{{ icon('activity') }}Activities</a>
     <a href="/trends" {% if request.url.path == '/trends' %}aria-current="page"{% endif %}>{{ icon('trend') }}Insights</a>
     <a href="/settings" {% if request.url.path == '/settings' %}aria-current="page"{% endif %}>{{ icon('user') }}Me</a>
   </nav>

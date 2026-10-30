@@ -76,6 +76,16 @@ def browser(activity_db):
         yield client
 
 
+@pytest.mark.parametrize("path", ["/activities", "/activities/101"])
+def test_activities_is_in_both_menus_and_active(browser, path):
+    response = browser.get(path)
+    assert response.status_code == 200
+    for nav_class in ("v2-rail-links", "v2-bottom-nav"):
+        nav = response.text.split(f'<nav class="{nav_class}"', 1)[1].split("</nav>", 1)[0]
+        assert 'href="/activities" aria-current="page"' in nav
+        assert nav.count('href="/activities"') == 1
+
+
 def test_list_groups_filters_and_walks(browser):
     html = browser.get("/activities").text
     assert "Fri 23 Oct" in html and "Fri 16 Oct" in html
@@ -171,11 +181,12 @@ def test_suggestions_and_whole_session_lap_hidden(browser, activity_db):
 def test_evidence_labels_are_readable_and_legacy_is_plain_list(browser):
     run = browser.get("/activities/101").text
     legacy = browser.get("/activities/102").text
-    assert '<details class="opinion-evidence">' in run
+    assert '<details class="opinion-evidence" open>' in run
     assert 'title="activity_laps.avg_hr"' in run
     assert "Laps</td>" in run
     assert '<ul class="legacy-evidence">' in legacy
     assert '<details class="opinion-evidence">' not in legacy
+    assert run.index('class="opinion-assessment"') < run.index("What worked") < run.index("Data notes")
 
 
 @pytest.mark.parametrize("source,label", [

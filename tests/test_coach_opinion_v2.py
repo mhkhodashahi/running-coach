@@ -20,12 +20,14 @@ from llm.schemas import (
     CoachOpinionV23,
     OpinionDraftV22,
     OpinionDraftV23,
+    OpinionDraftV26,
 )
 from services.activity_coaching_service import ActivityCoachingService, _update_activity_memory
 from services.coach_facts import IntentDecision
 from services.coach_opinion import (
     assemble_opinion,
     assemble_opinion_v23,
+    assemble_opinion_v26,
     collect_v23_evidence_ids,
     draft_validation_errors,
     load_opinion,
@@ -206,13 +208,147 @@ def draft_payload_v23(**changes):
     return payload | changes
 
 
+def draft_payload_v26(**changes):
+    payload = draft_payload_v23()
+    payload.update({
+        "assessment": "I saw 5.0 km at 6:00 /km. You kept your average HR at 120 bpm. I would keep that control.",
+        "worked": [
+            {"lead": "You held a measured pace.", "detail": "The 6:00 /km pace stayed controlled.",
+             "evidence_ids": ["AVG_PACE"]},
+            {"lead": "You kept the effort contained.", "detail": "The average HR was 120 bpm.",
+             "evidence_ids": ["AVG_HR"]},
+            {"lead": "You completed the distance.", "detail": "The run covered 5.0 km.",
+             "evidence_ids": ["DISTANCE"]},
+        ],
+        "fix": [
+            {"lead": "Keep the next effort steady.", "detail": "Use 6:00 /km as a reference.",
+             "evidence_ids": ["AVG_PACE"]},
+            {"lead": "Watch your effort near the finish.", "detail": "Compare it with 120 bpm.",
+             "evidence_ids": ["AVG_HR"]},
+        ],
+        "sections": {
+            "pacing": "I see 6:00 /km as the reference. Your start was controlled. Keep that rhythm.",
+            "aerobic": "I see 120 bpm on average. That is useful context. Keep the effort deliberate.",
+            "recovery": "Baseline still building means the trend is thin. I cannot judge a trend yet. Keep the next effort controlled.",
+            "mental": "I see a controlled 6:00 /km effort.",
+        },
+        "section_evidence_ids": {"pacing": ["AVG_PACE"], "aerobic": ["AVG_HR"],
+                                 "recovery": ["WEEKLY_LIMIT"], "mental": ["AVG_PACE"]},
+        "recommendations": [
+            {"text": "On the next outing, use 6:00 /km as a reference.", "action": "none", "session": {},
+             "evidence_ids": ["AVG_PACE"]},
+            {"text": "Tomorrow, keep the effort near 120 bpm.", "action": "none", "session": {},
+             "evidence_ids": ["AVG_HR"]},
+        ],
+        "evidence_ids": ["DISTANCE", "DURATION", "AVG_PACE", "AVG_HR", "WEEKLY_LIMIT"],
+    })
+    return payload | changes
+
+
+@pytest.mark.parametrize("change", [
+    {"assessment": "Only one sentence."},
+    {"worked": []},
+    {"fix": []},
+    {"sections": {"pacing": "Too brief.", "aerobic": "Three sentences. Are needed. Here.",
+                  "recovery": "Three sentences. Are needed. Here."}},
+    {"recommendations": []},
+])
+def test_v26_schema_enforces_depth(change):
+    with pytest.raises(ValidationError):
+        OpinionDraftV26.model_validate(draft_payload_v26(**change))
+
+
+def test_v26_evidence_comes_only_from_explicit_known_citations():
+    draft = OpinionDraftV26.model_validate(draft_payload_v26())
+    facts = [{"id": name, "metric": name, "display": display, "source": f"fixture.{name}"}
+             for name, display in (("DISTANCE", "5.0 km"), ("DURATION", "30:00"),
+                                   ("AVG_PACE", "6:00 /km"), ("AVG_HR", "120 bpm"),
+                                   ("WEEKLY_LIMIT", "baseline still building"),
+                                   ("UNUSED", "999 bpm"))]
+    opinion = assemble_opinion_v26(draft, facts, IntentDecision("recovery", ("AVG_HR",)), None, [])
+    assert {item.source for item in opinion.evidence} == {f"fixture.{name}" for name in
+                                                        ("DISTANCE", "DURATION", "AVG_PACE", "AVG_HR", "WEEKLY_LIMIT")}
+    assert "evidence_ids" not in opinion.model_dump_json()
+
+
+def test_v26_unknown_point_fact_id_is_rejected():
+    draft = OpinionDraftV26.model_validate(draft_payload_v26())
+    facts = [{"id": name, "metric": name, "display": display, "source": name}
+             for name, display in (("DISTANCE", "5.0 km"), ("DURATION", "30:00"),
+                                   ("AVG_PACE", "6:00 /km"), ("AVG_HR", "120 bpm"),
+                                   ("WEEKLY_LIMIT", "baseline still building"))]
+    draft.worked[0].evidence_ids = ["UNKNOWN"]
+    with pytest.raises(ValueError, match="unknown fact ID UNKNOWN"):
+        assemble_opinion_v26(draft, facts, IntentDecision("recovery", ("AVG_HR",)), None, [])
+
+
+def test_v26_accepts_cited_percent_short_form_but_not_changed_units():
+    payload = draft_payload_v26()
+    payload["sections"]["recovery"] = "The weekly limit is 110%. I would stay controlled. Recovery still matters."
+    draft = OpinionDraftV26.model_validate(payload)
+    facts = [{"id": name, "metric": name, "display": display, "source": name}
+             for name, display in (("DISTANCE", "5.0 km"), ("DURATION", "30:00"),
+                                   ("AVG_PACE", "6:00 /km"), ("AVG_HR", "120 bpm"),
+                                   ("WEEKLY_LIMIT", "110% of usual"))]
+    assert assemble_opinion_v26(draft, facts, IntentDecision("recovery", ("AVG_HR",)), None, []).sections.recovery
+    draft.sections.recovery = "The weekly limit is 110 bpm. I would stay controlled. Recovery still matters."
+    with pytest.raises(ValueError, match="uncited or unsupported numbers"):
+        assemble_opinion_v26(draft, facts, IntentDecision("recovery", ("AVG_HR",)), None, [])
+
+
+def test_v26_single_fix_requires_a_clear_intent_match(opinion_db):
+    factory, _, activity_id = opinion_db
+    service = service_for(opinion_db, MockLLM())
+    with factory() as session:
+        user = repository.get_or_create_default_user(session, 1)
+        context, _, _ = service._prepare(session, user, activity_id)
+    payload = draft_payload_v26()
+    payload["fix"] = payload["fix"][:1]
+    draft = OpinionDraftV26.model_validate(payload)
+    opinion = assemble_opinion_v26(draft, context["facts_pack"],
+                                   IntentDecision(context["detected_intent"], ("AVG_HR",)), None, [])
+    assert "fix needs two items" in " ".join(opinion_rule_errors(opinion, context))
+    opinion.intent.planned = opinion.intent.detected
+    context["planned_intent"] = opinion.intent.detected
+    assert "fix needs two items" not in " ".join(opinion_rule_errors(opinion, context))
+
+
+def test_v26_repair_retry_saves_only_repaired_draft(opinion_db):
+    factory, _, activity_id = opinion_db
+    bad = draft_payload_v26(assessment="Too brief.")
+    llm = MockLLM(bad, draft_payload_v26())
+    with factory.begin() as session:
+        user = repository.get_or_create_default_user(session, 1)
+        result = service_for(opinion_db, llm).generate(session, user=user, activity_id=activity_id)
+    assert len(llm.prompts) == 2
+    assert "Validation errors" in llm.prompts[1][1]
+    assert len(result["worked"]) == 3
+
+
+def test_v26_preparation_reuses_dated_similar_session_tool(opinion_db):
+    factory, _, activity_id = opinion_db
+    with factory.begin() as session:
+        repository.bulk_upsert_activities(session, [{
+            "user_id": 1, "external_id": "invented-prior", "date": date(2026, 5, 10),
+            "type": "running", "distance": 5.1, "duration": 31.0, "pace": 6.1,
+            "avg_hr": 118, "notes": "Prior invented session",
+        }])
+    with factory() as session:
+        user = repository.get_or_create_default_user(session, 1)
+        context, _, _ = service_for(opinion_db, MockLLM())._prepare(session, user, activity_id)
+    facts = {fact["id"]: fact for fact in context["facts_pack"]}
+    assert facts["SIMILAR_8W_MEDIAN_PACE"]["display"] == "6:06 /km"
+    assert facts["SIMILAR_1_DATE"]["display"] == "Sun 10 May"
+    assert any(item["id"].startswith("COMPARE_") for item in context["similar_session_facts"])
+
+
 def service_for(opinion_db, llm):
     return ActivityCoachingService(settings=replace(get_settings(), db_path=opinion_db[1]), llm_client=llm)
 
 
-def test_valid_v23_saved_and_plan_passed_to_prompt(opinion_db):
+def test_valid_v26_saved_and_plan_passed_to_prompt(opinion_db):
     factory, _, activity_id = opinion_db
-    llm = MockLLM(draft_payload_v23())
+    llm = MockLLM(draft_payload_v26())
     service = service_for(opinion_db, llm)
     with factory.begin() as session:
         repository.set_activity_planned_intent(session, activity_id=activity_id, user_id=1, planned_intent="easy")
@@ -222,14 +358,14 @@ def test_valid_v23_saved_and_plan_passed_to_prompt(opinion_db):
     assert result["schema_version"] == 2
     assert '"planned_intent": "easy"' in llm.prompts[0][1]
     assert "<running_memory>" in llm.prompts[0][1]
-    assert llm.prompts[0][2] is OpinionDraftV23
+    assert llm.prompts[0][2] is OpinionDraftV26
     with factory() as session:
         row = repository.get_activity_coaching_insight(session, activity_id, 1)
-        assert row.schema_version == "2" and row.prompt_version == "opinion-v2.5"
+        assert row.schema_version == "2" and row.prompt_version == "opinion-v2.6"
         assert row.validation_notes is None
         assert json.loads(row.payload_json)["intent"]["planned"] == "easy"
         assert json.loads(row.payload_json)["intent"]["detected"] == "recovery"
-        assert len(json.loads(row.payload_json)["evidence"]) == 4
+        assert len(json.loads(row.payload_json)["evidence"]) == 5
         assert json.loads(row.prompt_context_json)["metrics_snapshot"]["as_of"] == "2026-05-22"
 
 
@@ -274,13 +410,14 @@ def test_provider_failure_does_not_consume_validation_retry(opinion_db):
 
 def test_unsupported_number_retry_does_not_save(opinion_db):
     factory, _, activity_id = opinion_db
-    bad = draft_payload(worked=[{"lead": "Held 42 bpm", "detail": ""}])
+    bad = draft_payload_v26()
+    bad["worked"][0]["detail"] = "The effort was 42 bpm."
     llm = MockLLM(bad, bad)
     with factory.begin() as session:
         user = repository.get_or_create_default_user(session, 1)
         with pytest.raises(RuntimeError, match="validation failed after retry"):
             service_for(opinion_db, llm).generate(session, user=user, activity_id=activity_id)
-    assert "Unsupported numbers" in llm.prompts[1][1]
+    assert "unsupported numbers" in llm.prompts[1][1]
     with factory() as session:
         assert repository.get_activity_coaching_insight(session, activity_id, 1) is None
 
@@ -295,7 +432,7 @@ def test_regeneration_archives_legacy_payload_in_same_transaction(opinion_db):
                                                    prompt_context_json=context, model_provider="old", model_name="old")
     with factory.begin() as session:
         user = repository.get_or_create_default_user(session, 1)
-        service_for(opinion_db, MockLLM(draft_payload_v23())).generate(session, user=user,
+        service_for(opinion_db, MockLLM(draft_payload_v26())).generate(session, user=user,
                                                                  activity_id=activity_id, regenerate=True)
     with factory() as session:
         history = session.scalars(select(ActivityCoachingOpinionHistory)).one()
@@ -404,11 +541,11 @@ def test_v21_closed_plan_session_and_verbatim_evidence():
 
 def test_v23_unknown_fact_id_retry_rejects_without_saving(opinion_db):
     factory, _, activity_id = opinion_db
-    bad = draft_payload_v23(evidence_ids=["DISTANCE", "DURATION", "AVG_PACE", "NOT_A_FACT"])
+    bad = draft_payload_v26(evidence_ids=["DISTANCE", "DURATION", "AVG_PACE", "NOT_A_FACT"])
     llm = MockLLM(bad, bad)
     with factory.begin() as session:
         user = repository.get_or_create_default_user(session, 1)
-        with pytest.raises(RuntimeError, match="Unknown evidence ID"):
+        with pytest.raises(RuntimeError, match="unknown fact ID"):
             service_for(opinion_db, llm).generate(session, user=user, activity_id=activity_id)
     with factory() as session:
         assert repository.get_activity_coaching_insight(session, activity_id, 1) is None
@@ -580,7 +717,7 @@ def test_v23_fact_id_validation_retries_and_preserves_existing_opinion(opinion_d
             payload_json=original, prompt_context_json='{"context":true}',
             model_provider="old", model_name="old",
         )
-    bad = draft_payload_v23(assessment="I saw AVG_PACE in the data.")
+    bad = draft_payload_v26(assessment="I saw AVG_PACE in the data. The run was steady. I would keep control.")
     llm = MockLLM(bad, bad)
     with factory.begin() as session:
         user = repository.get_or_create_default_user(session, 1)
@@ -589,7 +726,7 @@ def test_v23_fact_id_validation_retries_and_preserves_existing_opinion(opinion_d
                 session, user=user, activity_id=activity_id, regenerate=True,
             )
     assert len(llm.prompts) == 2
-    assert "Fact IDs must not appear in opinion text: AVG_PACE" in llm.prompts[1][1]
+    assert "fact ID in prose AVG_PACE" in llm.prompts[1][1]
     with factory() as session:
         assert repository.get_activity_coaching_insight(session, activity_id, 1).payload_json == original
         assert session.scalars(select(ActivityCoachingOpinionHistory)).all() == []

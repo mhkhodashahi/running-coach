@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import math
 import re
+import statistics
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import date, timedelta
 from typing import Any, TypedDict
 
+from metrics.sports import sport_category
 from services.fact_display import (
     as_number as _number,
 )
@@ -111,7 +114,47 @@ def _cadence_multiplier(stream_mean: Any, laps: list[dict[str, Any]]) -> int:
     lap_values = [_number(lap.get("avg_cadence")) for lap in laps]
     valid_laps = [value for value in lap_values if value is not None and value > 0]
     return 2 if (mean is not None and 0 < mean < CADENCE_STREAM_MAX
-                 and valid_laps and min(valid_laps) > CADENCE_LAP_MIN) else 1
+                 and valid_laps and min(valid_laps) > CADENCE_LAP_MIN
+                 and 0.8 <= 2 * mean / statistics.median(valid_laps) <= 1.2) else 1
+
+
+def recent_comparisons(target: Mapping[str, Any], activities: list[dict[str, Any]]) -> dict[str, Any]:
+    """Choose the same comparable runs as the session tool, without future activity leakage."""
+    day = date.fromisoformat(str(target["date"])[:10])
+    sport = sport_category(target.get("type"), day)
+    distance = _number(target.get("distance"))
+    if distance is None or distance <= 0:
+        return {"median_pace": None, "median_hr": None, "sessions": []}
+    comparable = []
+    for row in activities:
+        row_day = date.fromisoformat(str(row["date"])[:10])
+        row_distance = _number(row.get("distance"))
+        if (row.get("id") == target.get("id") or not day - timedelta(days=120) <= row_day < day
+                or sport_category(row.get("type"), row_day) != sport or row_distance is None
+                or not .85 * distance <= row_distance <= 1.15 * distance):
+            continue
+        comparable.append({"id": row["id"], "date": row_day.isoformat(), "pace": _number(row.get("pace")),
+                           "avg_hr": _number(row.get("avg_hr"))})
+    comparable.sort(key=lambda row: (row["date"], row["id"]), reverse=True)
+    recent = [row for row in comparable if row["date"] >= (day - timedelta(days=56)).isoformat()]
+    paces = [row["pace"] for row in recent if row["pace"] is not None]
+    hrs = [row["avg_hr"] for row in recent if row["avg_hr"] is not None]
+    return {"median_pace": statistics.median(paces) if paces else None,
+            "median_hr": statistics.median(hrs) if hrs else None,
+            "sessions": comparable[:5]}
+
+
+def select_comparison_facts(comparison: Mapping[str, Any]) -> list[Fact]:
+    """Keep only dated comparison and recovery facts from the bounded coach tool."""
+    suffixes = ("_DATE", "_AVG_PACE", "_AVG_HR", "_READINESS", "_TODAY_SLEEP_DURATION",
+                "_HRV_VS_BASELINE", "_SAME_ROUTE", "_PACE_DELTA", "_HR_DELTA", "_EFFICIENCY",
+                "_EFFICIENCY_LABEL")
+    selected: list[Fact] = []
+    for session in comparison.get("sessions") or []:
+        for fact in session.get("facts") or []:
+            if fact["id"].endswith(suffixes) and fact.get("display") != "No data":
+                selected.append(fact)
+    return selected
 
 
 def build_facts(activity_id: int, context: Mapping[str, Any]) -> list[Fact]:
@@ -153,6 +196,35 @@ def build_facts(activity_id: int, context: Mapping[str, Any]) -> list[Fact]:
 
     _add(facts, "RECENT_MEDIAN_PACE", "Recent median pace", _pace(context.get("recent_median_pace")),
          "recent_median_pace")
+    comparison = context.get("recent_similar") or {}
+    median_pace = _number(comparison.get("median_pace"))
+    median_hr = _number(comparison.get("median_hr"))
+    _add(facts, "SIMILAR_8W_MEDIAN_PACE", "Similar-run median pace", _pace(median_pace),
+         "activities.same_sport_distance_15pct.last_8_weeks.pace")
+    _add(facts, "SIMILAR_8W_MEDIAN_HR", "Similar-run median heart rate", _hr(median_hr),
+         "activities.same_sport_distance_15pct.last_8_weeks.avg_hr")
+    current_pace = _pace_seconds(selected.get("pace"))
+    if median_pace is not None and current_pace is not None:
+        median_seconds = _pace_seconds(median_pace)
+        if median_seconds is not None:
+            difference = current_pace - median_seconds
+            _add(facts, "SIMILAR_8W_PACE_DELTA", "Pace versus similar-run median",
+                 f"{abs(difference)} s/km {'slower' if difference > 0 else 'faster' if difference < 0 else 'same pace'}",
+                 "selected_activity.pace - activities.same_sport_distance_15pct.last_8_weeks.pace")
+    current_hr = _number(selected.get("avg_hr"))
+    if median_hr is not None and current_hr is not None:
+        difference = round(current_hr - median_hr)
+        _add(facts, "SIMILAR_8W_HR_DELTA", "Heart rate versus similar-run median",
+             f"{abs(difference)} bpm {'higher' if difference > 0 else 'lower' if difference < 0 else 'same HR'}",
+             "selected_activity.avg_hr - activities.same_sport_distance_15pct.last_8_weeks.avg_hr")
+    for index, row in enumerate(comparison.get("sessions") or [], start=1):
+        _add(facts, f"SIMILAR_{index}_DATE", f"Similar session {index} date", _short_date(row["date"]),
+             f"activities[{row['id']}].date")
+        _add(facts, f"SIMILAR_{index}_PACE", f"Similar session {index} pace", _pace(row.get("pace")),
+             f"activities[{row['id']}].pace")
+        _add(facts, f"SIMILAR_{index}_HR", f"Similar session {index} average heart rate", _hr(row.get("avg_hr")),
+             f"activities[{row['id']}].avg_hr")
+    facts.extend(context.get("similar_session_facts") or [])
     goal = context.get("active_goal") or {}
     goal_type = str(goal.get("goal_type") or "").lower()
     goal_distance = _number(goal.get("target_distance_km"))
@@ -165,6 +237,18 @@ def build_facts(activity_id: int, context: Mapping[str, Any]) -> list[Fact]:
          "active_goal.goal_type + active_goal.target_distance_km")
     planned = context.get("planned_intent")
     _add(facts, "PLAN_INTENT", "Planned intent", str(planned) if planned else None, "planned_intent")
+    last_hard_days = _number(context.get("days_since_last_hard"))
+    _add(facts, "DAYS_SINCE_HARD", "Days since last known hard session",
+         f"{round(last_hard_days)} days" if last_hard_days is not None else None,
+         "activities.type + activity_efforts.rpe")
+    sessions_7d = _number(context.get("last_7_sessions"))
+    _add(facts, "LAST_7_SESSIONS", "Sessions in preceding seven days",
+         f"{round(sessions_7d)} sessions" if sessions_7d is not None else None,
+         "metrics_snapshot.sessions (preceding seven days)")
+    load_7d = _number(context.get("last_7_load"))
+    _add(facts, "LAST_7_LOAD", "Load in preceding seven days",
+         f"{round(load_7d)} load" if load_7d is not None else None,
+         "metrics_snapshot.sessions.load (preceding seven days)")
 
     stream = context.get("stream_analysis") or {}
     laps = list((context.get("lap_analysis") or {}).get("laps") or [])
@@ -209,12 +293,20 @@ def build_facts(activity_id: int, context: Mapping[str, Any]) -> list[Fact]:
         pattern = "negative split" if second_seconds < first_seconds else "positive split" if second_seconds > first_seconds else "even split"
         _add(facts, "SPLIT_PATTERN", "Pacing split", pattern,
              "stream_analysis.first_half.avg_pace + stream_analysis.second_half.avg_pace")
+        _add(facts, "PROGRESSION", "Progression", "fade" if second_seconds > first_seconds else pattern,
+             "stream_analysis.first_half.avg_pace + stream_analysis.second_half.avg_pace")
 
     full = _full_km_laps(laps)
     for km, (index, lap) in enumerate(full, start=1):
         _add(facts, f"KM{km}_PACE", f"Km {km} pace", _pace(lap.get("pace")), f"lap_analysis.laps[{index}].pace")
         _add(facts, f"KM{km}_AVG_HR", f"Km {km} average heart rate", _hr(lap.get("avg_hr")),
              f"lap_analysis.laps[{index}].avg_hr")
+        _add(facts, f"KM{km}_MAX_HR", f"Km {km} maximum heart rate", _hr(lap.get("max_hr")),
+             f"lap_analysis.laps[{index}].max_hr")
+        cadence_value = _number(lap.get("avg_cadence"))
+        _add(facts, f"KM{km}_CADENCE", f"Km {km} cadence",
+             f"{round(cadence_value)} spm" if cadence_value is not None else None,
+             f"lap_analysis.laps[{index}].avg_cadence")
     if full:
         first_index, first_lap = full[0]
         last_index, last_lap = full[-1]
@@ -228,6 +320,14 @@ def build_facts(activity_id: int, context: Mapping[str, Any]) -> list[Fact]:
              f"lap_analysis.laps[{last_index}].pace")
         _add(facts, "LAST_FULL_KM_HR", "Last full kilometre heart rate", _hr(last_lap.get("avg_hr")),
              f"lap_analysis.laps[{last_index}].avg_hr")
+        paced = [(index, lap) for index, lap in full if _pace_seconds(lap.get("pace")) is not None]
+        if paced:
+            fastest_index, fastest_lap = min(paced, key=lambda item: _pace_seconds(item[1]["pace"]))
+            slowest_index, slowest_lap = max(paced, key=lambda item: _pace_seconds(item[1]["pace"]))
+            _add(facts, "FASTEST_FULL_KM_PACE", "Fastest full-km pace", _pace(fastest_lap["pace"]),
+                 f"lap_analysis.laps[{fastest_index}].pace")
+            _add(facts, "SLOWEST_FULL_KM_PACE", "Slowest full-km pace", _pace(slowest_lap["pace"]),
+                 f"lap_analysis.laps[{slowest_index}].pace")
         first_pace = _pace_seconds(first_lap.get("pace"))
         average_pace = _pace_seconds(selected.get("pace"))
         first_hr = _number(first_lap.get("avg_hr"))
@@ -246,6 +346,9 @@ def build_facts(activity_id: int, context: Mapping[str, Any]) -> list[Fact]:
     if partial:
         _add(facts, "PARTIAL_LAP_DISTANCE", "Short partial lap", f"{partial[1]:.2f} m",
              f"lap_analysis.laps[{partial[0]}].distance")
+    drift = _number(stream.get("hr_drift_bpm"))
+    _add(facts, "HR_DRIFT", "Heart-rate drift", f"{drift:+.1f} bpm" if drift is not None else None,
+         "stream_analysis.second_half.avg_hr - stream_analysis.first_half.avg_hr")
 
     snapshot = context.get("metrics_snapshot") or {}
     session = snapshot.get("activity_session") or {}
@@ -265,6 +368,10 @@ def build_facts(activity_id: int, context: Mapping[str, Any]) -> list[Fact]:
         if all(name in zones for name in names):
             _add(facts, fact_id, metric, _percent(sum(zones[name] for name in names)),
                  "metrics_snapshot.activity_session.hr_zones.percent")
+    if all(name in zones for name in ("Z3", "Z4", "Z5")):
+        _add(facts, "ABOVE_Z2_SHARE", "Time above Z2",
+             _percent(sum(zones[name] for name in ("Z3", "Z4", "Z5"))),
+             "metrics_snapshot.activity_session.hr_zones.percent")
     hrmax = _number((session.get("hrmax") or {}).get("value"))
     if hrmax is not None and hrmax > 0:
         custom = context.get("custom_heart_rate_zones") or []
@@ -369,12 +476,17 @@ def detect_intent(facts: list[Fact], planned_intent: str | None) -> IntentDecisi
 
 
 def build_data_notes(laps: list[dict[str, Any]], track_points: list[dict[str, Any]],
-                     activity_distance_km: float | None) -> list[str]:
+                     activity_distance_km: float | None, *, missing_hr: bool = False,
+                     stream_cadence_mean: float | None = None) -> list[str]:
     """Report observed recording anomalies without guessing their cause."""
     notes: list[str] = []
     partial = _partial_lap_metres(laps, _number(activity_distance_km))
     if partial:
         notes.append(f"Partial lap: {partial[1]:.2f} m. Excluded from full-km analysis.")
+    if missing_hr:
+        notes.append("Heart-rate data is missing; HR-based conclusions are limited.")
+    if _cadence_multiplier(stream_cadence_mean, laps) == 2:
+        notes.append("Stream cadence counts one leg; lap values used.")
     points = sorted(track_points, key=lambda row: row.get("point_index") or 0)
     for before, after in zip(points, points[1:], strict=False):
         t0, t1 = _number(before.get("elapsed_seconds")), _number(after.get("elapsed_seconds"))

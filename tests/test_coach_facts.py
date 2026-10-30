@@ -9,6 +9,8 @@ from services.coach_facts import (
     build_facts,
     detect_intent,
     match_text_facts,
+    recent_comparisons,
+    select_comparison_facts,
     unsupported_text_numbers,
 )
 from services.fact_display import duration, heart_rate, hours, pace, percent, ratio, score, signed_delta
@@ -139,6 +141,71 @@ def test_build_facts_formats_session_zones_kilometres_and_snapshot():
                                ("Z5", "180 bpm", "no upper bpm limit")):
         assert facts[f"ZONE_{zone}_LOWER_BPM"]["display"] == lower
         assert facts[f"ZONE_{zone}_UPPER_BPM"]["display"] == upper
+
+
+def test_deeper_run_facts_cover_laps_halves_drift_zones_and_history():
+    data = context()
+    data["lap_analysis"]["laps"][0].update(max_hr=145)
+    data["stream_analysis"]["hr_drift_bpm"] = 10.0
+    data["recent_similar"] = {"median_pace": 6.6, "median_hr": 130,
+                              "sessions": [{"id": 8, "date": "2026-05-15", "pace": 6.6, "avg_hr": 130}]}
+    data["days_since_last_hard"] = 4
+    data["last_7_sessions"] = 3
+    data["last_7_load"] = 72.2
+    facts = as_map(build_facts(10, data))
+    assert facts["KM1_MAX_HR"]["display"] == "145 bpm"
+    assert facts["KM1_CADENCE"]["display"] == "160 spm"
+    assert facts["FIRST_HALF_HR"]["display"] == "130 bpm"
+    assert facts["HR_DRIFT"]["display"] == "+10.0 bpm"
+    assert facts["PROGRESSION"]["display"] == "negative split"
+    assert facts["FASTEST_FULL_KM_PACE"]["display"] == "6:12 /km"
+    assert facts["SLOWEST_FULL_KM_PACE"]["display"] == "6:48 /km"
+    assert facts["ABOVE_Z2_SHARE"]["display"] == "45.0%"
+    assert facts["SIMILAR_8W_MEDIAN_PACE"]["display"] == "6:36 /km"
+    assert facts["SIMILAR_8W_HR_DELTA"]["display"] == "5 bpm higher"
+    assert facts["SIMILAR_1_DATE"]["display"] == "Fri 15 May"
+    assert facts["DAYS_SINCE_HARD"]["display"] == "4 days"
+    assert facts["LAST_7_SESSIONS"]["display"] == "3 sessions"
+    assert facts["LAST_7_LOAD"]["display"] == "72 load"
+
+
+def test_recent_comparisons_use_same_sport_distance_and_past_only():
+    target = {"id": 10, "date": "2026-05-22", "type": "running", "distance": 5.0}
+    rows = [{"id": 8, "date": "2026-05-15", "type": "running", "distance": 5.1,
+             "pace": 6.5, "avg_hr": 130},
+            {"id": 7, "date": "2026-03-01", "type": "running", "distance": 5.0,
+             "pace": 6.7, "avg_hr": 135},
+            {"id": 6, "date": "2026-05-12", "type": "running", "distance": 10.0,
+             "pace": 5.0, "avg_hr": 140},
+            {"id": 9, "date": "2026-05-24", "type": "running", "distance": 5.0,
+             "pace": 5.0, "avg_hr": 140},
+            {"id": 5, "date": "2026-05-10", "type": "walking", "distance": 5.0,
+             "pace": 9.0, "avg_hr": 100}]
+    result = recent_comparisons(target, rows)
+    assert result["median_pace"] == 6.5
+    assert result["median_hr"] == 130
+    assert [row["id"] for row in result["sessions"]] == [8, 7]
+
+
+def test_similar_session_facts_keep_dates_conditions_and_deltas_only():
+    rows = {"sessions": [{"facts": [
+        {"id": "ACT_8_DATE", "metric": "Session date", "display": "Fri 15 May", "source": "activities[8].date"},
+        {"id": "ACT_8_READINESS", "metric": "Recovery", "display": "72", "source": "snapshot"},
+        {"id": "ACT_8_HRV_VS_BASELINE", "metric": "HRV", "display": "-4 ms", "source": "health"},
+        {"id": "COMPARE_8_PACE_DELTA", "metric": "Pace difference", "display": "+12 s/km", "source": "pace"},
+        {"id": "ACT_8_NOTES", "metric": "Notes", "display": "private", "source": "notes"},
+    ]}]}
+    facts = select_comparison_facts(rows)
+    assert [fact["id"] for fact in facts] == ["ACT_8_DATE", "ACT_8_READINESS",
+                                              "ACT_8_HRV_VS_BASELINE", "COMPARE_8_PACE_DELTA"]
+
+
+def test_data_notes_include_missing_hr_and_per_foot_cadence_without_guessing_cause():
+    laps = [{"distance": 1.0, "avg_cadence": 160}]
+    assert build_data_notes(laps, [], 1.0, missing_hr=True, stream_cadence_mean=81) == [
+        "Heart-rate data is missing; HR-based conclusions are limited.",
+        "Stream cadence counts one leg; lap values used.",
+    ]
 
 
 @pytest.mark.parametrize("load,expected", [(0, "0% of usual"), (110, "110% of usual"),

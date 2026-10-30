@@ -185,10 +185,10 @@ def test_activity_coaching_prompt_uses_profile_and_required_analysis_categories(
         running_memory="# Coach Running Memory\n- Easy days stay easy.",
     )
 
-    assert "OpinionDraftV23" in system_prompt
-    assert "Code supplies detected_intent" in system_prompt
-    assert "Do not return those fields" in system_prompt
-    assert "Invented example" in system_prompt
+    assert "OpinionDraftV26" in system_prompt
+    assert "supplies detected intent" in system_prompt
+    assert "3–5 worked items" in system_prompt
+    assert "Return JSON only" in system_prompt
     assert '"display": "6:00 /km"' in user_prompt
     assert '"display": "6:12 /km"' in user_prompt
     assert '"athlete_profile"' not in user_prompt

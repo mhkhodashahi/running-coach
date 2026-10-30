@@ -8,7 +8,14 @@ from pydantic import BaseModel
 
 from config import get_settings
 from llm.base import LLMClient, extract_json
-from llm.schemas import CoachOpinionV2, CoachOpinionV21, OpenAICoachOpinionV2, OpinionDraftV22, OpinionDraftV23
+from llm.schemas import (
+    CoachOpinionV2,
+    CoachOpinionV21,
+    OpenAICoachOpinionV2,
+    OpinionDraftV22,
+    OpinionDraftV23,
+    OpinionDraftV26,
+)
 
 
 class OpenAIClient(LLMClient):
@@ -46,7 +53,8 @@ class OpenAIClient(LLMClient):
                     raise ValueError("Structured model response was empty")
                 return response.output_parsed.model_dump()
             except Exception:
-                if response_schema in (CoachOpinionV2, CoachOpinionV21, OpinionDraftV22, OpinionDraftV23):
+                if response_schema in (CoachOpinionV2, CoachOpinionV21, OpinionDraftV22, OpinionDraftV23,
+                                       OpinionDraftV26):
                     raise
 
         response = self.client.responses.create(

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict, dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any
 
 import pandas as pd
@@ -15,11 +15,18 @@ from db import repository
 from db.models import ActivityEffort
 from db.session import session_scope
 from llm.factory import get_llm_client
-from llm.schemas import ActivityCoachInsightSchema, CoachOpinionV2, CoachOpinionV23, OpinionDraftV23
+from llm.schemas import ActivityCoachInsightSchema, CoachOpinionV2, CoachOpinionV23, OpinionDraftV26
 from metrics import get_daily_snapshot
-from services.coach_facts import IntentDecision, build_data_notes, build_facts, detect_intent
-from services.coach_opinion import assemble_opinion_v23, load_opinion, opinion_rule_errors
-from services.coaching_prompts import ACTIVITY_OPINION_V25_SYSTEM_PROMPT
+from services.coach_facts import (
+    IntentDecision,
+    build_data_notes,
+    build_facts,
+    detect_intent,
+    recent_comparisons,
+    select_comparison_facts,
+)
+from services.coach_opinion import assemble_opinion_v26, load_opinion, opinion_rule_errors
+from services.coaching_prompts import ACTIVITY_OPINION_V26_SYSTEM_PROMPT
 from services.goal_service import GoalService
 from services.running_coach_memory import (
     build_memory_entry_from_activity,
@@ -29,7 +36,7 @@ from services.running_coach_memory import (
 )
 from utils.formatting import format_pace_short
 
-PROMPT_VERSION = "opinion-v2.5"
+PROMPT_VERSION = "opinion-v2.6"
 
 
 @dataclass(frozen=True)
@@ -135,6 +142,37 @@ class ActivityCoachingService:
                        and item.sport not in ("walking", "excluded", "mobility")]
         context["usual_week"] = reference.previous_weekly_average
         context["weekly_load"] = sum(week_values) if all(value is not None for value in week_values) else None
+        context["recent_similar"] = recent_comparisons(
+            {"id": activity.id, "date": activity.date.isoformat(), "type": activity.type,
+             "distance": activity.distance}, activities.to_dict(orient="records"))
+        if context["recent_similar"]["sessions"]:
+            from coach.tools import CoachTools
+
+            comparison = CoachTools(self.settings.db_path, user.id, self.settings.local_timezone,
+                                    self.settings.sleep_goal_hours, self.settings.hr_zones).compare_sessions(activity.id)
+            context["similar_session_facts"] = select_comparison_facts(comparison)
+        recent_sessions = [item for item in snapshot.sessions if
+                           (activity.date - timedelta(days=7)).isoformat() <= item.day < activity.date.isoformat()
+                           and item.sport not in ("walking", "excluded", "mobility")]
+        context["last_7_sessions"] = len(recent_sessions)
+        recent_loads = [item.load.value for item in recent_sessions]
+        context["last_7_load"] = sum(recent_loads) if all(value is not None for value in recent_loads) else None
+        from coach.decision import PriorSession, is_hard_session
+
+        prior_ids = [item.activity_id for item in snapshot.sessions if item.day < activity.date.isoformat()]
+        efforts = {row.activity_id: row.rpe for row in session.query(ActivityEffort).filter(
+            ActivityEffort.activity_id.in_(prior_ids)).all()} if prior_ids else {}
+        hard_days = []
+        for item in snapshot.sessions:
+            if item.day >= activity.date.isoformat() or item.sport not in ("running", "gym", "football", "volleyball"):
+                continue
+            z4 = sum(zone.percent.value or 0 for zone in item.zones if zone.name.startswith(("Z4", "Z5")))
+            z34 = sum(zone.percent.value or 0 for zone in item.zones if zone.name.startswith(("Z3", "Z4")))
+            detected = "race" if z4 >= 50 else "tempo" if z34 >= 60 else None
+            prior = PriorSession(datetime.fromisoformat(item.day), item.sport, detected, z4, efforts.get(item.activity_id))
+            if is_hard_session(prior):
+                hard_days.append(date.fromisoformat(item.day))
+        context["days_since_last_hard"] = (activity.date - max(hard_days)).days if hard_days else None
         facts = build_facts(activity.id, context)
         decision = detect_intent(facts, context["planned_intent"])
         if decision is None:
@@ -143,8 +181,13 @@ class ActivityCoachingService:
         context["prompt_version"] = PROMPT_VERSION
         context["detected_intent"] = decision.intent
         context["intent_fact_ids"] = list(decision.fact_ids)
-        context["data_notes"] = build_data_notes(laps.to_dict(orient="records"),
-                                                 track_points.to_dict(orient="records"), activity.distance)
+        lap_rows = laps.to_dict(orient="records")
+        point_rows = track_points.to_dict(orient="records")
+        has_hr = activity.avg_hr is not None or any(row.get("avg_hr") is not None for row in lap_rows) or any(
+            row.get("heart_rate") is not None for row in point_rows)
+        context["data_notes"] = build_data_notes(
+            lap_rows, point_rows, activity.distance, missing_hr=not has_hr,
+            stream_cadence_mean=(context.get("stream_analysis") or {}).get("cadence_spm", {}).get("avg"))
         return context, str(activity.date), getattr(activity, "activity_name", None)
 
     def _request_opinion(self, context: dict[str, Any], running_memory: str | None) -> tuple[CoachOpinionV23, str | None]:
@@ -153,12 +196,12 @@ class ActivityCoachingService:
         decision = IntentDecision(context["detected_intent"], tuple(context["intent_fact_ids"]))
         for attempt in range(2):
             try:
-                payload = self.llm_client.generate_json(system_prompt, user_prompt, response_schema=OpinionDraftV23)
+                payload = self.llm_client.generate_json(system_prompt, user_prompt, response_schema=OpinionDraftV26)
             except Exception as exc:
                 raise RuntimeError(f"Activity coaching model unavailable: {exc}") from exc
             try:
-                draft = OpinionDraftV23.model_validate(payload)
-                opinion = assemble_opinion_v23(draft, facts, decision, context["planned_intent"], context["data_notes"])
+                draft = OpinionDraftV26.model_validate(payload)
+                opinion = assemble_opinion_v26(draft, facts, decision, context["planned_intent"], context["data_notes"])
                 rule_errors = opinion_rule_errors(opinion, context)
                 if rule_errors:
                     raise ValueError("; ".join(rule_errors))
@@ -220,7 +263,7 @@ def build_activity_coaching_prompt(context: dict[str, Any], running_memory: str 
         "intent_fact_ids": context.get("intent_fact_ids", []),
         "data_notes_from_code": context.get("data_notes", []),
     }
-    return ACTIVITY_OPINION_V25_SYSTEM_PROMPT, f"{running_memory_block(running_memory)}\n{json.dumps(prompt_input, default=_json_default)}"
+    return ACTIVITY_OPINION_V26_SYSTEM_PROMPT, f"{running_memory_block(running_memory)}\n{json.dumps(prompt_input, default=_json_default)}"
 
 
 def _opinion_metrics_snapshot(snapshot: Any, activity_id: int) -> dict[str, Any]:

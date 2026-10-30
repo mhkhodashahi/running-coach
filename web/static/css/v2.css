@@ -329,3 +329,7 @@
   .v2-dial,.v2-dial-copy,.v2-day,.v2-day-entry,.v2-bottom-nav>*{min-width:0}
   .v2-call h2,.v2-day strong{overflow-wrap:anywhere}
 }
+@media(max-width:767px){
+  .v2-bottom-nav{grid-template-columns:repeat(6,minmax(0,1fr))}
+  .v2-bottom-nav a,.v2-bottom-nav button{font-size:11px}
+}

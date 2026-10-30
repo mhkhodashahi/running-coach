@@ -14,6 +14,7 @@ from llm.schemas import (
     CoachOpinionV23,
     OpinionDraftV22,
     OpinionDraftV23,
+    OpinionDraftV26,
     OpinionIntent,
 )
 from services.coach_facts import Fact, IntentDecision, match_text_facts, unsupported_text_numbers
@@ -154,7 +155,7 @@ def opinion_rule_errors(opinion: CoachOpinionV2, context: dict[str, Any]) -> tup
                           *(item.aspect + " " + item.word for item in opinion.verdicts)]).casefold()
     if any(term and term in judgement for term in goal_terms):
         errors.append("long-term goal belongs only in recommendations")
-    if context.get("prompt_version") in {"opinion-v2.4", "opinion-v2.5"}:
+    if context.get("prompt_version") in {"opinion-v2.4", "opinion-v2.5", "opinion-v2.6"}:
         recommendations = " ".join(item.text for item in opinion.recommendations).casefold()
         stored_name = str(goal.get("name") or "").casefold().strip()
         if stored_name and stored_name in recommendations:
@@ -167,7 +168,7 @@ def opinion_rule_errors(opinion: CoachOpinionV2, context: dict[str, Any]) -> tup
                 goal_fact = f"your {float(goal_distance):g}K goal"
             if goal_fact and goal_fact.casefold() not in recommendations:
                 errors.append("goal reference must use its type and distance")
-    if context.get("prompt_version") == "opinion-v2.5":
+    if context.get("prompt_version") in {"opinion-v2.5", "opinion-v2.6"}:
         text = " ".join((opinion.headline, opinion.conclusion, opinion.assessment,
                          *(item.lead + " " + item.detail for item in (*opinion.worked, *opinion.fix)),
                          *opinion.sections.model_dump().values(),
@@ -176,7 +177,7 @@ def opinion_rule_errors(opinion: CoachOpinionV2, context: dict[str, Any]) -> tup
             errors.append("describe load as a percent of usual, not an internal ratio")
     if isinstance(opinion, CoachOpinionV23):
         facts = {fact["id"]: fact["display"] for fact in context.get("facts_pack") or []}
-        if laps.get("available") or stream.get("available"):
+        if context.get("prompt_version") != "opinion-v2.6" and (laps.get("available") or stream.get("available")):
             if not 2 <= len(opinion.worked) <= 4:
                 errors.append("worked needs 2–4 items when laps or streams exist")
             if not 1 <= len(opinion.fix) <= 3:
@@ -204,6 +205,12 @@ def opinion_rule_errors(opinion: CoachOpinionV2, context: dict[str, Any]) -> tup
                 for item in opinion.fix
             ):
                 errors.append("fix needs the conditional easy-run line with the Z2 upper bpm fact")
+    if context.get("prompt_version") == "opinion-v2.6":
+        clear_match = (opinion.intent is not None and opinion.intent.planned is not None
+                       and opinion.intent.planned == opinion.intent.detected
+                       and all(item.rating == "good" for item in opinion.verdicts))
+        if len(opinion.fix) < (1 if clear_match else 2):
+            errors.append("fix needs two items unless the planned intent clearly matched")
     return tuple(errors)
 
 
@@ -328,4 +335,70 @@ def assemble_opinion_v23(draft: OpinionDraftV23, facts: list[Fact], decision: In
         "evidence": [{"metric": by_id[fact_id]["metric"], "value": by_id[fact_id]["display"],
                       "source": by_id[fact_id]["source"]} for fact_id in ids],
     })
+    return CoachOpinionV23.model_validate(payload)
+
+
+def assemble_opinion_v26(draft: OpinionDraftV26, facts: list[Fact], decision: IntentDecision,
+                         planned_intent: str | None, data_notes: list[str]) -> CoachOpinionV23:
+    """Store only code-resolved evidence from explicit draft citations."""
+    by_id = {fact["id"]: fact for fact in facts}
+    ids = list(draft.evidence_ids)
+    errors: list[str] = []
+
+    def display_in_text(fact: Fact, compact: str) -> bool:
+        display = re.sub(r"\s+", "", fact["display"].casefold())
+        return display in compact or (display.endswith("%ofusual") and display.removesuffix("ofusual") in compact)
+
+    def unsupported_cited(text: str, cited: list[Fact]) -> tuple[str, ...]:
+        missing = unsupported_text_numbers(text, cited)
+        return tuple(number for number in missing if not (
+            number.isdecimal() and any(
+                re.search(rf"(?<!\d){re.escape(number)}%(?!\d)", text)
+                and re.search(rf"(?<!\d){re.escape(number)}%(?!\d)", fact["display"])
+                for fact in cited)
+        ))
+
+    def check(text: str, citations: list[str], label: str) -> None:
+        unknown = [item for item in citations if item not in by_id]
+        errors.extend(f"{label}: unknown fact ID {item}" for item in unknown)
+        cited = [by_id[item] for item in citations if item in by_id]
+        compact = re.sub(r"\s+", "", text.casefold())
+        if cited and not any(display_in_text(fact, compact) for fact in cited):
+            errors.append(f"{label}: cite a fact used in the text")
+        unsupported = unsupported_cited(text, cited)
+        if unsupported:
+            errors.append(f"{label}: uncited or unsupported numbers: {', '.join(unsupported)}")
+        errors.extend(f"{label}: fact ID in prose {item}" for item in by_id
+                      if re.search(rf"(?<![A-Za-z0-9_]){re.escape(item)}(?![A-Za-z0-9_])", text))
+
+    check(draft.headline + " " + draft.assessment + " " + draft.conclusion, ids, "assessment")
+    for field in ("worked", "fix"):
+        for index, point in enumerate(getattr(draft, field)):
+            check(point.lead + " " + point.detail, point.evidence_ids, f"{field}[{index}]")
+            ids.extend(item for item in point.evidence_ids if item not in ids)
+    for field in ("pacing", "aerobic", "recovery", "mental"):
+        text = getattr(draft.sections, field)
+        citations = getattr(draft.section_evidence_ids, field)
+        if text:
+            check(text, citations, f"sections.{field}")
+            ids.extend(item for item in citations if item not in ids)
+    for index, item in enumerate(draft.recommendations):
+        check(item.text, item.evidence_ids, f"recommendations[{index}]")
+        ids.extend(fact_id for fact_id in item.evidence_ids if fact_id not in ids)
+        if item.action == "add_to_plan":
+            for value in (f"{item.session.duration_min} min", f"{item.session.hr_cap_bpm} bpm"):
+                if not any(by_id[fact_id]["display"] == value for fact_id in item.evidence_ids if fact_id in by_id):
+                    errors.append(f"recommendations[{index}]: unsupported session target {value}")
+    if errors:
+        raise ValueError("; ".join(errors))
+    payload = draft.model_dump(exclude={"evidence_ids", "section_evidence_ids", "recommendations"})
+    payload["worked"] = [{"lead": item.lead, "detail": item.detail} for item in draft.worked]
+    payload["fix"] = [{"lead": item.lead, "detail": item.detail} for item in draft.fix]
+    payload.update({"schema_version": 2, "confidence": "medium",
+                    "intent": {"planned": planned_intent, "detected": decision.intent},
+                    "data_notes": list(data_notes),
+                    "recommendations": [{"text": item.text, "action": item.action,
+                                         "session": item.session.model_dump()} for item in draft.recommendations],
+                    "evidence": [{"metric": by_id[item]["metric"], "value": by_id[item]["display"],
+                                  "source": by_id[item]["source"]} for item in ids if item in by_id]})
     return CoachOpinionV23.model_validate(payload)

@@ -14,6 +14,7 @@ from llm.schemas import (
     OpenAICoachOpinionV2,
     OpinionDraftV22,
     OpinionDraftV23,
+    OpinionDraftV26,
 )
 
 
@@ -164,6 +165,24 @@ def test_v23_openai_uses_closed_recommendation_with_fact_ids():
     assert "evidence_ids" in schema["$defs"]["OpinionDraftRecommendationV23"]["properties"]
     assert schema["$defs"]["OpinionDraftRecommendationV23"]["additionalProperties"] is False
     assert schema["$defs"]["PlannedOpinionSession"]["additionalProperties"] is False
+
+
+def test_v26_parse_failure_does_not_send_an_unmetered_second_request():
+    calls = []
+
+    def parse(**kwargs):
+        calls.append("parse")
+        raise ValueError("invalid structured output")
+
+    client = OpenAIClient.__new__(OpenAIClient)
+    client.model = "synthetic"
+    client.client = SimpleNamespace(responses=SimpleNamespace(
+        parse=parse, create=lambda **kwargs: pytest.fail("unexpected second request")))
+    with pytest.raises(ValueError, match="invalid structured output"):
+        client.generate_json("system", "user", response_schema=OpinionDraftV26)
+    assert calls == ["parse"]
+    schema = to_strict_json_schema(OpinionDraftV26)
+    assert schema["$defs"]["OpinionPointDraftV26"]["additionalProperties"] is False
 
 
 @pytest.mark.parametrize("allow,approved", [(False, False), (False, True), (True, False)])

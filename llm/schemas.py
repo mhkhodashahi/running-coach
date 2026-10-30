@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -174,6 +175,59 @@ class OpinionDraftV23(OpinionDraftV22):
 
 class CoachOpinionV23(CoachOpinionV22):
     evidence: list[OpinionEvidence] = Field(default_factory=list, min_length=4)
+
+
+def _sentence_count(value: str) -> int:
+    return len([part for part in re.split(r"(?<=[.!?])\s+", value.strip()) if part.strip()])
+
+
+class OpinionPointDraftV26(OpinionPoint):
+    evidence_ids: list[str] = Field(min_length=1)
+
+    @field_validator("lead")
+    @classmethod
+    def one_sentence_lead(cls, value: str) -> str:
+        if _sentence_count(value) != 1:
+            raise ValueError("lead must be one sentence")
+        return value
+
+    @field_validator("detail")
+    @classmethod
+    def detailed_point(cls, value: str) -> str:
+        if not 1 <= _sentence_count(value) <= 3:
+            raise ValueError("detail needs one to three sentences")
+        return value
+
+
+class OpinionSectionEvidenceV26(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    pacing: list[str] = Field(min_length=1)
+    aerobic: list[str] = Field(min_length=1)
+    recovery: list[str] = Field(min_length=1)
+    mental: list[str] = Field(default_factory=list)
+
+
+class OpinionDraftV26(OpinionDraftV23):
+    assessment: str
+    worked: list[OpinionPointDraftV26] = Field(min_length=3, max_length=5)
+    fix: list[OpinionPointDraftV26] = Field(min_length=1, max_length=5)
+    sections: OpinionSections
+    section_evidence_ids: OpinionSectionEvidenceV26
+    recommendations: list[OpinionDraftRecommendationV23] = Field(min_length=2, max_length=4)
+    evidence_ids: list[str] = Field(min_length=4, max_length=30)
+
+    @model_validator(mode="after")
+    def depth(self) -> OpinionDraftV26:
+        if not 3 <= _sentence_count(self.assessment) <= 5:
+            raise ValueError("assessment needs three to five sentences")
+        for name in ("pacing", "aerobic", "recovery"):
+            if not 3 <= _sentence_count(getattr(self.sections, name)) <= 6:
+                raise ValueError(f"sections.{name} needs three to six sentences")
+        if self.sections.mental and not 1 <= _sentence_count(self.sections.mental) <= 3:
+            raise ValueError("sections.mental needs one to three sentences")
+        if self.sections.mental and not self.section_evidence_ids.mental:
+            raise ValueError("sections.mental needs a cited fact")
+        return self
 
 
 class CoachingDecisionSchema(BaseModel):
