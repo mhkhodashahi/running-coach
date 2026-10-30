@@ -319,3 +319,13 @@
   .v2-me-layout .settings-nav{position:static}
 }
 @media(prefers-reduced-motion:reduce){.v2 *, .v2 *::before, .v2 *::after{scroll-behavior:auto!important;animation-duration:.01ms!important;transition-duration:.01ms!important}}
+
+.v2-worker-status{display:flex;align-items:flex-start;gap:5px;padding:0 12px;overflow-wrap:anywhere}
+.v2-worker-status svg,.v2-today-status svg{width:15px;height:15px;flex:none}
+.v2-today-status{display:flex;align-items:flex-start;gap:6px;margin:0 0 14px;overflow-wrap:anywhere}
+.v2-backup-status{display:grid;gap:4px}.v2-backup-status .cap{overflow-wrap:anywhere}
+@media(max-width:767px){
+  .v2-main,.v2-dials,.v2-week-strip,.v2-bottom-nav{min-width:0;max-width:100%}
+  .v2-dial,.v2-dial-copy,.v2-day,.v2-day-entry,.v2-bottom-nav>*{min-width:0}
+  .v2-call h2,.v2-day strong{overflow-wrap:anywhere}
+}

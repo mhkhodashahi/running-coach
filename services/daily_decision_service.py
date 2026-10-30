@@ -21,9 +21,11 @@ from coach.decision import (
     RECENT_RECOVERY_WINDOW,
     SPORT_WINDOW,
     TEAM_SPORTS,
+    WEEKLY_LIMIT_PCT,
     PriorSession,
     cap_stale_intensity,
     decide_intensity,
+    fit_ranked_sports,
     is_hard_session,
     provisional_day,
     rank_sports,
@@ -38,7 +40,6 @@ from metrics import get_daily_snapshot
 from metrics.sports import RECOMMENDABLE_SPORTS, sport_category
 from services.coach_facts import unsupported_text_numbers
 from services.fact_display import ratio as format_ratio
-from services.fact_display import score as format_score
 from services.fact_display import signed_delta
 from services.hr_zones import heart_rate_zone_bounds
 
@@ -85,6 +86,7 @@ class DailyDecision:
     athlete_choice: str | None = None
     team_options: tuple[dict[str, str], ...] = ()
     explanation_source: str = "unknown"
+    weekly_limit_reason: str | None = None
 
 
 def _read_only(database: Path) -> sqlite3.Connection:
@@ -141,8 +143,35 @@ def _recent_sessions(connection: sqlite3.Connection, user_id: int, requested: da
     return tuple(sessions)
 
 
+def _weekly_budget(database: Path, user_id: int, requested: date, snapshot: Any,
+                   settings: Settings) -> tuple[float | None, float | None, float | None, Any]:
+    """Count logged work once, then remaining plan work; never count walking."""
+    from coach.planning import estimate_load, load_model
+    from coach.proposals import get_week, monday
+
+    start = monday(requested)
+    model = load_model(database, user_id, start, settings)
+    if model.cap is None:
+        return None, None, None, model
+    with _read_only(database) as connection:
+        types = {row["id"]: row["type"] for row in connection.execute(
+            "SELECT id,type FROM activities WHERE user_id=? AND date>=? AND date<=?",
+            (user_id, start.isoformat(), requested.isoformat()))}
+    actual = [item.load.value for item in snapshot.sessions if start.isoformat() <= item.day <= requested.isoformat()
+              and item.activity_id in types and types[item.activity_id].strip().lower() != "walking"
+              and item.sport not in ("excluded", "mobility")]
+    planned = [estimate_load(item, model) for item in get_week(database, user_id, start)["sessions"]
+               if item["date"] >= requested.isoformat() and item.get("status") == "planned"
+               and item["sport"] not in ("rest", "mobility")]
+    if any(value is None for value in (*actual, *planned)):
+        return None, None, model.previous_weekly_average, model
+    projected = sum(actual) + sum(planned)
+    return model.cap - projected, projected, model.previous_weekly_average, model
+
+
 def build_daily_decision(requested: date, database: Path, user_id: int, timezone: str,
-                         sleep_goal_hours: float, hr_zones: tuple[tuple[str, int, int | None], ...] = ()) -> DailyDecision:
+                         sleep_goal_hours: float, hr_zones: tuple[tuple[str, int, int | None], ...] = (),
+                         settings: Settings | None = None) -> DailyDecision:
     """Read the DB but never write it; all rankings and intensity come from code."""
     with _read_only(database) as connection:
         rows = connection.execute("SELECT date,sleep_duration,hrv FROM health_metrics "
@@ -200,11 +229,42 @@ def build_daily_decision(requested: date, database: Path, user_id: int, timezone
     ranking = rank_sports(intensity.intensity, recent, now, z2_cap, readiness=readiness,
                           team_commitments=scheduled_teams, z4_bounds_bpm=z4,
                           running_goal=running_goal)
+    settings = settings or replace(get_settings(), db_path=database, default_user_id=user_id,
+                                   local_timezone=timezone, sleep_goal_hours=sleep_goal_hours, hr_zones=hr_zones)
+    remaining, projected, usual, model = _weekly_budget(database, user_id, requested, session_snapshot, settings)
+    weekly_reason = "baseline still building" if usual is None else None
+    if usual is not None and remaining is None and intensity.intensity != "rest":
+        intensity = replace(intensity, intensity="easy", rule="weekly_load_unknown",
+                            fact_ids=("WEEKLY_LOAD", "WEEKLY_LIMIT"))
+        ranking = ()
+        weekly_reason = "weekly load unavailable"
+    elif ranking:
+        from coach.planning import estimate_load
+
+        def rates_for(items: tuple[Any, ...]) -> dict[str, float | None]:
+            return {item.sport: ((estimated / int(item.session["duration_min"])) if
+                    (estimated := estimate_load(item.session, model)) is not None and
+                    item.session["duration_min"] else None) for item in items}
+
+        ranking, fit_reason = fit_ranked_sports(ranking, remaining, rates_for(ranking))
+        if usual is not None:
+            weekly_reason = fit_reason if fit_reason != "within the weekly limit" else None
+        if not ranking and intensity.intensity == "hard":
+            intensity = replace(intensity, intensity="easy", rule="weekly_limit_no_room",
+                                fact_ids=("WEEKLY_LIMIT", "WEEKLY_LOAD"))
+            ranking = rank_sports("easy", recent, now, z2_cap, readiness=readiness,
+                                  team_commitments=scheduled_teams, z4_bounds_bpm=z4,
+                                  running_goal=running_goal)
+            ranking, _ = fit_ranked_sports(ranking, remaining, rates_for(ranking))
+        if not ranking and intensity.intensity == "easy" and usual is not None:
+            intensity = replace(intensity, intensity="rest", rule="weekly_limit_rest",
+                                fact_ids=("WEEKLY_LIMIT", "WEEKLY_LOAD"))
     hard_recent = max((item for item in recent if now - timedelta(hours=48) <= item.when < now and
                        is_hard_session(item)), key=lambda item: item.when, default=None)
     facts = [
-        _fact("READINESS", "Readiness", format_score(readiness) or "No data", "metrics_snapshot.readiness.score"),
-        _fact("LOAD_RATIO", "Load ratio", format_ratio(load_ratio) or "No data", "metrics_snapshot.load.ratio"),
+        _fact("READINESS", "Recovery", str(round(readiness)) if readiness is not None else "No data",
+              "metrics_snapshot.readiness.score"),
+        _fact("LOAD_RATIO", "Internal load ratio", format_ratio(load_ratio) or "No data", "metrics_snapshot.load.ratio"),
         _fact("ILLNESS_FLAG", "Illness signal", "resting HR and HRV signal strain" if illness else
               "no combined illness signal" if illness is False else "No data",
               "metrics_snapshot.readiness.illness_flag"),
@@ -216,7 +276,14 @@ def build_daily_decision(requested: date, database: Path, user_id: int, timezone
         _fact("TRAINING_SESSIONS_7D", "Training sessions in last 7 days",
               f"{sum(now - timedelta(days=7) <= item.when < now for item in recent)} "
               "sessions in the last 7 days", "activities.date,type"),
+        _fact("WEEKLY_LIMIT", "Weekly limit", f"{WEEKLY_LIMIT_PCT}% of usual" if usual is not None else
+              "baseline still building", "coach.planning.usual_week"),
+        _fact("WEEKLY_LOAD", "Load", f"{projected / usual * 100:.0f}% of usual"
+              if projected is not None and usual else "No data", "activities + plan_sessions"),
     ]
+    if weekly_reason:
+        facts.append(_fact("WEEKLY_ADJUSTMENT", "Weekly adjustment", weekly_reason,
+                           "coach.decision.fit_weekly_session"))
     current = dict(snapshot.current_health)
     baselines = {(item.field, item.days): item.mean.value for item in snapshot.baselines}
     for fact_id, field, days, unit in (("RHR_DELTA", "resting_hr", 7, "bpm"),
@@ -275,14 +342,15 @@ def build_daily_decision(requested: date, database: Path, user_id: int, timezone
                              ("Skip planned team training or attend skills only. Optional mobility or a walk; not training."
                               if intensity.intensity == "rest" and scheduled_teams else
                               "Optional mobility or a walk; not training" if intensity.intensity == "rest" else None),
-                             tuple(facts), "", "", (), (), team_options=team_options(intensity.intensity, scheduled_teams))
+                             tuple(facts), "", "", (), (), team_options=team_options(intensity.intensity, scheduled_teams),
+                             weekly_limit_reason=weekly_reason)
     return with_fallback(decision)
 
 
 def fallback_explanation(decision: DailyDecision) -> str:
     """Plain, rule-specific explanation without internal IDs or thresholds."""
-    readiness = format_score(decision.readiness) or "No data"
-    load_ratio = next((fact["display"] for fact in decision.facts if fact["id"] == "LOAD_RATIO"), "No data")
+    readiness = str(round(decision.readiness)) if decision.readiness is not None else "No data"
+    weekly_load = next((fact["display"] for fact in decision.facts if fact["id"] == "WEEKLY_LOAD"), "No data")
     evidence = {fact["id"]: fact["display"] for fact in decision.facts}
     rhr_delta, hrv_delta = evidence.get("RHR_DELTA"), evidence.get("HRV_DELTA")
     illness_copy = (f"Rest today. Your resting HR is {rhr_delta} and HRV is {hrv_delta} "
@@ -292,25 +360,30 @@ def fallback_explanation(decision: DailyDecision) -> str:
     health_day = date.fromisoformat(decision.based_on)
     sentences = {
         "illness_signal": illness_copy,
-        "readiness_below_30": f"Rest today. Readiness is {readiness}, so recovery takes priority.",
+        "readiness_below_30": f"Rest today. Recovery is {readiness}, so recovery takes priority.",
         "not_enough_data": "Keep today easy. There is not enough recovery data to support a hard session.",
         "stale_data": (f"Your latest sleep and HRV are from "
                        f"{health_day:%a} {health_day.day} {health_day:%b}. "
                        "Open Garmin Connect to sync your watch; I'll update you."),
-        "readiness_below_50": f"Keep today easy. Readiness is {readiness}, so protect recovery.",
-        "load_ratio_above_1_5": ("Keep today easy. Your training load is well above your usual level "
-                                   f"(load ratio {load_ratio})."),
-        "load_ratio_above_1_3": (f"Keep today easy. Your load ratio is {load_ratio}, above the range "
-                                   "for a hard session."),
+        "readiness_below_50": f"Keep today easy. Recovery is {readiness}, so protect recovery.",
+        "load_ratio_above_1_5": "Keep today easy. Recent training load is high; recovery takes priority.",
+        "load_ratio_above_1_3": "Keep today easy. Recent training load is above its safe range.",
         "hard_allowed": (f"A hard session is available today. Recovery is {readiness} and your load "
-                         f"is {round(float(load_ratio) * 100)}% of usual."
-                         if load_ratio not in (None, "No data") else
+                         f"is {weekly_load}."
+                         if weekly_load != "No data" else
                          f"A hard session is available today. Recovery is {readiness}."),
         "hard_in_last_48h": "Keep today easy. You had a hard session in the last 48 hours.",
-        "otherwise_easy": (f"Keep today easy. Readiness is {readiness}; the conditions for a hard session "
+        "otherwise_easy": (f"Keep today easy. Recovery is {readiness}; the conditions for a hard session "
                            "are not all met."),
+        "weekly_limit_no_room": "Keep today easy. There is no room for a hard session within the weekly limit.",
+        "weekly_limit_rest": "Rest today. There is no room for another session within the weekly limit.",
+        "weekly_load_unknown": "Keep today easy. Weekly load is unavailable, so I cannot fit a session safely.",
     }
     result = sentences[decision.rule]
+    if decision.weekly_limit_reason == "shortened to fit the weekly limit":
+        result += " I shortened the suggested session to fit the weekly limit."
+    elif decision.weekly_limit_reason == "baseline still building":
+        result += " Your usual-week baseline is still building."
     return result
 
 
@@ -371,8 +444,8 @@ def explain_decision(decision: DailyDecision, llm: Any | None = None,
     if llm is None:
         return replace(decision, headline=f"{decision.intensity.title()} today.", explanation=fallback,
                        evidence_ids=decision.rule_fact_ids, follow_ups=defaults, explanation_source="fallback")
-    explanation_fact_ids = {"READINESS", "LOAD_RATIO", "ILLNESS_FLAG", "HARD_LAST_48H", "HARD_LOOKBACK",
-                            "RHR_DELTA", "HRV_DELTA", "TRAINING_SESSIONS_7D"}
+    explanation_fact_ids = {"READINESS", "WEEKLY_LOAD", "WEEKLY_LIMIT", "WEEKLY_ADJUSTMENT", "ILLNESS_FLAG", "HARD_LAST_48H",
+                            "HARD_LOOKBACK", "RHR_DELTA", "HRV_DELTA", "TRAINING_SESSIONS_7D"}
     context = {"intensity": decision.intensity,
                "top_sport": decision.sports[0]["sport"] if decision.sports else None,
                "facts": [fact for fact in decision.facts if fact["id"] in explanation_fact_ids and
@@ -408,7 +481,7 @@ def get_or_create_daily_decision(day: date, *, settings: Settings | None = None,
     user_id = user_id or settings.default_user_id
     with _user_lock(settings.db_path, user_id):
         candidate = build_daily_decision(day, settings.db_path, user_id, settings.local_timezone,
-                                         settings.sleep_goal_hours, settings.hr_zones)
+                                         settings.sleep_goal_hours, settings.hr_zones, settings)
         fingerprint = hashlib.sha256(json.dumps({"candidate": asdict(candidate),
                                                  "prompt_version": PROMPT_VERSION}, sort_keys=True).encode()).hexdigest()
         with sqlite3.connect(settings.db_path) as connection:

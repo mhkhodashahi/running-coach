@@ -1,4 +1,5 @@
 {% extends 'base.html' %}
+{% from 'components/v2_icons.html' import icon %}
 {% block title %}Me{% endblock %}
 {% block content %}
 <div class="v2-me-head"><span class="eyebrow">ACCOUNT AND DATA</span><h1 class="num">Me</h1></div>
@@ -51,6 +52,7 @@
         <div class="settings-actions"><button class="button button-secondary" type="submit">Save messages</button></div>
       </form>
       <p>Worker {{ 'running' if worker_running else 'not running' }}. {{ 'Scheduled messages paused' if messages.paused else 'Scheduled messages active' }}.</p>
+      <p id="backup-status" class="v2-backup-status"><span class="st">{{ icon('check') if 'OK' in last_backup else icon('clock') }} Last backup {{ last_backup }}</span><small class="cap">{{ backup_folder }}</small></p>
       <h3>Recent worker jobs</h3><ul>{% for row in worker_runs %}<li>{{ row.run_date }} · {{ row.job }} · {{ row.status }}{% if row.error %} · {{ row.error }}{% endif %}</li>{% else %}<li>No worker jobs yet.</li>{% endfor %}</ul>
     </section>
     <section id="appearance" class="settings-section"><h2>Appearance</h2><p class="cap">Theme</p><form action="/theme" method="post"><button class="btn" type="submit" name="theme" value="{% if request.cookies.get('theme') == 'day' %}night{% else %}day{% endif %}">Switch to {{ 'night' if request.cookies.get('theme') == 'day' else 'day' }} theme</button></form></section>

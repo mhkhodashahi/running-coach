@@ -8,11 +8,13 @@ from web.view_models.today import (
     call_headline,
     coach_evidence,
     coach_heading,
+    completed_plan_today,
     dial_models,
     dial_status,
     display_decision_text,
     display_duration,
     format_chip,
+    indefinite_article,
     purpose_line,
     session_name,
     week_strip,
@@ -29,6 +31,16 @@ def test_dial_words_and_missing_data():
     assert dial_status("sleep", 7, 7) == ("Normal", "minus")
     assert dial_status("load", 110, 100) == ("Normal", "minus")
     assert dial_status("load", 140, 100) == ("Above usual", "up")
+    assert dial_status("load", 111, 100) == ("Above usual", "up")
+
+
+def test_completed_plan_today_needs_same_day_match_and_no_remaining_session():
+    day = date(2026, 10, 27)
+    done = {"date": day.isoformat(), "sport": "gym", "status": "done", "linked_activity_id": 11}
+    assert completed_plan_today(day, [done]) == done
+    assert completed_plan_today(day, [done, {"date": day.isoformat(), "sport": "running",
+                                           "status": "planned"}]) is None
+    assert completed_plan_today(day, [{**done, "date": "2026-10-28"}]) is None
     dials = dial_models(None, None, None, None, None, "Synced 08:00")
     assert all(item["value"] == "No data" and item["usual"] == "Synced 08:00" for item in dials)
     assert all(item["percent"] == 0 for item in dials)
@@ -72,11 +84,19 @@ def test_planned_equal_session_and_no_plan_keep_distinct_copy():
     assert coach_heading("hard", suggested) == "Why a hard day"
 
 
+def test_generated_heading_uses_one_article_helper():
+    assert indefinite_article("easy") == "an"
+    assert indefinite_article("hard") == "a"
+    assert coach_heading("easy", None) == "Why an easy day"
+    assert coach_heading("hard", None) == "Why a hard day"
+
+
 def test_evidence_chips_have_one_label_and_unit():
     source = "metrics_snapshot.load.ratio"
     assert format_chip({"id": "READINESS", "metric": "Readiness", "display": "72/100", "source": source}) == {
         "label": "Recovery", "value": "72", "source": source}
-    assert format_chip({"id": "LOAD_RATIO", "metric": "Load ratio", "display": "0.72", "source": source}) == {
+    assert format_chip({"id": "LOAD_RATIO", "metric": "Load ratio", "display": "0.72", "source": source}) is None
+    assert format_chip({"id": "WEEKLY_LOAD", "metric": "Load", "display": "72% of usual", "source": source}) == {
         "label": "Load", "value": "72% of usual", "source": source}
     assert format_chip({"id": "HARD_LAST_48H", "metric": "Hard session in last 48h",
                         "display": "no hard session in the last 48 hours", "source": source}) == {
@@ -93,12 +113,14 @@ def test_decision_text_is_web_only_wording():
     stored = "Your readiness is 72/100 and your load ratio is 0.72. No hard session in the last 48 hours."
     shown = display_decision_text(stored)
     assert stored.startswith("Your readiness")
-    assert shown == "Recovery is 72 and load is 72% of usual. No hard session in the last 48 hours."
+    assert shown == "No hard session in the last 48 hours."
     assert "readiness" not in shown.lower() and "load ratio" not in shown.lower()
     assert display_decision_text("Load ratio 0.80 and readiness 64/100.") == (
-        "Load is 80% of usual and recovery is 64.")
+        "Your coach decision is based on recent recovery and training.")
     assert display_decision_text("Recent load is within range (ratio 0.80).") == (
-        "Recent load is within range (load is 80% of usual).")
+        "Your coach decision is based on recent recovery and training.")
+    assert display_decision_text("Recovery is 86/100 and your load is 70% of usual.") == (
+        "Recovery is 86 and your load is 70% of usual.")
 
 
 def test_week_strip_done_and_planned_are_both_visible():

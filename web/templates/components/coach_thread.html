@@ -2,7 +2,7 @@
 <div id="coach-thread" class="v2-chat-thread" aria-live="polite">
 {% for turn in thread %}<article class="v2-chat-turn">
   <div class="v2-chat-user"><p>{{ turn.display_question }}</p><a class="chip" href="{{ turn.context_chip.href }}">{{ turn.context_chip.label }}</a></div>
-  <div class="v2-chat-answer"><span class="eyebrow">COACH</span><p>{{ turn.answer }}</p>
+  <div class="v2-chat-answer"><span class="eyebrow">COACH</span><p>{{ turn.answer|coach_text }}</p>
     {% if turn.evidence_chips %}<div class="v2-chat-evidence" aria-label="Evidence">{% for fact in turn.evidence_chips %}<span class="chip" title="{{ fact.source }}">{{ fact.label }} {{ fact.value }}</span>{% endfor %}</div>{% endif %}
     {% for card in turn.cards or [] %}<a class="v2-chat-attached" href="/activities/{{ card.id }}">{{ card.label }} · {{ card.date }}</a>{% endfor %}
     {% if turn.proposal_link %}<a class="btn" href="/plan">Review proposal {{ icon('chevron') }}</a>
@@ -10,6 +10,6 @@
   </div>
 </article>{% else %}<p class="cap">Ask about your training, sleep or recovery.</p>{% endfor %}
 {% if error %}<p class="settings-error" role="alert">{{ error }}</p>{% endif %}
-{% if reply and not reply.used_llm and reply.text %}<p class="cap" role="status">{{ reply.text }}</p>{% endif %}
+{% if reply and not reply.used_llm and reply.text %}<p class="cap" role="status">{{ reply.text|coach_text }}</p>{% endif %}
 {% if follow_ups and not availability.disabled %}<div class="v2-chat-followups">{% for follow_up in follow_ups %}<form method="post" action="/coach/ask" hx-post="/coach/ask" hx-target="#coach-conversation" hx-swap="outerHTML"><input type="hidden" name="question" value="{{ follow_up }}"><input type="hidden" name="context" value="{{ context_kind }}">{% if attached_id %}<input type="hidden" name="activity_id" value="{{ attached_id }}">{% endif %}<button class="btn" type="submit">{{ follow_up }}</button></form>{% endfor %}</div>{% endif %}
 </div>

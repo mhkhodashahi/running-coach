@@ -24,6 +24,7 @@
       <div class="v2-rail-foot">
         <a class="v2-nav" href="/settings" {% if request.url.path == '/settings' %}aria-current="page"{% endif %}>{{ icon('user') }}Me</a>
         <span class="v2-sync cap">{{ icon('check') }} {{ sync or 'Never synced' }}</span>
+        {% if worker_status %}<span class="v2-worker-status st" role="status">{{ icon('alert') }} {{ worker_status }}</span>{% endif %}
         <form action="/theme" method="post"><button class="v2-theme" type="submit" name="theme" value="{% if request.cookies.get('theme') == 'day' %}night{% else %}day{% endif %}" title="Toggle theme" aria-label="Toggle theme">{{ icon('theme') }}</button></form>
       </div>
     </aside>

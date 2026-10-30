@@ -15,6 +15,7 @@ from zoneinfo import ZoneInfo
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from coach.agent import CoachAgent, _read_version, _user_lock
+from coach.decision import WEEKLY_LIMIT_PCT
 from coach.proposals import (
     create_proposal,
     get_proposal,
@@ -36,7 +37,9 @@ from services.daily_decision_service import build_daily_decision
 from services.hr_zones import heart_rate_zone_bounds
 
 MAX_HARD_DAYS = 2
-MAX_WEEKLY_INCREASE = 1.10
+MAX_WEEKLY_INCREASE = WEEKLY_LIMIT_PCT / 100
+USUAL_WEEK_COUNT = 8
+MIN_USUAL_WEEKS = 4
 LONG_RUN_MINUTES = 60
 LONG_RUN_LOOKBACK_DAYS = 28
 LONG_RUN_MAX_INCREASE = 1.20
@@ -158,7 +161,7 @@ def habit_pattern(rows: list[dict[str, Any]], start: date) -> HabitPattern:
 
 
 def weekly_load_reference(rows: list[tuple[date, str, float | None]], cutoff: date,
-                          limit: int | None = 8
+                          limit: int | None = USUAL_WEEK_COUNT
                           ) -> tuple[tuple[str, float], ...]:
     """Last eight complete recorded training weeks, excluding walking and missing-load weeks."""
     totals: dict[date, float] = {}
@@ -175,6 +178,12 @@ def weekly_load_reference(rows: list[tuple[date, str, float | None]], cutoff: da
     if limit is not None:
         selected = selected[:limit]
     return tuple(selected)
+
+
+def usual_week(recorded: tuple[tuple[str, float], ...]) -> float | None:
+    """Median of the latest eight complete training weeks; empty weeks are absent."""
+    recent = recorded[:USUAL_WEEK_COUNT]
+    return median(load for _, load in recent) if len(recent) >= MIN_USUAL_WEEKS else None
 
 
 def reference_habit_pattern(rows: list[dict[str, Any]], reference_weeks: tuple[tuple[str, float], ...]
@@ -544,8 +553,8 @@ def build_habit_week(existing: list[dict[str, Any]], model: LoadModel, habits: H
             continue
         clean = {key: item.get(key) for key in ("id", "date", "sport", "intent", "duration_min",
                                                "hr_cap_bpm", "notes", "status")}
-        fact_ids = (["LOAD_RATIO", "LOAD_CAP"] if is_recovery_item(item) and model.cap is not None else
-                    ["LOAD_RATIO"] if is_recovery_item(item) else
+        fact_ids = (["WEEKLY_LIMIT", "LOAD_CAP"] if is_recovery_item(item) and model.cap is not None else
+                    ["WEEKLY_LIMIT"] if is_recovery_item(item) else
                     ["HABIT_RUNNING" if item["sport"] == "running" else "HABIT_GYM", "LOAD_CAP"]
                     if action == "add" else ["PINNED_LOAD", "LOAD_CAP"])
         changes.append({"change_type": action, "session": clean,
@@ -564,9 +573,8 @@ def build_habit_week(existing: list[dict[str, Any]], model: LoadModel, habits: H
     if dropped or (model.cap is not None and pinned_load > model.cap + 1e-8):
         label = ("lighter week" if lighter_week_allowed(load_ratio, week_start_readiness) else
                  "full week: your team sessions and protected habits use this week's budget")
-        cap_text = f"{model.cap:.1f} TRIMP" if model.cap is not None else "not enough history for a load cap"
-        ratio_text = f"{load_ratio:.2f}" if load_ratio is not None else "unavailable"
-        summary = f"{label.capitalize()}. Load ratio {ratio_text}; cap {cap_text}. "
+        cap_text = "110% of usual" if model.cap is not None else "baseline still building"
+        summary = f"{label.capitalize()}. Weekly limit {cap_text}. "
         summary += "Short mobility replaces flexible training."
     elif running_goal and not any(item["duration_min"] >= LONG_RUN_MINUTES for item in easy_runs):
         if easy_runs:
@@ -662,8 +670,8 @@ def load_model(database: Path, user_id: int, start: date, settings: Settings) ->
         if label == "walking" and activity.day >= end - timedelta(days=27) and load is not None:
             walking_total += load
     recorded = weekly_load_reference(reference_rows, cutoff, limit=None)
-    weeks = recorded[:8]
-    reference = median(load for _, load in weeks) if len(weeks) >= 3 else None
+    weeks = recorded[:USUAL_WEEK_COUNT]
+    reference = usual_week(recorded)
     return LoadModel(reference, rates, sport_rates, imputed, walking_total / 4, weeks,
                      tuple(week for week, _ in recorded))
 
@@ -698,19 +706,24 @@ def _context(database: Path, user_id: int, start: date, settings: Settings,
               int(heart_rate_zone_bounds(max_hr)[1][2] - 1e-9) if max_hr else None)
     pinned_estimates = [estimate_load(item, model) for item in week["sessions"]
                         if item["origin"] in ("fixed", "protected") and item["status"] == "planned"]
-    pinned_load_display = (f"{sum(pinned_estimates):.1f} TRIMP"
-                           if all(value is not None for value in pinned_estimates) else "unknown")
+    pinned_load_display = (f"{sum(pinned_estimates) / model.previous_weekly_average * 100:.0f}% of usual"
+                           if model.previous_weekly_average and all(value is not None for value in pinned_estimates)
+                           else "No data")
     facts = [
         {"id": "WEEK_START", "metric": "Week start", "display": start.isoformat(), "source": "plan_sessions.date"},
-        {"id": "LOAD_BASE", "metric": "Eight complete recorded weeks' median load",
-         "display": f"{model.previous_weekly_average:.1f} TRIMP" if model.cap is not None else "No data",
+        {"id": "LOAD_BASE", "metric": "Usual week",
+         "display": "100% of usual" if model.cap is not None else "baseline still building",
          "source": "activities + metrics.sessions.load, walking excluded"},
         {"id": "LOAD_CAP", "metric": "Maximum weekly load",
-         "display": f"{model.cap:.1f} TRIMP" if model.cap is not None else "No cap: fewer than three weeks",
+         "display": "110% of usual" if model.cap is not None else "baseline still building",
          "source": "LOAD_BASE * 1.10"},
+        {"id": "WEEKLY_LIMIT", "metric": "Weekly limit",
+         "display": "110% of usual" if model.cap is not None else "baseline still building",
+         "source": "coach.decision.WEEKLY_LIMIT_PCT"},
         {"id": "MAX_RECENT_WEEK", "metric": "Highest recent recorded week",
-         "display": f"{model.highest_recent_weekly:.1f} TRIMP"
-         if model.highest_recent_weekly is not None else "No data", "source": "reference_weeks"},
+         "display": f"{model.highest_recent_weekly / model.previous_weekly_average * 100:.0f}% of usual"
+         if model.highest_recent_weekly is not None and model.previous_weekly_average else "No data",
+         "source": "reference_weeks"},
         {"id": "LONG_EASY_DURATION", "metric": "Longer easy run target",
          "display": f"{min(LONG_RUN_MINUTES, run_limit)} min", "source": "coach.planning.long_run_limit"},
         {"id": "LONG_RUN_LIMIT", "metric": "Recent long-run safety limit",
@@ -725,12 +738,10 @@ def _context(database: Path, user_id: int, start: date, settings: Settings,
          "display": pinned_load_display,
          "source": "fixed_commitments + protected_habits + athlete session median"},
         {"id": "EXPECTED_WALKING", "metric": "Expected weekly walking load",
-         "display": f"{model.expected_walking_weekly:.1f} TRIMP",
+         "display": f"{model.expected_walking_weekly / model.previous_weekly_average * 100:.0f}% of usual"
+         if model.previous_weekly_average else "No data",
          "source": "activities.type=walking, trailing 28 days / 4"},
-        {"id": "LOAD_RATIO", "metric": "Recent acute:chronic load ratio",
-         "display": f"{load_ratio:.2f}" if load_ratio is not None else "No data",
-         "source": "metrics.snapshot.load.ratio"},
-        {"id": "WEEK_READINESS", "metric": "Week-start decision readiness",
+        {"id": "WEEK_READINESS", "metric": "Week-start recovery",
          "display": f"{week_decision.readiness:.1f}" if week_decision.readiness is not None else "No data",
          "source": "coach.daily_decision.readiness"},
     ]
@@ -1055,7 +1066,8 @@ def propose_daily_conflict(day: date, intensity: str, decision_facts: list[dict[
         return []
     materialize_week(settings.db_path, user_id, monday(day))
     week = get_week(settings.db_path, user_id, monday(day))
-    facts = [fact for fact in decision_facts if fact["id"] in ("READINESS", "LOAD_RATIO", "ILLNESS_FLAG")]
+    facts = [fact for fact in decision_facts if fact["id"] in
+             ("READINESS", "WEEKLY_LOAD", "WEEKLY_LIMIT", "ILLNESS_FLAG")]
     if not facts:
         return []
     with sqlite3.connect(settings.db_path.resolve().as_uri() + "?mode=ro", uri=True) as connection:

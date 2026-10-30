@@ -37,7 +37,7 @@ def guardrail_errors(answer: str, context: GuardrailContext) -> tuple[str, ...]:
     if context.illness and HARD_ADVICE.search(answer):
         errors.append("Illness signal: do not recommend hard training or racing")
     elif context.load_ratio is not None and context.load_ratio > 1.5 and HARD_ADVICE.search(answer):
-        errors.append("High load ratio: easy training or rest only")
+        errors.append("High training load: easy training or rest only")
     if context.plan_change_requested and not re.search(r"\bproposals?\b", answer, re.I):
         errors.append("Plan changes must be described as proposals")
     return tuple(errors)
@@ -50,7 +50,7 @@ def enforce_guardrails(answer: str, context: GuardrailContext) -> str:
     if context.illness:
         return "Rest today. Your recovery signals suggest caution. If this persists, see a doctor."
     if context.load_ratio is not None and context.load_ratio > 1.5 and HARD_ADVICE.search(answer):
-        return "Keep training easy or rest today. I cannot recommend a hard session with this load ratio."
+        return "Keep training easy or rest today. Your weekly load is above your usual level."
     sentences = [sentence for sentence in re.split(r"(?<=[.!?])\s+", answer)
                  if not DIAGNOSIS.search(sentence)]
     return " ".join(sentences).strip() or "I cannot give a reliable answer from the available data."

@@ -14,6 +14,7 @@ from coach.agent import (
     _contains_display,
     _follow_ups,
     _freshness_note,
+    _model_visible,
     _trend_fallback,
     _unsupported_answer_numbers,
     _user_lock,
@@ -46,6 +47,34 @@ def agent_db(tmp_path):
 
 def agent(database, model, limit=20):
     return CoachAgent(replace(get_settings(), db_path=database, coach_daily_call_limit=limit), model, 1)
+
+
+def test_internal_load_ratio_is_not_model_visible():
+    payload = {"load_ratio": 1.4, "facts": [{"id": "LOAD_RATIO", "display": "1.40"},
+                                             {"id": "READINESS", "display": "70"}]}
+    assert _model_visible(payload) == {"facts": [{"id": "READINESS", "display": "70"}]}
+
+
+def test_internal_load_ratio_wording_retries(agent_db):
+    model = ScriptedModel(
+        {"reply": {"answer": "Your load ratio is elevated."}},
+        {"reply": {"answer": "Your weekly load is above usual."}},
+    )
+    result = agent(agent_db, model).answer("How is my training load?")
+    assert result.answer == "Your weekly load is above usual."
+    assert "internal ratio" in model.seen[1][1][-1]["content"]
+
+
+def test_today_question_receives_dated_snapshot_and_code_decision(agent_db):
+    model = ScriptedModel({"reply": {"answer": "I need more health data.", "evidence_ids": [],
+                                    "follow_ups": ["What changed?", "What can I do?"]}})
+    agent(agent_db, model).answer("About today: how am I doing?")
+    contents = "\n".join(str(message.get("content", "")) for message in model.seen[0][1])
+    assert "Current dated safety facts and code decision" in contents
+    assert "READINESS" in contents
+    assert '"decision":' in contents
+    assert '"load_ratio"' not in contents
+    assert '"reason": "load_ratio' not in contents
 
 
 def test_agent_dispatches_tool_and_persists_only_names_and_arguments(agent_db):

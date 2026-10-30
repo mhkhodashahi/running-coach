@@ -33,6 +33,7 @@ from web.view_models.today import (
     call_headline,
     coach_evidence,
     coach_heading,
+    completed_plan_today,
     dial_models,
     display_decision_text,
     display_duration,
@@ -121,10 +122,22 @@ def today_context(settings: Settings, *, day: date, llm: Any = None) -> dict[str
                        if week_start.isoformat() <= row["date"][:10] and
                        sport_category(row["type"], day) in RECOMMENDABLE_SPORTS]
     unrated_id = unrated.id if unrated else None
+    from coach.planning import load_model
+    from coach.proposals import monday
+
+    week_start = monday(day)
+    load_reference = load_model(settings.db_path, user_id, week_start, settings).previous_weekly_average
+    weekly_actual = [item.load.value for item in snapshot.sessions
+                     if week_start.isoformat() <= item.day <= day.isoformat()
+                     and item.sport not in ("walking", "excluded", "mobility")]
+    weekly_load = sum(weekly_actual) if all(value is not None for value in weekly_actual) else None
     dials = dial_models(decision.readiness, current.get("sleep_duration"),
-                        baselines.get(("sleep_duration", 28)), snapshot.load.acute.value,
-                        snapshot.load.chronic.value, sync)
+                        baselines.get(("sleep_duration", 28)), weekly_load,
+                        load_reference, sync)
     workout = workout_model(decision, plan_sessions)
+    done_today = completed_plan_today(day, plan_sessions)
+    if done_today:
+        workout = None
     return {"decision": decision, "ring": readiness_ring(decision.readiness), "sync": sync,
             "day": day, "day_label": short_date(day), "based_on_label": short_date(decision.based_on),
             "recommendations": recommendations, "readiness": metric(decision.readiness),
@@ -163,10 +176,17 @@ def today_context(settings: Settings, *, day: date, llm: Any = None) -> dict[str
                         "date": short_date(unrated.date)} if unrated else None,
             "dials": dials,
             "week_strip": week_strip(day, plan_sessions, week_activities, unrated_id, workout),
-            "workout": workout, "call_headline": call_headline(decision.intensity, workout),
-            "coach_heading": coach_heading(decision.intensity, workout),
+            "workout": workout, "call_headline": "Done for today" if done_today else
+            call_headline(decision.intensity, workout),
+            "done_today": bool(done_today),
+            "coach_heading": "Why you're done for today" if done_today else coach_heading(decision.intensity, workout),
             "coach_evidence": coach_evidence(decision), "coach_follow_ups": TODAY_FOLLOW_UPS,
-            "purpose": purpose_line(workout, dials, decision.intensity),
+            "purpose": (f"{done_today['sport'].capitalize()} completed." if done_today else
+                        purpose_line(workout, dials, decision.intensity) +
+                        (" I shortened the suggestion to fit the weekly limit."
+                         if decision.weekly_limit_reason == "shortened to fit the weekly limit" else
+                         " There is no room for a hard session within the weekly limit."
+                         if decision.weekly_limit_reason == "easy: no room in the weekly limit" else "")),
             "decision_text": display_decision_text(decision.explanation)}
 
 

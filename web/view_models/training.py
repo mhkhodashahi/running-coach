@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import date, timedelta
+from math import ceil
 from typing import Any
 
 from coach.planning import MAX_WEEKLY_INCREASE, estimate_load, is_hard
@@ -22,10 +23,10 @@ def training_follow_ups(status: str, proposal_open: bool) -> tuple[str, ...]:
     return (first, "Is there room for an easy run?", "How does this week compare with usual?")
 
 
-def percentage(value: float | None, cap: float | None) -> int | None:
-    if value is None or cap is None or cap <= 0:
+def percentage(value: float | None, usual: float | None) -> int | None:
+    if value is None or usual is None or usual <= 0:
         return None
-    return round(value / (cap / MAX_WEEKLY_INCREASE) * 100)
+    return round(value / usual * 100)
 
 
 def selected_groups(groups: list[dict[str, Any]], change_ids: list[int]) -> tuple[list[str], int]:
@@ -68,8 +69,8 @@ def proposal_view(proposal: dict[str, Any], week: dict[str, Any], model: Any,
                             "delta": round(load) if load is not None else None,
                             "selected": change["id"] in selected})
     return {**proposal, "change_rows": details, "selected_group_ids": selected_group_ids,
-            "selected_count": count, "now_percent": percentage(week["total"], week["cap"]),
-            "applied_percent": percentage(proposal.get("projected_total"), week["cap"]),
+            "selected_count": count, "now_percent": percentage(week["total"], week.get("usual")),
+            "applied_percent": percentage(proposal.get("projected_total"), week.get("usual")),
             "stale": proposal["status"] == "stale"}
 
 
@@ -98,10 +99,10 @@ def week_view(week: dict[str, Any], today: date, sync: str,
     suggested_title = next((entry["title"].lower() for day in days for entry in day["entries"]
                             if entry.get("recommended")), None)
     rest = sum(not day["entries"] and day["empty"] == "Rest day" for day in days)
-    total_percent = percentage(week["total"], week["cap"])
-    actual_percent = percentage(week["actual_total"], week["cap"])
+    total_percent = percentage(week["total"], week.get("usual"))
+    actual_percent = percentage(week["actual_total"], week.get("usual"))
     suggested_load = week.get("suggested_load")
-    suggested_percent = (percentage(week["total"] + suggested_load, week["cap"])
+    suggested_percent = (percentage(week["total"] + suggested_load, week.get("usual"))
                          if week["total"] is not None and suggested_load is not None else None)
     status, status_icon = dial_status("load", float(total_percent) if total_percent is not None else None, 100)
     return {**week, "days": days, "done_count": done, "session_count": done + planned,
@@ -111,7 +112,7 @@ def week_view(week: dict[str, Any], today: date, sync: str,
             "hard_count": hard, "planned_hard_count": planned_hard, "rest_count": rest, "sync": sync,
             "load_status": status, "load_icon": status_icon,
             "bar_actual": min(100, round((actual_percent or 0) / LOAD_BAR_MAX_PERCENT * 100)),
-            "bar_total": min(100, round((total_percent or 0) / LOAD_BAR_MAX_PERCENT * 100)),
+            "bar_total": min(100, ceil((total_percent or 0) / LOAD_BAR_MAX_PERCENT * 100)),
             "safe_marker": round(SAFE_LIMIT_PERCENT / LOAD_BAR_MAX_PERCENT * 100),
             "suggested_hard_title": suggested_hard,
             "suggested_title": suggested_title,
@@ -148,4 +149,8 @@ def coach_summary(week: dict[str, Any]) -> tuple[str, tuple[dict[str, str], ...]
         summary += f" {hard} hard {'day is' if hard == 1 else 'days are'} in the plan."
     if week["suggested_title"] and week["with_suggested_percent"] is not None:
         summary += f" With today's {week['suggested_title']}: {week['with_suggested_percent']}% of usual."
+    if week.get("weekly_limit_reason") == "shortened to fit the weekly limit":
+        summary += " Today's suggestion was shortened to fit the weekly limit."
+    elif week.get("weekly_limit_reason") == "easy: no room in the weekly limit":
+        summary += " There is no room for a hard session within the weekly limit."
     return summary, tuple(chips)

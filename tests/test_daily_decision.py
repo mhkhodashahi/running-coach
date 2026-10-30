@@ -14,6 +14,7 @@ from coach.decision import (
     PriorSession,
     cap_stale_intensity,
     decide_intensity,
+    fit_weekly_session,
     is_hard_session,
     provisional_day,
     rank_sports,
@@ -34,6 +35,29 @@ from services.daily_decision_service import (
 
 DAY = date(2026, 6, 29)
 NOW = datetime(2026, 6, 30, tzinfo=ZoneInfo("Europe/Berlin"))
+
+
+def test_weekly_limit_fits_tempo_or_downgrades_without_baseline():
+    tempo = {"sport": "running", "intent": "tempo", "duration_min": 48,
+             "structure": "10 min easy, 3 x 8 min, 10 min easy", "tempo_target": "160 bpm"}
+    unchanged = fit_weekly_session(tempo, 48, 1)
+    assert unchanged.session == tempo
+    shortened = fit_weekly_session(tempo, 39, 1)
+    assert shortened.session is not None
+    assert shortened.session["duration_min"] == 39
+    assert shortened.session["structure"].startswith("10 min easy, ")
+    assert shortened.session["structure"].endswith("10 min easy")
+    assert "160 bpm" in shortened.session["structure"]
+    assert shortened.reason == "shortened to fit the weekly limit"
+    assert fit_weekly_session(tempo, 23, 1).session is None
+    building = fit_weekly_session(tempo, None, 1)
+    assert building.session == tempo and building.reason == "baseline still building"
+
+
+def test_weekly_limit_shortens_unstructured_session_to_longest_fit():
+    easy = {"sport": "running", "intent": "easy", "duration_min": 45, "structure": "Easy"}
+    assert fit_weekly_session(easy, 29.9, 1).session["duration_min"] == 29
+    assert fit_weekly_session(easy, 14.9, 1).session is None
 
 
 def test_built_decision_and_old_cached_blank_copy_have_fallback(decision_db):
@@ -339,8 +363,8 @@ def test_llm_failure_falls_back_and_cannot_change_intensity(decision_db):
     ("readiness_below_30", "recovery takes priority"),
     ("not_enough_data", "not enough recovery data"),
     ("readiness_below_50", "protect recovery"),
-    ("load_ratio_above_1_5", "training load is well above"),
-    ("load_ratio_above_1_3", "above the range for a hard session"),
+    ("load_ratio_above_1_5", "training load is high"),
+    ("load_ratio_above_1_3", "above its safe range"),
     ("hard_allowed", "hard session is available"),
     ("hard_in_last_48h", "hard session in the last 48 hours"),
     ("otherwise_easy", "conditions for a hard session"),
@@ -374,8 +398,8 @@ def test_provisional_llm_does_not_receive_or_repeat_sync_details(decision_db):
             assert "LAST_SYNC_TIME" not in {item["id"] for item in context["facts"]}
             facts = {item["id"]: item["display"] for item in context["facts"]}
             return {"headline": "Keep it easy.",
-                    "explanation": f"I see readiness {facts['READINESS']}. Load ratio is {facts['LOAD_RATIO']}.",
-                    "evidence_ids": ["READINESS", "LOAD_RATIO"],
+                    "explanation": f"I see recovery {facts['READINESS']}. There were {facts['TRAINING_SESSIONS_7D']}.",
+                    "evidence_ids": ["READINESS", "TRAINING_SESSIONS_7D"],
                     "follow_ups": ["How is recovery?", "What changed?"]}
 
     original = build_daily_decision(DAY, decision_db, 1, "Europe/Berlin", 7.5)
@@ -396,9 +420,9 @@ def test_valid_explanation_cites_facts_but_cannot_change_code_decision(decision_
             facts = {fact["id"]: fact["display"] for fact in context["facts"]}
             assert "ILLNESS_FLAG" not in facts
             return {"headline": "Keep it steady.",
-                    "explanation": f"I see readiness {facts['READINESS']} and load ratio {facts['LOAD_RATIO']}. "
+                    "explanation": f"I see recovery {facts['READINESS']} and {facts['TRAINING_SESSIONS_7D']}. "
                                    "I would keep the code decision.",
-                    "evidence_ids": ["READINESS", "LOAD_RATIO"],
+                    "evidence_ids": ["READINESS", "TRAINING_SESSIONS_7D"],
                     "follow_ups": ["How was my recovery?", "What changed in my load?"]}
 
     original = build_daily_decision(DAY, decision_db, 1, "Europe/Berlin", 7.5)
@@ -406,7 +430,7 @@ def test_valid_explanation_cites_facts_but_cannot_change_code_decision(decision_
     assert result.headline == "Keep it steady."
     assert result.intensity == original.intensity
     assert result.sports == original.sports
-    assert result.evidence_ids == ("READINESS", "LOAD_RATIO")
+    assert result.evidence_ids == ("READINESS", "TRAINING_SESSIONS_7D")
     assert result.explanation_source == "llm"
 
 
@@ -437,8 +461,8 @@ def test_question_in_explanation_retries_then_uses_statements(decision_db, quest
             facts = {fact["id"]: fact["display"] for fact in json.loads(prompt.splitlines()[0])["facts"]}
             sentence = question if self.calls == 1 else "Keep the effort easy."
             return {"headline": "Keep it easy.",
-                    "explanation": f"I see {facts['READINESS']} readiness and {facts['LOAD_RATIO']} load. {sentence}",
-                    "evidence_ids": ["READINESS", "LOAD_RATIO"],
+                    "explanation": f"I see recovery {facts['READINESS']} and {facts['TRAINING_SESSIONS_7D']}. {sentence}",
+                    "evidence_ids": ["READINESS", "TRAINING_SESSIONS_7D"],
                     "follow_ups": ["How is my recovery?", "What changed in my load?"]}
 
     model = Model()
@@ -463,8 +487,8 @@ def test_explanation_retries_diagnosis_and_missing_second_citation(decision_db):
                 return {"headline": "Rest.", "explanation": "You have flu. Rest now.",
                         "evidence_ids": ["READINESS"], "follow_ups": ["How is my recovery?", "What is my load?"]}
             return {"headline": "Go easy.",
-                    "explanation": f"I see {facts['READINESS']} readiness. Load is {facts['LOAD_RATIO']}.",
-                    "evidence_ids": ["READINESS", "LOAD_RATIO"],
+                    "explanation": f"I see recovery {facts['READINESS']}. There were {facts['TRAINING_SESSIONS_7D']}.",
+                    "evidence_ids": ["READINESS", "TRAINING_SESSIONS_7D"],
                     "follow_ups": ["How is my recovery?", "What is my load?"]}
 
     model = Model()
@@ -478,9 +502,9 @@ def test_explanation_can_name_ranking_windows_from_fact_pack(decision_db):
         def generate_json(self, system, prompt, response_schema=None):
             facts = {fact["id"]: fact["display"] for fact in json.loads(prompt.splitlines()[0])["facts"]}
             return {"headline": "Keep it easy.",
-                    "explanation": (f"Readiness is {facts['READINESS']} and load ratio is {facts['LOAD_RATIO']}. "
+                    "explanation": (f"Recovery is {facts['READINESS']} and there were {facts['TRAINING_SESSIONS_7D']}. "
                                     "Your running count over 3 days supports the ranking."),
-                    "evidence_ids": ["READINESS", "LOAD_RATIO", "SPORT_RECOVERY_WINDOW"],
+                    "evidence_ids": ["READINESS", "TRAINING_SESSIONS_7D", "SPORT_RECOVERY_WINDOW"],
                     "follow_ups": ["How is recovery?", "What changed in my load?"]}
 
     result = explain_decision(build_daily_decision(DAY, decision_db, 1, "Europe/Berlin", 7.5), Model())
@@ -494,10 +518,10 @@ def test_retry_names_the_unsupported_number(decision_db):
         def generate_json(self, system, prompt, response_schema=None):
             self.prompts.append(prompt)
             facts = {fact["id"]: fact["display"] for fact in json.loads(prompt.splitlines()[0])["facts"]}
-            explanation = (f"Readiness is {facts['READINESS']} and load ratio is {facts['LOAD_RATIO']}. "
+            explanation = (f"Recovery is {facts['READINESS']} and there were {facts['TRAINING_SESSIONS_7D']}. "
                            + ("Train for 99 minutes." if len(self.prompts) == 1 else "Keep the session easy."))
             return {"headline": "Keep it easy.", "explanation": explanation,
-                    "evidence_ids": ["READINESS", "LOAD_RATIO"],
+                    "evidence_ids": ["READINESS", "TRAINING_SESSIONS_7D"],
                     "follow_ups": ["How is recovery?", "What is my load?"]}
 
     model = Model()

@@ -225,7 +225,7 @@ def test_valid_v23_saved_and_plan_passed_to_prompt(opinion_db):
     assert llm.prompts[0][2] is OpinionDraftV23
     with factory() as session:
         row = repository.get_activity_coaching_insight(session, activity_id, 1)
-        assert row.schema_version == "2" and row.prompt_version == "opinion-v2.4"
+        assert row.schema_version == "2" and row.prompt_version == "opinion-v2.5"
         assert row.validation_notes is None
         assert json.loads(row.payload_json)["intent"]["planned"] == "easy"
         assert json.loads(row.payload_json)["intent"]["detected"] == "recovery"
@@ -462,6 +462,15 @@ def test_v24_rejects_stored_goal_name_in_recommendation_but_accepts_type_and_dis
     payload["recommendations"][0]["text"] = "Prepare for your goal."
     opinion = CoachOpinionV23.model_validate(payload)
     assert "type and distance" in " ".join(opinion_rule_errors(opinion, context))
+
+
+def test_v25_rejects_internal_ratio_wording():
+    context = invented_v21_context()
+    context["prompt_version"] = "opinion-v2.5"
+    payload = invented_v21_payload()
+    payload["assessment"] = "I see the load ratio is high."
+    opinion = CoachOpinionV23.model_validate(payload)
+    assert "internal ratio" in " ".join(opinion_rule_errors(opinion, context))
 
 
 def invented_draft_facts():

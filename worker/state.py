@@ -66,7 +66,7 @@ def claim(database: Path, user_id: int, job: str, day: date, now: datetime) -> b
 
 def finish(database: Path, user_id: int, job: str, day: date, now: datetime,
            *, message: str | None = None, error: str | None = None) -> None:
-    status = ("failed" if job.startswith("sync-") else "uncertain") if error else (
+    status = ("failed" if job.startswith("sync-") or job == "daily_backup" else "uncertain") if error else (
         "sent" if message is not None else "done")
     with connection(database) as db:
         db.execute("UPDATE job_runs SET status=?,finished_at=?,error=?,message_text=? "

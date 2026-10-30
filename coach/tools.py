@@ -17,7 +17,6 @@ from zoneinfo import ZoneInfo
 from coach.plan import monday
 from config import get_settings
 from metrics import get_daily_snapshot
-from metrics.readiness import LOWER_LOAD, UPPER_LOAD
 from metrics.sports import sport_category
 from services.activity_coaching_service import _opinion_metrics_snapshot
 from services.coach_facts import Fact, build_facts
@@ -30,8 +29,6 @@ from services.fact_display import (
     pace,
     pace_difference,
     percent,
-    ratio,
-    score,
     short_date,
 )
 from services.trend_facts import trend_facts
@@ -148,18 +145,26 @@ class CoachTools:
         if metrics_day != day:
             facts.append(_fact("BASED_ON_DATE", "Metrics based on date", short_date(metrics_day),
                                "health_metrics.date"))
-        for key, metric, formatter, source in (
-            ("READINESS", snapshot.readiness.score, score, "metrics_snapshot.readiness.score.value"),
-            ("LOAD_RATIO", snapshot.load.ratio, ratio, "metrics_snapshot.load.ratio.value"),
-        ):
-            if (display := formatter(metric.value)) is not None:
-                facts.append(_fact(key, key.replace("_", " ").title(), display, source))
-        load_ratio = snapshot.load.ratio.value
-        if load_ratio is not None:
-            status = "below" if load_ratio < LOWER_LOAD else "above" if load_ratio > UPPER_LOAD else "in"
-            facts.append(_fact("LOAD_RATIO_STATUS", "Load ratio status",
-                               f"{status} safe range {LOWER_LOAD:.1f}–{UPPER_LOAD:.1f}",
-                               "metrics_snapshot.load.ratio.value + metrics.readiness.LOWER_LOAD/UPPER_LOAD"))
+        if snapshot.readiness.score.value is not None:
+            facts.append(_fact("READINESS", "Recovery", str(round(snapshot.readiness.score.value)),
+                               "metrics_snapshot.readiness.score.value"))
+        from coach.planning import load_model
+
+        settings = replace(get_settings(), db_path=self.database, default_user_id=self.user_id,
+                           local_timezone=self.timezone, sleep_goal_hours=self.sleep_goal_hours)
+        week_start = metrics_day - timedelta(days=metrics_day.weekday())
+        model = load_model(self.database, self.user_id, week_start, settings)
+        weekly_values = [item.load.value for item in snapshot.sessions if item.day >= week_start.isoformat()
+                         and item.sport not in ("walking", "excluded", "mobility")]
+        if model.previous_weekly_average is None:
+            facts.append(_fact("WEEKLY_LIMIT", "Weekly limit", "baseline still building",
+                               "coach.planning.usual_week"))
+        elif all(value is not None for value in weekly_values):
+            percent_of_usual = sum(weekly_values) / model.previous_weekly_average * 100
+            facts.append(_fact("WEEKLY_LOAD", "Load", f"{percent_of_usual:.0f}% of usual",
+                               "activities.load / coach.planning.usual_week"))
+            facts.append(_fact("WEEKLY_LIMIT", "Weekly limit", "110% of usual",
+                               "coach.decision.WEEKLY_LIMIT_PCT"))
         flag = snapshot.readiness.illness_flag.value
         if flag is not None:
             facts.append(_fact("ILLNESS_FLAG", "Illness signal", "yes" if flag else "no",
@@ -180,7 +185,7 @@ class CoachTools:
         for component in snapshot.readiness.components:
             if component.score.value is not None:
                 facts.append(_fact(f"READINESS_{component.name.upper()}_SCORE", component.name.title() + " score",
-                                   score(component.score.value, decimals=1),
+                                   f"{component.score.value:.1f}",
                                    f"metrics_snapshot.readiness.components.{component.name}.score.value"))
         current = dict(snapshot.current_health)
         baseline_values = {(item.field, item.days): item.mean.value for item in snapshot.baselines}
@@ -303,6 +308,17 @@ class CoachTools:
                                               if zone.name.startswith(("Z1", "Z2")))
                                            for item in snapshot.sessions if item.activity_id == activity_id), None),
         }
+        from coach.planning import load_model
+
+        week_start = day - timedelta(days=day.weekday())
+        settings = replace(get_settings(), db_path=self.database, default_user_id=self.user_id,
+                           local_timezone=self.timezone, sleep_goal_hours=self.sleep_goal_hours)
+        reference = load_model(self.database, self.user_id, week_start, settings)
+        week_values = [item.load.value for item in snapshot.sessions
+                       if week_start.isoformat() <= item.day <= day.isoformat()
+                       and item.sport not in ("walking", "excluded", "mobility")]
+        context["usual_week"] = reference.previous_weekly_average
+        context["weekly_load"] = sum(week_values) if all(value is not None for value in week_values) else None
         facts = [_fact(f"ACT_{activity_id}_{fact['id']}", fact["metric"], fact["display"],
                        fact["source"].replace("selected_activity", f"activities[{activity_id}]")[:160])
                  for fact in build_facts(activity_id, context)][:MAX_FACTS]

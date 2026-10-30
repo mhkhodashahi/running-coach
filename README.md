@@ -94,6 +94,32 @@ No fonts, scripts, or styles are fetched from a CDN.
 The old Streamlit interface is optional; its startup instructions are in
 `legacy/streamlit/README.md`.
 
+## Worker, Alerts, And Backups
+
+Start the local scheduler with `python -m worker` after upgrading the database.
+Only one worker runs at a time. It checks Garmin sync, scheduled job failures,
+and missed morning calls, and sends one actionable Telegram alert per problem
+per day. The web rail and Today page show worker or sync trouble too. The
+example [`docs/worker.launchd.plist`](docs/worker.launchd.plist) has
+`RunAtLoad` and `KeepAlive`, so launchd restarts the worker after login or a
+crash; replace its path placeholders with local absolute paths before use.
+
+After a successful morning sync, the worker makes a dated online SQLite backup.
+`BACKUP_DIR` in `.env` defaults to `~/pulse-backups/` and must be outside this
+repository. The backup is integrity-checked; retention keeps 14 daily files
+and eight Sunday copies. Only files named `pulse.daily.YYYY-MM-DD.db` or
+`pulse.weekly.YYYY-MM-DD.db` in that folder are eligible for pruning.
+
+To restore, stop the worker and the web app, then run:
+
+```bash
+python -m scripts.restore_db --from ~/pulse-backups/pulse.daily.YYYY-MM-DD.db
+```
+
+Type `RESTORE` when prompted. The command refuses an active worker lock,
+validates the source, and makes a safety backup of the current database before
+restoring `db/running_coach.db`. It does not touch `db/marathon_coach.db`.
+
 ## Garmin Sync
 
 Garmin sync uses the `garminconnect` Python package and your own Garmin account credentials.

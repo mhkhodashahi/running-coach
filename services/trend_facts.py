@@ -38,16 +38,17 @@ def trend_facts(latest: DailySnapshot, reference: float | None, weekly_load: flo
                 display = f"{'up' if amount > 0 else 'down' if amount < 0 else 'unchanged'} {abs(amount)} {unit}"
                 facts.append({"id": f"{key.upper()}_CHANGE", "metric": f"{label} change",
                               "display": display, "source": f"health_metrics.{key}, dated endpoints"})
-    for fact_id, metric, value, display, source in (
-        ("READINESS", "Readiness", latest.readiness.score.value,
-         lambda value: f"{round(value)}/100", "metrics.readiness"),
-        ("LOAD_RATIO", "Load ratio", latest.load.ratio.value,
-         lambda value: f"{value:.2f}", "metrics.load.ratio"),
-        ("WEEKLY_REFERENCE", "Weekly load reference", reference,
-         lambda value: f"{round(value)} TRIMP", "coach.planning.load_model"),
-        ("THIS_WEEK_LOAD", "This week's training load", weekly_load,
-         lambda value: f"{round(value)} TRIMP", "metrics.daily_sport_loads"),
-    ):
-        if value is not None:
-            facts.append({"id": fact_id, "metric": metric, "display": display(value), "source": source})
+    if latest.readiness.score.value is not None:
+        facts.append({"id": "READINESS", "metric": "Recovery",
+                      "display": f"{round(latest.readiness.score.value)}",
+                      "source": "metrics.readiness"})
+    if reference is not None and reference > 0 and weekly_load is not None:
+        facts.append({"id": "WEEKLY_LOAD", "metric": "Load",
+                      "display": f"{weekly_load / reference * 100:.0f}% of usual",
+                      "source": "metrics.daily_sport_loads / coach.planning.usual_week"})
+        facts.append({"id": "WEEKLY_LIMIT", "metric": "Weekly limit", "display": "110% of usual",
+                      "source": "coach.decision.WEEKLY_LIMIT_PCT"})
+    elif reference is None:
+        facts.append({"id": "WEEKLY_LIMIT", "metric": "Weekly limit", "display": "baseline still building",
+                      "source": "coach.planning.usual_week"})
     return facts

@@ -67,6 +67,7 @@ class Settings:
     sync_interval_hours: int = 2
     auto_opinions: bool = False
     public_url: str = ""
+    backup_dir: Path = Path.home() / "pulse-backups"
 
     @property
     def db_url(self) -> str:
@@ -121,6 +122,7 @@ def get_settings() -> Settings:
         sync_interval_hours=max(1, int(os.getenv("SYNC_INTERVAL_HOURS", "2"))),
         auto_opinions=os.getenv("AUTO_OPINIONS", "").lower() == "true",
         public_url=os.getenv("PUBLIC_URL", "").strip().rstrip("/"),
+        backup_dir=Path(os.getenv("BACKUP_DIR", "").strip() or str(Path.home() / "pulse-backups")).expanduser(),
     )
 
 

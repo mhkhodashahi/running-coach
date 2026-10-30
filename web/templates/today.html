@@ -1,6 +1,7 @@
 {% extends 'base.html' %}
 {% from 'components/v2_icons.html' import icon %}
 {% block content %}
+{% if worker_status %}<p class="v2-today-status st" role="status">{{ icon('alert') }} {{ worker_status }}</p>{% endif %}
 <div class="v2-today-head"><div><span class="eyebrow">{{ day_label }}</span><h1 class="num">Today</h1></div><div class="v2-phone-sync cap">{{ icon('check') }} {{ sync }}</div></div>
 <section class="v2-dials" aria-label="Recovery, sleep and load">
   {% for item in dials %}<a class="v2-dial card v2-{{ item.kind }}" href="/trends" aria-label="{{ item.label }} {{ item.spoken_value }}. {{ item.status }}. {{ item.usual or '' }}">

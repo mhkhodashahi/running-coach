@@ -8,7 +8,6 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, TypedDict
 
-from metrics.readiness import LOWER_LOAD, UPPER_LOAD
 from services.fact_display import (
     as_number as _number,
 )
@@ -29,12 +28,6 @@ from services.fact_display import (
 )
 from services.fact_display import (
     percent as _percent,
-)
-from services.fact_display import (
-    ratio as _ratio,
-)
-from services.fact_display import (
-    score as _score,
 )
 from services.fact_display import short_date as _short_date
 from services.hr_zones import heart_rate_zone_bounds
@@ -297,14 +290,14 @@ def build_facts(activity_id: int, context: Mapping[str, Any]) -> list[Fact]:
 
     readiness_field = (snapshot.get("readiness") or {}).get("score")
     readiness = _number(readiness_field.get("value") if isinstance(readiness_field, dict) else readiness_field)
-    _add(facts, "READINESS", "Readiness", _score(readiness),
+    _add(facts, "READINESS", "Recovery", str(round(readiness)) if readiness is not None else None,
          "metrics_snapshot.readiness.score.value")
     for component in (snapshot.get("readiness") or {}).get("components") or []:
         name = component.get("name")
         score = _number((component.get("score") or {}).get("value"))
         if name in {"hrv", "rhr", "sleep", "load"} and score is not None:
-            _add(facts, f"READINESS_{name.upper()}_SCORE", f"Readiness {name.upper()} component",
-                 _score(score, decimals=1), f"metrics_snapshot.readiness.components.{name}.score.value")
+            _add(facts, f"READINESS_{name.upper()}_SCORE", f"Recovery {name.upper()} component",
+                 f"{score:.1f}", f"metrics_snapshot.readiness.components.{name}.score.value")
     health = snapshot.get("current_health") or {}
     baselines = {(row.get("field"), row.get("days")): (row.get("mean") or {}).get("value")
                  for row in snapshot.get("baselines") or []}
@@ -329,14 +322,16 @@ def build_facts(activity_id: int, context: Mapping[str, Any]) -> list[Fact]:
                 change = None
             _add(facts, f"{prefix}_VS_BASELINE", f"{prefix} versus baseline", change,
                  f"metrics_snapshot.current_health.{key}.value vs metrics_snapshot.baselines.{key}.{days}.mean.value")
-    ratio = _number(((snapshot.get("load") or {}).get("ratio") or {}).get("value"))
-    _add(facts, "LOAD_RATIO", "Acute:chronic load ratio", _ratio(ratio),
-         "metrics_snapshot.load.ratio.value")
-    if ratio is not None:
-        status = "below" if ratio < LOWER_LOAD else "above" if ratio > UPPER_LOAD else "in"
-        _add(facts, "LOAD_RATIO_STATUS", "Load ratio status",
-             f"{status} safe range {LOWER_LOAD:.1f}–{UPPER_LOAD:.1f}",
-             "metrics_snapshot.load.ratio.value + metrics.readiness.LOWER_LOAD/UPPER_LOAD")
+    week_load = _number(context.get("weekly_load"))
+    usual = _number(context.get("usual_week"))
+    if usual is None:
+        _add(facts, "WEEKLY_LIMIT", "Weekly limit", "baseline still building",
+             "coach.planning.usual_week")
+    elif week_load is not None and usual > 0:
+        _add(facts, "WEEKLY_LOAD", "Load", f"{week_load / usual * 100:.0f}% of usual",
+             "activities.load / coach.planning.usual_week")
+        _add(facts, "WEEKLY_LIMIT", "Weekly limit", "110% of usual",
+             "coach.decision.WEEKLY_LIMIT_PCT")
     return facts
 
 

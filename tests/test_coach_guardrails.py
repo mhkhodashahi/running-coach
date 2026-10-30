@@ -18,6 +18,7 @@ def test_high_load_blocks_hard_but_allows_easy():
     assert guardrail_errors("Do a tempo session.", context)
     assert not guardrail_errors("Keep it easy or rest.", context)
     assert "easy or rest" in enforce_guardrails("Do a tempo session.", context)
+    assert "ratio" not in enforce_guardrails("Do a tempo session.", context)
 
 
 def test_diagnosis_is_removed_and_plan_request_remains_a_proposal():

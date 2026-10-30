@@ -35,6 +35,7 @@ from coach.planning import (
     propose_week,
     reference_habit_pattern,
     revise_week,
+    usual_week,
     validate_draft,
     validate_narrative,
     validate_week,
@@ -52,6 +53,7 @@ from coach.proposals import (
     list_proposals,
     list_protected_habits,
     manual_session,
+    match_completed_sessions,
     materialize_week,
     request_revision,
     save_commitment,
@@ -111,6 +113,36 @@ def test_pure_week_rules_and_boundaries():
     assert validate_week([session(START, minutes=110)], model, today=START + timedelta(days=7), decisions={}) == []
     assert any("110%" in error for error in validate_week(
         [session(START, minutes=111)], model, today=START + timedelta(days=7), decisions={}))
+
+
+def test_read_time_completion_matches_one_activity_per_same_sport_plan():
+    plans = [session(START, sport="gym", intent="light upper body"),
+             session(START, sport="gym", intent="strength"),
+             session(START, sport="running", intent="easy")]
+    for item in plans:
+        item["status"] = "planned"
+        item["linked_activity_id"] = None
+    activities = [{"id": 11, "date": START.isoformat(), "sport": "gym"},
+                  {"id": 12, "date": START.isoformat(), "sport": "volleyball"}]
+    shown = match_completed_sessions(plans, activities)
+    assert [item["status"] for item in shown] == ["done", "planned", "planned"]
+    assert shown[0]["linked_activity_id"] == 11
+    assert all(item["status"] == "planned" for item in plans)
+
+
+def test_get_week_matches_strength_activity_to_gym_without_writing(database):
+    planned_id = manual_session(database, 1, session(START, sport="gym", intent="light upper body"))
+    with sqlite3.connect(database) as connection:
+        activity_id = connection.execute(
+            "INSERT INTO activities(user_id,date,type,distance,duration,avg_hr) "
+            "VALUES(1,?,'strength_training',0,1800,110)",
+            (START.isoformat(),)).lastrowid
+    shown = next(item for item in get_week(database, 1, START)["sessions"] if item["id"] == planned_id)
+    assert shown["status"] == "done" and shown["linked_activity_id"] == activity_id
+    with sqlite3.connect(database) as connection:
+        stored = connection.execute("SELECT status,linked_activity_id FROM plan_sessions WHERE id=?",
+                                    (planned_id,)).fetchone()
+    assert stored == ("planned", None)
 
 
 def test_long_easy_run_is_capped_by_recent_longest_run():
@@ -512,6 +544,19 @@ def test_reference_skips_empty_walking_only_unknown_and_unfinished_weeks():
     assert weekly_load_reference([(START, "walking", 100.0)], cutoff) == ()
 
 
+def test_usual_week_ignores_empty_weeks_needs_four_and_uses_latest_eight():
+    cutoff = START + timedelta(weeks=1)
+    rows = [(cutoff - timedelta(weeks=index + 1), "running", float(index + 10))
+            for index in (0, 2, 4)]
+    recorded = weekly_load_reference(rows, cutoff, limit=None)
+    assert len(recorded) == 3 and usual_week(recorded) is None
+    rows.append((cutoff - timedelta(weeks=7), "gym", 40.0))
+    recorded = weekly_load_reference(rows, cutoff, limit=None)
+    assert usual_week(recorded) == 13.0
+    extended = tuple((f"week-{index}", float(index)) for index in range(1, 11))
+    assert usual_week(extended) == 4.5
+
+
 def test_reference_habits_include_zero_running_weeks():
     weeks = tuple(((START - timedelta(weeks=index + 1)).isoformat(), 100.0) for index in range(4))
     rows = [{"date": (date.fromisoformat(week) + timedelta(days=2)).isoformat(),
@@ -619,7 +664,7 @@ def test_protected_and_walking_load_are_kept_above_cap():
                               HabitPattern({"running": 0, "gym": 0}, {"running": 30, "gym": 30}),
                               START, START - timedelta(days=7), {}, False, None, 1.4)
     assert fixed in result.candidate and protected in result.candidate
-    assert "1.40" in result.summary
+    assert "110% of usual" in result.summary
     assert result.changes and all(is_recovery_item(item["session"]) for item in result.changes)
     preview = week_load_breakdown(list(result.candidate), model, START)
     assert preview["weekly_total"] == 120
@@ -645,10 +690,10 @@ def test_flexible_session_dropped_for_cap_becomes_lighter_week():
                               {"running": 30, "gym": 30}), START, START - timedelta(days=7),
                               {}, False, 130, 1.35)
     assert result.status == "proposal"
-    assert "Lighter week" in result.summary and "1.35" in result.summary
+    assert "Lighter week" in result.summary and "110% of usual" in result.summary
     assert any("Easy run 30 min dropped" in warning for warning in result.warnings)
     assert all(is_recovery_item(change["session"]) for change in result.changes)
-    assert all(change["fact_ids"] == ["LOAD_RATIO", "LOAD_CAP"] for change in result.changes)
+    assert all(change["fact_ids"] == ["WEEKLY_LIMIT", "LOAD_CAP"] for change in result.changes)
     assert week_load_breakdown(list(result.candidate), model, START)["weekly_total"] <= model.cap
 
 

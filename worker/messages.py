@@ -68,13 +68,12 @@ def decision_reason(decision: Any) -> str:
         return f"sleep and HRV from {short_date(date.fromisoformat(facts['BASED_ON_DATE']))}"
     if facts.get("TRAINING_SESSIONS_7D", "").startswith("0 sessions"):
         return "no sessions in the last 7 days"
-    ratio = facts.get("LOAD_RATIO")
-    if ratio not in (None, "No data"):
-        status = "above usual" if float(ratio) > 1.3 else "below usual" if float(ratio) < 0.8 else "normal"
-        return f"load {ratio}, {status}"
+    weekly_load = facts.get("WEEKLY_LOAD")
+    if weekly_load not in (None, "No data"):
+        return f"load {weekly_load}"
     readiness = facts.get("READINESS")
     if readiness not in (None, "No data"):
-        return f"readiness {readiness}"
+        return f"recovery {readiness}"
     hard = facts.get("HARD_LAST_48H")
     if hard and any(char.isdigit() for char in hard):
         return hard
@@ -98,18 +97,22 @@ def morning(decision: Any, planned: list[str], ratio: float | None,
     else:
         top = decision.sports[0] if decision.sports else None
         label = f"{top['session']['intent']} {'run' if top['sport'] == 'running' else top['sport']}" if top else "recovery"
-        status = "normal" if ratio is not None and 0.8 <= ratio <= 1.3 else (
-            "high" if ratio is not None and ratio > 1.3 else "low" if ratio is not None else "unavailable")
-        ratio_text = f" ({ratio:.2f})" if ratio is not None else ""
         readiness = str(round(decision.readiness)) if decision.readiness is not None else "No data"
+        weekly_load = next((fact["display"] for fact in getattr(decision, "facts", ())
+                            if fact["id"] == "WEEKLY_LOAD"), "No data")
         no_sessions = any(fact["id"] == "TRAINING_SESSIONS_7D" and fact["display"].startswith("0 sessions")
                           for fact in getattr(decision, "facts", ()))
         lines = [f"{decision.intensity.title()} day — {label}",
-                 f"Readiness {readiness} · " + ("no sessions in the last 7 days" if no_sessions else
-                                              f"load {status}{ratio_text}")]
+                 f"Recovery {readiness} · " + ("no sessions in the last 7 days" if no_sessions else
+                                             f"load {weekly_load}")]
     session_text = _top_session(decision)
     if session_text:
         lines.append(session_text)
+    adjustment = getattr(decision, "weekly_limit_reason", None)
+    if adjustment == "shortened to fit the weekly limit":
+        lines.append("Suggested session shortened to fit the weekly limit (110% of usual).")
+    elif adjustment == "easy: no room in the weekly limit":
+        lines.append("No room for a hard session within the weekly limit (110% of usual).")
     if not waiting:
         hard_plan = any(word in item.lower() for item in planned
                         for word in ("tempo", "race", "match", "training", "strength"))
@@ -132,7 +135,11 @@ def data_update(headline: str, reason: str | None = None, *, illness: bool = Fal
         line = f"Data is in. {headline}"
     if illness:
         line += " If this persists, see a doctor."
-    return _render([line])
+    first, separator, rest = line.partition(". ")
+    html = f"<b>{escape(first + '.' if separator else first)}</b>"
+    if separator:
+        html += " " + escape(rest)
+    return OutboundMessage(html, line)
 
 
 def proposal_items(changes: list[dict[str, Any]]) -> str:

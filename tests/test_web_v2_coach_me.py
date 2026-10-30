@@ -19,9 +19,15 @@ from web.view_models.coach import (
     coach_turns,
     context_chip,
     context_question,
+    plain_coach_text,
     proposed_change_question,
 )
 from web.view_models.me import me_view
+
+
+def test_coach_markdown_is_stripped_and_html_remains_escaped_by_template():
+    assert plain_coach_text('"**Recovery** is *good*. [See plan](/plan)"') == "Recovery is good. See plan"
+    assert plain_coach_text("- First\n- Second") == "- First\n- Second"
 
 
 def test_coach_availability_and_usage():
@@ -39,13 +45,14 @@ def test_stored_evidence_uses_today_display_wording():
                                 "display": "84/100", "source": "metrics.readiness"}) == {
         "label": "Recovery", "value": "84", "source": "metrics.readiness"}
     assert coach_evidence_chip({"metric": "Load ratio", "display": "0.72",
-                                "source": "metrics.load_ratio"}) == {
-        "label": "Load", "value": "72% of usual", "source": "metrics.load_ratio"}
+                                "source": "metrics.load_ratio"}) is None
+    assert coach_evidence_chip({"id": "WEEKLY_LOAD", "metric": "Load", "display": "72% of usual",
+                                "source": "coach.planning.usual_week"}) == {
+        "label": "Load", "value": "72% of usual", "source": "coach.planning.usual_week"}
     assert coach_evidence_chip({"metric": "HRV", "display": "61 ms",
                                 "source": "health_metrics.hrv"})["label"] == "HRV"
     assert coach_evidence_chip({"id": "LOAD_RATIO_STATUS", "metric": "Load ratio status",
-                                "display": "below safe range 0.8–1.3", "source": "metrics.load"}) == {
-        "label": "Load status", "value": "below safe range 80–130% of usual", "source": "metrics.load"}
+                                "display": "below safe range 0.8–1.3", "source": "metrics.load"}) is None
 
 
 def test_context_chips_and_stored_turns_are_presented_without_mutation():
@@ -82,6 +89,7 @@ def test_me_view_never_includes_credentials():
 @pytest.fixture
 def web_settings(tmp_path):
     settings = replace(get_settings(), db_path=tmp_path / "v2-coach.db", llm_provider="ollama",
+                       backup_dir=tmp_path / "pulse-backups",
                        telegram_bot_token="private-fixture-token", telegram_chat_id="private-fixture-id",
                        garmin_email="private-fixture@example.org", garmin_password="private-fixture-password")
     upgrade_database(settings.db_path)
@@ -104,6 +112,24 @@ def test_coach_page_context_and_me_never_render_secrets(web_settings):
         for secret in (web_settings.telegram_bot_token, web_settings.telegram_chat_id,
                        web_settings.garmin_email, web_settings.garmin_password):
             assert secret not in me.text
+
+
+def test_me_shows_verified_last_backup_folder(web_settings):
+    from datetime import date
+
+    from worker.backup import daily_backup
+
+    day = date(2026, 10, 28)
+    daily_backup(web_settings.db_path, web_settings.backup_dir, day, web_settings.base_dir)
+    with sqlite3.connect(web_settings.db_path) as db:
+        db.execute("INSERT INTO job_runs(user_id,job,run_date,status,started_at,finished_at,attempts) "
+                   "VALUES(?,?,?,?,?,?,1)", (web_settings.default_user_id, "daily_backup",
+                   day.isoformat(), "done", "2026-10-28T07:00:00", "2026-10-28T07:00:01"))
+    with TestClient(create_app(web_settings, password="")) as client:
+        page = client.get("/settings")
+    assert page.status_code == 200
+    assert "Last backup Wed 28 Oct · OK" in page.text
+    assert str(web_settings.backup_dir) in page.text
 
 
 def test_disabled_coach_post_does_not_call_provider(web_settings, monkeypatch):

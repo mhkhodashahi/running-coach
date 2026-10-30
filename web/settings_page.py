@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import sqlite3
 import threading
 import tomllib
 from collections.abc import Iterator
@@ -26,8 +27,10 @@ from services.goal_service import GoalService
 from services.hr_zones import heart_rate_zone_bounds
 from services.import_service import GarminImportService, ImportSummary
 from utils.formatting import format_goal_time
-from web.formatting import sync_time
+from web.formatting import short_date, sync_time
 from web.view_models.me import me_view
+from worker.backup import NAME as BACKUP_NAME
+from worker.backup import latest_backup
 from worker.state import history as worker_history
 from worker.state import preferences, save_preferences, worker_running
 
@@ -85,6 +88,15 @@ def settings_context(settings: Settings, sync_state: dict[str, str]) -> dict:
             "sync": sync_label, "messages": preferences(settings.db_path, settings.default_user_id),
             "worker_runs": worker_history(settings.db_path, settings.default_user_id, 8),
             "worker_running": worker_running(settings.db_path)}
+    backup = latest_backup(settings.backup_dir)
+    backup_day = BACKUP_NAME.fullmatch(backup.name).group(2) if backup else None
+    with sqlite3.connect(settings.db_path.resolve().as_uri() + "?mode=ro", uri=True) as db:
+        backup_run = (db.execute("SELECT status FROM job_runs WHERE user_id=? AND job='daily_backup' "
+                                 "AND run_date=?", (settings.default_user_id, backup_day)).fetchone()
+                      if backup else None)
+    context["last_backup"] = (f"{short_date(backup_day)} · OK" if backup_run and
+                               backup_run[0] == "done" else "No verified backup yet")
+    context["backup_folder"] = str(settings.backup_dir)
     project = tomllib.loads((BASE_DIR / "pyproject.toml").read_text(encoding="utf-8"))["project"]
     context["me"] = me_view(context, telegram_configured=bool(settings.telegram_bot_token and
                              settings.telegram_chat_id), garmin_configured=bool(settings.garmin_email and

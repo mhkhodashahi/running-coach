@@ -10,7 +10,9 @@
   </div>{% endif %}
   <div class="v2-call-actions">
     <button class="btn v2-why" type="button" data-open-coach>Why this?</button>
+    {% if not done_today %}
     {% if (decision.athlete_choice or decision.intensity) != 'rest' %}<form action="/today/choice" method="post" hx-post="/today/choice" hx-target="#coach-card" hx-swap="outerHTML"><button class="btn" type="submit" name="choice" value="easy">Make it easy</button></form>{% endif %}
     <form action="/today/choice" method="post" hx-post="/today/choice" hx-target="#coach-card" hx-swap="outerHTML"><button class="btn" type="submit" name="choice" value="rest">Rest today</button></form>
+    {% endif %}
   </div>
 </section>

@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from metrics.sports import sport_category
 from services.coach_facts import unsupported_text_numbers
 
 SPORTS = frozenset({"running", "gym", "football", "volleyball", "mobility"})
@@ -112,6 +113,23 @@ def _virtual_protected(connection: sqlite3.Connection, user_id: int, start: date
     return result
 
 
+def match_completed_sessions(sessions: list[dict[str, Any]],
+                             activities: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Annotate a plan view without changing persisted plan rows."""
+    matched = [dict(item) for item in sessions]
+    used = {item["linked_activity_id"] for item in matched if item.get("linked_activity_id") is not None}
+    for item in matched:
+        if item.get("status") != "planned" or item["sport"] in ("mobility", "rest"):
+            continue
+        activity = next((row for row in activities if row["id"] not in used and row["date"] == item["date"] and
+                         row["sport"] == item["sport"]), None)
+        if activity is not None:
+            item["status"] = "done"
+            item["linked_activity_id"] = activity["id"]
+            used.add(activity["id"])
+    return matched
+
+
 def get_week(database: Path, user_id: int, start: date) -> dict[str, Any]:
     start = monday(start)
     with _db(database) as connection:
@@ -119,6 +137,12 @@ def get_week(database: Path, user_id: int, start: date) -> dict[str, Any]:
         sessions.extend(_virtual_fixed(connection, user_id, start, sessions))
         sessions.extend(_virtual_protected(connection, user_id, start, sessions))
         sessions.sort(key=lambda item: (item["date"], item["id"] or 0))
+        end = start + timedelta(days=7)
+        activities = [{"id": row["id"], "date": str(row["date"])[:10],
+                       "sport": sport_category(row["type"], start)} for row in connection.execute(
+            "SELECT id,date,type FROM activities WHERE user_id=? AND date>=? AND date<? ORDER BY date,id",
+            (user_id, start.isoformat(), end.isoformat()))]
+        sessions = match_completed_sessions(sessions, activities)
         return {"week_start": start.isoformat(), "version": _version(connection, user_id), "sessions": sessions}
 
 

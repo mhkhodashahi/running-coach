@@ -23,6 +23,7 @@ DAY = date(2026, 10, 26)
 def _decision(*, provisional: bool = False, intensity: str = "hard", rule: str = "hard_allowed"):
     return SimpleNamespace(provisional=provisional, intensity=intensity, rule=rule,
                            based_on="2026-10-23" if provisional else "2026-10-26", readiness=81,
+                           facts=({"id": "WEEKLY_LOAD", "display": "99% of usual"},),
                            sports=({"sport": "running", "session": {"intent": "tempo", "duration_min": 48,
                                     "structure": "10 min easy, 3 x 8 min at 150-165 bpm"}},))
 
@@ -31,7 +32,7 @@ def test_morning_final_and_stale_have_distinct_shapes_and_safe_links():
     final = morning(_decision(), ["Run tempo 48 min"], 0.99, (17, "run on Sun 25 Oct"),
                     public_url="https://coach.example")
     assert final.html.splitlines()[0] == "<b>Hard day — tempo run</b>"
-    assert final.plain.splitlines()[1] == "Readiness 81 · load normal (0.99)"
+    assert final.plain.splitlines()[1] == "Recovery 81 · load 99% of usual"
     assert "Run 48 min:" in final.plain
     assert "rpe:17:10" in str(final.keyboard)
     assert final.keyboard[-1][0]["url"] == "https://coach.example/"
@@ -83,7 +84,7 @@ def test_numeric_reasons_only_use_decision_facts_and_illness_adds_doctor_advice(
     illness = SimpleNamespace(rule="illness_signal", facts=(
         {"id": "RHR_DELTA", "display": "+17 bpm"},
         {"id": "HRV_DELTA", "display": "−35 ms"},
-        {"id": "LOAD_RATIO", "display": "1.32"},
+        {"id": "WEEKLY_LOAD", "display": "132% of usual"},
     ))
     reason = decision_reason(illness)
     assert reason == "resting HR +17 bpm and HRV −35 ms vs your baseline"
@@ -92,11 +93,11 @@ def test_numeric_reasons_only_use_decision_facts_and_illness_adds_doctor_advice(
                             "vs your baseline. If this persists, see a doctor.")
     load = SimpleNamespace(rule="load_ratio_above_1_3", facts=(
         {"id": "TRAINING_SESSIONS_7D", "display": "2 sessions in the last 7 days"},
-        {"id": "LOAD_RATIO", "display": "1.32"},
+        {"id": "WEEKLY_LOAD", "display": "132% of usual"},
     ))
-    assert decision_reason(load) == "load 1.32, above usual"
+    assert decision_reason(load) == "load 132% of usual"
     review = day_review(DAY, ["Run 30 min (extra)"], [], [], [], "easy", decision_reason(load))
-    assert "outlook easy (load 1.32, above usual)" in review.plain
+    assert "outlook easy (load 132% of usual)" in review.plain
 
 
 def test_no_acute_sessions_suppresses_zero_ratio():

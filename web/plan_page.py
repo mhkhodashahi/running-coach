@@ -145,14 +145,15 @@ def _week_view(sessions: list[dict[str, Any]], model: Any, start: date, today: d
             "expected_walking_weekly": breakdown["expected_walking_weekly"], "cap": breakdown["cap"]}
 
 
-def _mobile_rows(days: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _mobile_rows(days: list[dict[str, Any]], usual: float | None = None) -> list[dict[str, Any]]:
     past = [item for item in days if item["past"]]
     rows = []
     if past:
         count = sum(len(item["actuals"]) for item in past)
         loads = [item["actual_load"] for item in past]
         total = round(sum(loads)) if all(value is not None for value in loads) else None
-        load_label = f"{total} TRIMP" if total is not None else "load unavailable"
+        load_label = (f"{total / usual * 100:.0f}% of usual"
+                      if total is not None and usual else "load unavailable")
         rows.append({"kind": "summary", "label": f"{past[0]['label']}–{past[-1]['label']}: "
                      f"{count} session{'s' if count != 1 else ''}, {load_label}"})
     future = [item for item in days if not item["past"]]
@@ -225,9 +226,11 @@ def plan_context(settings: Settings, day: date, *, notice: str | None = None,
                              "week_start": week_start.isoformat()})
         raw_week = {"start": week_start.isoformat(), "label": short_date(week_start),
                       "days": days, "total": breakdown["weekly_total"], "cap": breakdown["cap"],
+                      "usual": model.previous_weekly_average,
                       "actual_total": breakdown["actual_total"], "planned_total": breakdown["planned_total"],
                       "expected_walking": breakdown["expected_walking_weekly"], "week_label": label,
-                      "mobile_rows": _mobile_rows(days),
+                      "weekly_limit_reason": decision.weekly_limit_reason if week_start == monday(day) else None,
+                      "mobile_rows": _mobile_rows(days, model.previous_weekly_average),
                       "bar_percent": min(100, round(breakdown["weekly_total"] / breakdown["cap"] * 100))
                       if breakdown["cap"] and breakdown["weekly_total"] is not None else None,
                       "actual_percent": min(100, round(breakdown["actual_total"] / breakdown["cap"] * 100))
@@ -303,7 +306,7 @@ def preview_changes(settings: Settings, day: date, proposal_id: int,
     actuals, rest_choices = _actuals(settings, day, start)
     projected = _week_view(candidate, model, start, day, actuals, rest_choices)["weekly_total"]
     return {"proposal_id": proposal_id, "selected_count": count,
-            "percent": percentage(projected, model.cap), "sync": sync_label(settings, day)}
+            "percent": percentage(projected, model.previous_weekly_average), "sync": sync_label(settings, day)}
 
 
 def dismiss_proposal(settings: Settings, proposal_id: int) -> None:

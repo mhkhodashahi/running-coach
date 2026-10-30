@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import fcntl
+import os
 import signal
 import sys
 import time
@@ -26,7 +27,7 @@ def acquire_lock(path: Path):
         raise RuntimeError("A Pulse Coach worker is already running") from None
     handle.seek(0)
     handle.truncate()
-    handle.write(str(__import__("os").getpid()))
+    handle.write(str(os.getpid()))
     handle.flush()
     return handle
 
@@ -50,6 +51,7 @@ def main() -> None:
                 tick(settings, datetime.now(ZoneInfo(settings.local_timezone)), telegram)
             except Exception as exc:
                 print("Worker job error: " + telegram.redact(str(exc)), file=sys.stderr)
+            os.utime(settings.db_path.with_suffix(".worker.lock"), None)
             for _ in range(60):
                 if stopped:
                     break

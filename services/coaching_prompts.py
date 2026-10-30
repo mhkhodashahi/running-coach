@@ -70,6 +70,14 @@ ACTIVITY_OPINION_V24_SYSTEM_PROMPT = ACTIVITY_OPINION_V23_SYSTEM_PROMPT.replace(
     "Mention the goal only in recommendations, by its type and distance (for example, your 10K goal). "
     "Never use the goal's stored name. Copy the GOAL fact display when referring to it.")
 
+ACTIVITY_OPINION_V25_SYSTEM_PROMPT = (ACTIVITY_OPINION_V24_SYSTEM_PROMPT
+    .replace("If LOAD_RATIO_STATUS is below or above the safe range, copy its whole display into recovery and explain the training implication without a diagnosis.",
+             "Call readiness Recovery and describe weekly load as a percent of usual. The weekly limit is 110% of usual when a baseline exists. Never mention internal load signals or ratios.")
+    .replace(',{"id":"LOAD_RATIO_STATUS","metric":"Load ratio status","display":"above safe range 0.8–1.3","source":"load ratio"}', "")
+    .replace('The load ratio is above safe range 0.8–1.3; keep the next effort easy.',
+             'Keep the next effort easy if recovery calls for it.')
+    .replace(',"LOAD_RATIO_STATUS"', ""))
+
 
 def _goal_payload(goal: Any | None) -> dict[str, Any]:
     if goal is None:

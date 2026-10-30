@@ -16,6 +16,17 @@ QUESTION_PREFIXES = {"today": "About today: ", "training": "About this week: ",
                      "insights": "About recent recovery: "}
 
 
+def plain_coach_text(value: str) -> str:
+    """Strip model markdown; Jinja still HTML-escapes the returned text."""
+    text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", value)
+    text = re.sub(r"(?m)^\s*[-*+]\s+", "- ", text)
+    text = re.sub(r"\*\*|__|\*|`", "", text)
+    text = re.sub(r"(?<!\w)_(?!\s)|_(?!\w)", "", text)
+    text = " ".join(part for part in re.split(r"(?<=[.!?])\s+", text)
+                    if not re.search(r"\b(?:load ratio|acute:chronic|ratio\s+\d)\b", part, re.IGNORECASE))
+    return text.strip().strip('"“”') or "This earlier answer used a load measure I no longer show."
+
+
 def coach_availability(provider: str, calls: int, limit: int, remote_allowed: bool) -> dict[str, Any]:
     """Describe whether a question can be sent without exposing provider credentials."""
     remote = provider in ("openai", "chatgpt")
@@ -54,10 +65,8 @@ def coach_evidence_chip(fact: dict[str, str]) -> dict[str, str] | None:
     fact_id = fact.get("id") or {
         "readiness": "READINESS", "recovery": "READINESS", "load ratio": "LOAD_RATIO",
     }.get(normalized, "")
-    if fact_id == "LOAD_RATIO_STATUS":
-        value = re.sub(r"0\.8\s*[–-]\s*1\.3", "80–130% of usual", str(fact.get("display") or ""))
-        return None if not fact.get("display") else {
-            "label": "Load status", "value": value, "source": str(fact.get("source") or "")}
+    if fact_id in ("LOAD_RATIO", "LOAD_RATIO_STATUS"):
+        return None
     return format_chip({"id": fact_id, "metric": metric,
                         "display": str(fact.get("display") or ""),
                         "source": str(fact.get("source") or "")})

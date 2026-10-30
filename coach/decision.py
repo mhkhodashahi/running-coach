@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
+from math import floor
 from typing import Literal
 
 from metrics.sports import RECOMMENDABLE_SPORTS
@@ -33,6 +34,10 @@ SKILLS_DURATION_MIN = 30
 SOLO_SPORTS = ("running", "gym")
 TEAM_SPORTS = ("football", "volleyball")
 MAX_HEALTH_AGE_DAYS = 1
+WEEKLY_LIMIT_PCT = 110  # Owner-tuned.
+MIN_QUALITY_SESSION_MIN = 20  # Owner-tuned.
+MIN_EASY_SESSION_MIN = 15
+MIN_TEMPO_REP_MIN = 4
 
 Intensity = Literal["rest", "easy", "hard"]
 
@@ -60,6 +65,70 @@ class RankedSport:
     session: dict[str, str | int | None]
     reason: str
     fact_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class WeeklyFit:
+    session: dict[str, str | int | None] | None
+    reason: str
+
+
+def fit_weekly_session(session: dict[str, str | int | None], remaining_load: float | None,
+                       load_per_min: float | None) -> WeeklyFit:
+    """Fit an optional suggestion without changing any planned or logged session."""
+    if remaining_load is None:
+        return WeeklyFit(session, "baseline still building")
+    if load_per_min is None or load_per_min <= 0:
+        return WeeklyFit(None, "easy: no room in the weekly limit")
+    duration = int(session["duration_min"] or 0)
+    available = max(0, floor((remaining_load + 1e-8) / load_per_min))
+    if duration <= available:
+        return WeeklyFit(session, "within the weekly limit")
+    hard = session.get("intent") in ("tempo", "race", "strength", "team training")
+    minimum = MIN_QUALITY_SESSION_MIN if hard else MIN_EASY_SESSION_MIN
+    if available < minimum:
+        return WeeklyFit(None, "easy: no room in the weekly limit")
+    if session.get("sport") == "running" and session.get("intent") == "tempo":
+        options = sorted(((TEMPO_WARMUP_MIN + reps * work + (reps - 1) * TEMPO_RECOVERY_MIN + TEMPO_COOLDOWN_MIN,
+                           reps, work) for reps in range(1, TEMPO_REPEATS + 1)
+                          for work in range(MIN_TEMPO_REP_MIN, TEMPO_WORK_MIN + 1)), reverse=True)
+        match = next(((minutes, reps, work) for minutes, reps, work in options if minutes <= available), None)
+        if match is None:
+            return WeeklyFit(None, "easy: no room in the weekly limit")
+        minutes, reps, work = match
+        target = str(session.get("tempo_target") or "threshold effort")
+        structure = f"{TEMPO_WARMUP_MIN} min easy, {reps} × {work} min at {target}"
+        if reps > 1:
+            structure += f" with {TEMPO_RECOVERY_MIN} min easy between reps"
+        structure += f", {TEMPO_COOLDOWN_MIN} min easy"
+        return WeeklyFit({**session, "duration_min": minutes, "structure": structure},
+                         "shortened to fit the weekly limit")
+    return WeeklyFit({**session, "duration_min": available,
+                      "structure": (f"strength, full body, {available} min" if session.get("sport") == "gym" and
+                                    hard else session.get("structure"))},
+                     "shortened to fit the weekly limit")
+
+
+def fit_ranked_sports(ranking: tuple[RankedSport, ...], remaining_load: float | None,
+                      rates: dict[str, float | None]) -> tuple[tuple[RankedSport, ...], str]:
+    """Apply the same weekly budget independently to each suggested sport."""
+    if not ranking:
+        return (), "within the weekly limit"
+    first = fit_weekly_session(ranking[0].session, remaining_load, rates.get(ranking[0].sport))
+    if first.session is None:
+        return (), "easy: no room in the weekly limit"
+    fitted = []
+    reasons = []
+    for item in ranking:
+        result = fit_weekly_session(item.session, remaining_load, rates.get(item.sport))
+        if result.session is not None:
+            fitted.append(replace(item, session=result.session))
+        reasons.append(result.reason)
+    fitted = [replace(item, rank=index) for index, item in enumerate(fitted, 1)]
+    if not fitted:
+        return (), "easy: no room in the weekly limit"
+    return tuple(fitted), ("shortened to fit the weekly limit" if
+                           "shortened to fit the weekly limit" in reasons else reasons[0])
 
 
 def is_hard_session(session: PriorSession) -> bool:
@@ -150,7 +219,7 @@ def rank_sports(intensity: Intensity, sessions: tuple[PriorSession, ...], now: d
                        "duration_min": HARD_DURATION_MIN if intensity == "hard" else
                        EASY_LONG_DURATION_MIN if readiness is not None and readiness >= HARD_READINESS else EASY_DURATION_MIN,
                        "hr_cap_bpm": z2_cap_bpm if intensity == "easy" else None,
-                       "structure": structure}
+                       "structure": structure, "tempo_target": target if intensity == "hard" else None}
         elif sport == "gym":
             session = {"sport": sport, "intent": "strength" if intensity == "hard" else "light or upper body",
                        "duration_min": HARD_GYM_DURATION_MIN if intensity == "hard" else

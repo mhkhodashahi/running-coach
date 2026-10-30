@@ -17,7 +17,7 @@ from web.view_models.training import coach_summary, percentage, selected_groups,
 
 
 def test_load_percentage_and_missing_data():
-    assert percentage(55, 110) == 55
+    assert percentage(55, 100) == 55
     assert percentage(None, 110) is None
     assert percentage(55, None) is None
 
@@ -34,7 +34,8 @@ def test_week_states_and_coach_copy():
                             "intent": "tempo", "duration_min": 45, "hr_cap_bpm": 165,
                             "origin": "coach", "status": "planned"}]
     days[2]["empty_label"] = "Rest day"
-    raw = {"start": "2026-10-26", "days": days, "total": 80, "actual_total": 20, "cap": 110}
+    raw = {"start": "2026-10-26", "days": days, "total": 80, "actual_total": 20,
+           "usual": 100, "cap": 110}
     week = week_view(raw, today, "Synced 09:00")
     assert week["done_count"] == 1 and week["session_count"] == 2
     assert week["days"][0]["entries"][0]["rate_id"] == 1
@@ -58,12 +59,12 @@ def test_today_and_training_share_done_and_suggested_day():
     days[1]["actuals"] = [actual]
     suggestion = {"title": "tempo run", "sport": "running", "intent": "tempo", "duration": "45 min"}
     shown = week_view({"start": days[0]["date"], "days": days, "total": 113,
-                       "actual_total": 25, "cap": 110}, today, "Synced 09:00", suggestion)
+                       "actual_total": 25, "usual": 100, "cap": 110}, today, "Synced 09:00", suggestion)
     strip = week_strip(today, [], [actual], recommendation=suggestion)
     assert [(item["title"], item["done"]) for item in shown["days"][1]["entries"]] == [
         (item["title"], item["done"]) for item in strip[1]["entries"]]
     assert shown["hard_count"] == 1
-    assert shown["load_status"] == "Normal"
+    assert shown["load_status"] == "Above usual"
     assert "110% safe limit" in coach_summary(shown)[0]
     assert "suggested" in coach_summary(shown)[0]
     assert all(chip["value"] != "0" for chip in coach_summary(shown)[1])
@@ -75,7 +76,7 @@ def test_training_safe_limit_and_suggestion_are_displayed_separately():
              "actuals": [], "empty_label": "Nothing planned", "estimated_load": 0} for offset in range(7)]
     suggestion = {"title": "tempo run", "sport": "running", "intent": "tempo", "duration": "45 min"}
     at_limit = week_view({"start": start.isoformat(), "days": days, "total": 110,
-                          "actual_total": 0, "cap": 110, "suggested_load": 20},
+                          "actual_total": 0, "usual": 100, "cap": 110, "suggested_load": 20},
                          start, "Synced 09:00", suggestion)
     assert at_limit["total_percent"] == 110
     assert at_limit["with_suggested_percent"] == 130
@@ -94,13 +95,13 @@ def test_skills_only_team_session_is_not_badged_hard():
 
 
 @pytest.mark.parametrize("percent,status", [(79, "Below usual"), (80, "Normal"),
-                                           (130, "Normal"), (131, "Above usual")])
+                                           (110, "Normal"), (111, "Above usual")])
 def test_training_load_status_thresholds(percent, status):
     start = date(2026, 10, 26)
     days = [{"date": date.fromordinal(start.toordinal() + offset).isoformat(), "sessions": [],
              "actuals": [], "empty_label": "Nothing planned", "estimated_load": 0} for offset in range(7)]
     shown = week_view({"start": start.isoformat(), "days": days, "total": percent,
-                       "actual_total": 0, "cap": 110}, start, "Synced 09:00")
+                       "actual_total": 0, "usual": 100, "cap": 110}, start, "Synced 09:00")
     assert shown["load_status"] == status
     if percent > 110:
         assert shown["safe_marker"] < shown["bar_total"]

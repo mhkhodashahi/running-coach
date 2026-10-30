@@ -22,6 +22,8 @@ from services.effort_service import dispatch_effort_prompts, unrated_activities
 from services.fact_display import signed_delta
 from services.import_service import GarminImportService
 from services.telegram_service import TelegramService
+from worker.backup import daily_backup
+from worker.health import health_problems
 from worker.messages import (
     OutboundMessage,
     data_update,
@@ -362,9 +364,23 @@ def tick(settings: Settings, now: datetime, telegram: TelegramService,
                        error=telegram.redact(str(exc)))
             else:
                 finish(settings.db_path, settings.default_user_id, slot, day, local)
+    if clock >= MORNING_START:
+        with sqlite3.connect(settings.db_path) as db:
+            synced_today = db.execute("SELECT 1 FROM job_runs WHERE user_id=? AND run_date=? "
+                                      "AND job LIKE 'sync-%' AND status='done' LIMIT 1",
+                                      (settings.default_user_id, day.isoformat())).fetchone()
+        if synced_today and claim(settings.db_path, settings.default_user_id, "daily_backup", day, local):
+            try:
+                daily_backup(settings.db_path, settings.backup_dir, day, settings.base_dir)
+            except Exception as exc:
+                finish(settings.db_path, settings.default_user_id, "daily_backup", day, local,
+                       error=telegram.redact(str(exc)))
+            else:
+                finish(settings.db_path, settings.default_user_id, "daily_backup", day, local)
     if settings.auto_opinions:
         generate_pending_opinions(settings, day, local)
     if not telegram.configured or pref["paused"] or in_quiet_hours(local, pref["quiet_start"], pref["quiet_end"]):
+        health_problems(settings.db_path, settings.default_user_id, local, settings.local_timezone)
         return results
     if pref["morning_enabled"] and MORNING_START <= clock and (
             health_ready(settings, day) or clock >= pref["morning_latest"]):
@@ -380,4 +396,7 @@ def tick(settings: Settings, now: datetime, telegram: TelegramService,
         results.append(deliver(settings, telegram, "weekly_review", day, local,
                                lambda: weekly_payload(settings, day, use_llm=bool(pref["weekly_llm"]))))
     dispatch_effort_prompts(settings, settings.default_user_id, telegram)
+    for problem in health_problems(settings.db_path, settings.default_user_id, local, settings.local_timezone):
+        results.append(deliver(settings, telegram, f"health-alert-{problem.code}", day, local,
+                               lambda message=problem.text: message))
     return results

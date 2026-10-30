@@ -25,6 +25,8 @@ def context() -> dict:
     zones = [{"zone": f"Z{index} Invented", "percent": value}
              for index, value in enumerate((5.0, 50.0, 35.0, 10.0, 0.0), start=1)]
     return {
+        "usual_week": 100.0,
+        "weekly_load": 72.0,
         "planned_intent": None,
         "recent_median_pace": "6:35",
         "active_goal": {"name": "Invented spring race"},
@@ -118,7 +120,7 @@ def test_build_facts_formats_session_zones_kilometres_and_snapshot():
     assert "doubled per-foot scale" in facts["STREAM_CADENCE_AVG"]["source"]
     assert facts["PARTIAL_LAP_DISTANCE"]["display"] == "3.20 m"
     assert facts["RECENT_MEDIAN_PACE"]["display"] == "6:35 /km"
-    assert facts["READINESS"]["display"] == "72/100"
+    assert facts["READINESS"]["display"] == "72"
     assert facts["HRV_CURRENT"]["display"] == "60 ms"
     assert facts["HRV_BASELINE"]["display"] == "65 ms"
     assert facts["HRV_VS_BASELINE"]["display"] == "-7.7%"
@@ -126,10 +128,11 @@ def test_build_facts_formats_session_zones_kilometres_and_snapshot():
     assert facts["RHR_VS_BASELINE"]["display"] == "-2 bpm"
     assert facts["SLEEP_CURRENT"]["display"] == "7h 30m"
     assert facts["SLEEP_VS_BASELINE"]["display"] == "+0h 30m"
-    assert facts["LOAD_RATIO"]["display"] == "1.16"
-    assert facts["LOAD_RATIO_STATUS"]["display"] == "in safe range 0.8–1.3"
+    assert facts["WEEKLY_LOAD"]["display"] == "72% of usual"
+    assert facts["WEEKLY_LIMIT"]["display"] == "110% of usual"
+    assert "LOAD_RATIO" not in facts
     assert [facts[f"READINESS_{name}_SCORE"]["display"] for name in ("HRV", "RHR", "SLEEP", "LOAD")] == [
-        "60.2/100", "70.4/100", "90.0/100", "80.5/100",
+        "60.2", "70.4", "90.0", "80.5",
     ]
     for zone, lower, upper in (("Z1", "100 bpm", "119 bpm"), ("Z2", "120 bpm", "139 bpm"),
                                ("Z3", "140 bpm", "159 bpm"), ("Z4", "160 bpm", "179 bpm"),
@@ -138,11 +141,12 @@ def test_build_facts_formats_session_zones_kilometres_and_snapshot():
         assert facts[f"ZONE_{zone}_UPPER_BPM"]["display"] == upper
 
 
-@pytest.mark.parametrize("ratio,status", [(0.79, "below"), (0.8, "in"), (1.3, "in"), (1.31, "above")])
-def test_load_status_uses_readiness_safe_range(ratio, status):
+@pytest.mark.parametrize("load,expected", [(0, "0% of usual"), (110, "110% of usual"),
+                                            (125, "125% of usual")])
+def test_weekly_load_facts_use_usual_week(load, expected):
     data = context()
-    data["metrics_snapshot"]["load"]["ratio"]["value"] = ratio
-    assert as_map(build_facts(10, data))["LOAD_RATIO_STATUS"]["display"] == f"{status} safe range 0.8–1.3"
+    data["weekly_load"] = load
+    assert as_map(build_facts(10, data))["WEEKLY_LOAD"]["display"] == expected
 
 
 def test_conservative_start_requires_slower_first_km_and_lower_hr():

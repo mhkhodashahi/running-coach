@@ -87,7 +87,7 @@ def test_compare_sessions_sport_distance_window_and_same_route(coach_db):
     assert candidate["COMPARE_2_HR_DELTA"] == "-5 bpm"
     assert candidate["COMPARE_2_EFFICIENCY"] == "slower at lower HR"
     assert candidate["COMPARE_2_EFFICIENCY_LABEL"] == "similar"
-    assert candidate["ACT_2_READINESS"] == "64/100"
+    assert candidate["ACT_2_READINESS"] == "64"
     assert candidate["ACT_2_TODAY_SLEEP_DURATION"] == "7h 30m"
     assert candidate["ACT_2_HRV_VS_BASELINE"] == "+0.0%"
 
@@ -135,12 +135,13 @@ def test_activity_and_opinion_pack_share_display_values(coach_db):
     opinion = {fact["id"]: fact["display"] for fact in build_facts(1, context)}
     activity = {fact["id"].removeprefix("ACT_1_"): fact["display"]
                 for fact in tool.get_activity(1)["facts"]}
-    for fact_id in ("DISTANCE", "DURATION", "AVG_HR", "AVG_PACE", "READINESS", "LOAD_RATIO",
+    for fact_id in ("DISTANCE", "DURATION", "AVG_HR", "AVG_PACE", "READINESS",
                     "READINESS_HRV_SCORE", "HRV_CURRENT", "HRV_BASELINE", "SLEEP_CURRENT"):
         assert activity[fact_id] == opinion[fact_id]
     daily = {fact["id"]: fact["display"] for fact in tool.get_daily_snapshot(date(2026, 6, 20))["facts"]}
-    for fact_id in ("READINESS", "LOAD_RATIO", "READINESS_HRV_SCORE"):
+    for fact_id in ("READINESS", "READINESS_HRV_SCORE"):
         assert daily[fact_id] == opinion[fact_id]
+    assert "LOAD_RATIO" not in daily and "LOAD_RATIO" not in opinion
     assert daily["TODAY_HRV"] == opinion["HRV_CURRENT"]
     assert daily["TODAY_SLEEP_DURATION"] == opinion["SLEEP_CURRENT"]
 
@@ -176,7 +177,7 @@ def test_today_snapshot_marks_missing_health_and_names_last_sync(coach_db):
     assert facts["FRESHNESS"] == "today's health data missing"
     assert facts["BASED_ON_DATE"] == f"{yesterday:%a} {yesterday.day} {yesterday:%b}"
     assert facts["LAST_SYNC_TIME"] == result["last_sync_time"]
-    assert facts["READINESS"].endswith("/100")
+    assert facts["READINESS"].isdigit()
     if result["load_ratio"] is not None:
         assert "LOAD_RATIO_STATUS" in facts
 

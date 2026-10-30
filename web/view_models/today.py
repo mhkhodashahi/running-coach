@@ -46,7 +46,12 @@ def call_headline(intensity: str, workout: dict[str, Any] | None) -> str:
 def coach_heading(intensity: str, workout: dict[str, Any] | None) -> str:
     if workout and workout.get("planned") and intensity != "rest":
         return f"Why {workout['title'].lower()} is fine today"
-    return "Why rest today" if intensity == "rest" else f"Why a {intensity} day"
+    return "Why rest today" if intensity == "rest" else f"Why {indefinite_article(intensity)} {intensity} day"
+
+
+def indefinite_article(word: str) -> str:
+    """Choose the article for generated intensity headings."""
+    return "an" if word[:1].lower() in "aeiou" else "a"
 
 
 def dial_status(kind: str, value: float | None, usual: float | None) -> tuple[str, str]:
@@ -60,7 +65,7 @@ def dial_status(kind: str, value: float | None, usual: float | None) -> tuple[st
     if kind == "sleep":
         return ("Above usual", "up") if relative > 1.05 else (
             ("Below usual", "down") if relative < 0.95 else ("Normal", "minus"))
-    return ("Above usual", "up") if relative > 1.3 else (
+    return ("Above usual", "up") if relative > 1.1 else (
         ("Below usual", "down") if relative < 0.8 else ("Normal", "minus"))
 
 
@@ -105,20 +110,19 @@ def purpose_line(workout: dict[str, Any] | None, dials: tuple[dict[str, Any], ..
 
 
 def display_decision_text(text: str) -> str:
-    """Change only web wording and units; leave the stored explanation intact."""
+    """Keep historical internal-ratio wording out of the UI without rewriting storage."""
+    text = " ".join(part for part in re.split(r"(?<=[.!?])\s+", text.strip())
+                    if not re.search(r"\b(?:load ratio|acute:chronic|ratio\s+\d)\b", part, re.IGNORECASE))
+    if not text:
+        return "Your coach decision is based on recent recovery and training."
     result = re.sub(r"\b(?:your )?readiness(?:\s+(?:is|of)|\s*:)?\s+(\d+(?:\.\d+)?)/100\b",
                     lambda match: f"{'Recovery' if match.group(0)[0].isupper() else 'recovery'} is {match.group(1)}", text,
                     flags=re.IGNORECASE)
     result = re.sub(r"\breadiness\b", lambda match: "Recovery" if match.group(0)[0].isupper()
                     else "recovery", result, flags=re.IGNORECASE)
-
-    def ratio(match: re.Match[str]) -> str:
-        return f"load is {float(match.group(1)) * 100:.0f}% of usual"
-
-    result = re.sub(r"\b(?:your )?load ratio(?:\s+(?:is|of)|\s*:)?\s+(\d+(?:\.\d+)?)\b", ratio, result,
+    result = re.sub(r"\b(recovery\s+(?:is\s+)?)(\d+(?:\.\d+)?)/100\b", r"\1\2", result,
                     flags=re.IGNORECASE)
-    result = re.sub(r"\bratio\s+(\d+(?:\.\d+)?)\b", ratio, result, flags=re.IGNORECASE)
-    result = re.sub(r"\bload ratio\b", "load", result, flags=re.IGNORECASE)
+
     return result[:1].upper() + result[1:] if text[:1].isupper() else result
 
 
@@ -129,12 +133,8 @@ def format_chip(fact: dict[str, str]) -> dict[str, str] | None:
     fact_id = fact["id"]
     if fact_id == "READINESS":
         return {"label": "Recovery", "value": value.replace("/100", ""), "source": fact["source"]}
-    if fact_id == "LOAD_RATIO":
-        try:
-            value = f"{float(value) * 100:.0f}% of usual"
-        except ValueError:
-            return None
-        return {"label": "Load", "value": value, "source": fact["source"]}
+    if fact_id in ("LOAD_RATIO", "LOAD_RATIO_STATUS"):
+        return None
     if fact_id == "HARD_LAST_48H":
         if value.startswith(("no hard session in last 48 hours", "no hard session in the last 48 hours")):
             value = "none in the last 48 hours"
@@ -178,6 +178,16 @@ def workout_model(decision: Any, sessions: list[dict[str, Any]]) -> dict[str, An
             "planned": False, "duration_min": session.get("duration_min"),
             "duration": display_duration(session["duration_min"]), "structure": session.get("structure") or "",
             "steps": (), "sport": ranked["sport"], "purpose": None}
+
+
+def completed_plan_today(day: date, sessions: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """A completed plan is enough unless another session remains planned today."""
+    relevant = [item for item in sessions if item["date"] == day.isoformat()]
+    if any(item.get("status") == "planned" and item.get("sport") not in ("rest", "mobility")
+           for item in relevant):
+        return None
+    return next((item for item in relevant if item.get("status") == "done"
+                 and item.get("linked_activity_id")), None)
 
 
 def week_day(current: date, today: date, planned: list[dict[str, Any]], logged: list[dict[str, Any]],

@@ -3,7 +3,9 @@
 import os
 import secrets
 from contextlib import asynccontextmanager
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, Form, Request
 from fastapi.responses import RedirectResponse
@@ -14,6 +16,8 @@ from starlette.middleware.sessions import SessionMiddleware
 from config import Settings, get_settings
 from db.setup import require_current_database
 from web.routes.pages import router
+from web.view_models.coach import plain_coach_text
+from worker.health import web_status
 
 WEB_DIR = Path(__file__).resolve().parent
 
@@ -31,7 +35,13 @@ def create_app(settings: Settings | None = None, *, password: str | None = None,
     application.state.settings = settings
     application.state.llm = llm
     application.state.sync_state = {"status": "idle", "message": "No sync started"}
-    application.state.templates = Jinja2Templates(directory=WEB_DIR / "templates")
+    application.state.templates = Jinja2Templates(
+        directory=WEB_DIR / "templates",
+        context_processors=[lambda _request: {"worker_status": web_status(
+            settings.db_path, settings.default_user_id,
+            datetime.now(ZoneInfo(settings.local_timezone)), settings.local_timezone)}],
+    )
+    application.state.templates.env.filters["coach_text"] = plain_coach_text
     application.mount("/static", StaticFiles(directory=WEB_DIR / "static"), name="static")
 
     @application.middleware("http")

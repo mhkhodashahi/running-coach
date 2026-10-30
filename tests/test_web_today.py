@@ -52,8 +52,27 @@ def test_today_shows_decision_recovery_and_controls(client):
     assert response.text.count('class="v2-dial card') == 3
     assert 'aria-current="page"' in response.text
     assert 'hx-post="/today/ask"' in response.text
+    assert "Worker not running" in response.text
     visible = re.sub(r"<[^>]+>", "", response.text).lower()
     assert "readiness" not in visible and "load ratio" not in visible
+
+
+def test_done_today_keeps_why_but_hides_override_buttons(client, monkeypatch):
+    from web.routes import pages
+
+    original = pages._today
+
+    def completed(request):
+        context = original(request)
+        return {**context, "done_today": True, "workout": None,
+                "call_headline": "Done for today"}
+
+    monkeypatch.setattr(pages, "_today", completed)
+    response = client.get("/")
+    assert response.status_code == 200
+    assert "Done for today" in response.text and "Why this?" in response.text
+    assert 'value="easy">Make it easy' not in response.text
+    assert 'value="rest">Rest today' not in response.text
 
 
 def test_today_panel_uses_existing_chat_service(monkeypatch, client):

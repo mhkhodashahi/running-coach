@@ -154,7 +154,7 @@ def opinion_rule_errors(opinion: CoachOpinionV2, context: dict[str, Any]) -> tup
                           *(item.aspect + " " + item.word for item in opinion.verdicts)]).casefold()
     if any(term and term in judgement for term in goal_terms):
         errors.append("long-term goal belongs only in recommendations")
-    if context.get("prompt_version") == "opinion-v2.4":
+    if context.get("prompt_version") in {"opinion-v2.4", "opinion-v2.5"}:
         recommendations = " ".join(item.text for item in opinion.recommendations).casefold()
         stored_name = str(goal.get("name") or "").casefold().strip()
         if stored_name and stored_name in recommendations:
@@ -167,6 +167,13 @@ def opinion_rule_errors(opinion: CoachOpinionV2, context: dict[str, Any]) -> tup
                 goal_fact = f"your {float(goal_distance):g}K goal"
             if goal_fact and goal_fact.casefold() not in recommendations:
                 errors.append("goal reference must use its type and distance")
+    if context.get("prompt_version") == "opinion-v2.5":
+        text = " ".join((opinion.headline, opinion.conclusion, opinion.assessment,
+                         *(item.lead + " " + item.detail for item in (*opinion.worked, *opinion.fix)),
+                         *opinion.sections.model_dump().values(),
+                         *(item.text for item in opinion.recommendations)))
+        if re.search(r"\b(?:load ratio|acute\s*:\s*chronic)\b", text, re.I):
+            errors.append("describe load as a percent of usual, not an internal ratio")
     if isinstance(opinion, CoachOpinionV23):
         facts = {fact["id"]: fact["display"] for fact in context.get("facts_pack") or []}
         if laps.get("available") or stream.get("available"):

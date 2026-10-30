@@ -54,12 +54,14 @@ def worker_db(tmp_path):
     with sqlite3.connect(database) as db:
         db.execute("INSERT INTO users(id,name,age,gender,weight,height,max_hr,marathon_goal_time) "
                    "VALUES(1,'Invented',30,'other',70,170,190,'04:00:00')")
+        db.execute("INSERT INTO garmin_sync_status(user_id,last_synced_at) VALUES(1,'2026-10-26T06:00:00+01:00')")
     return database
 
 
 def _settings(database):
     return replace(get_settings(), db_path=database, default_user_id=1,
-                   telegram_bot_token="secret", telegram_chat_id="1", llm_provider="none")
+                   telegram_bot_token="secret", telegram_chat_id="1", llm_provider="none",
+                   backup_dir=database.parent / "pulse-backups")
 
 
 def _clock(hour, minute=0):
@@ -106,12 +108,12 @@ def test_late_health_data_sends_only_changed_intensity_once(worker_db, monkeypat
         db.execute("INSERT INTO health_metrics(user_id,date,sleep_duration,hrv) VALUES(1,'2026-10-26',8,60)")
     monkeypatch.setattr(jobs, "_decision", lambda *_args: SimpleNamespace(
         intensity=new_intensity, headline=f"{new_intensity.title()} today.", rule="hard_allowed",
-        facts=({"id": "LOAD_RATIO", "display": "0.99"},)))
+        facts=({"id": "WEEKLY_LOAD", "display": "99% of usual"},)))
     jobs.tick(settings, _clock(11, 30), telegram, sync_job=lambda: None)
     jobs.tick(settings, _clock(11, 31), telegram, sync_job=lambda: None)
     assert len(telegram.messages) == 1 + expected_updates
     if expected_updates:
-        assert telegram.messages[-1] == f"<b>Data is in. {new_intensity.title()} today: load 0.99, normal.</b>"
+        assert telegram.messages[-1] == f"<b>Data is in.</b> {new_intensity.title()} today: load 99% of usual."
     assert len([row for row in history(worker_db, 1) if row["job"] == "morning_update"]) == 1
 
 
