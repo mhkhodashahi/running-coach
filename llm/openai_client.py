@@ -16,6 +16,7 @@ from llm.schemas import (
     OpinionDraftV23,
     OpinionDraftV26,
 )
+from llm.usage import record_openai_call
 
 
 class OpenAIClient(LLMClient):
@@ -26,6 +27,26 @@ class OpenAIClient(LLMClient):
 
         self.client = OpenAI(api_key=api_key)
         self.model = model
+
+    def _request(self, kind: str, request: Any, settings: Any) -> Any:
+        """Account for each provider request, including requests that raise."""
+        try:
+            response = request()
+        except Exception:
+            self._record_usage(None, kind, settings)
+            raise
+        self._record_usage(response, kind, settings)
+        return response
+
+    def _record_usage(self, response: Any | None, kind: str, settings: Any) -> None:
+        db_path = getattr(settings, "db_path", None)
+        if db_path is not None:
+            record_openai_call(
+                db_path, response, kind, self.model,
+                getattr(settings, "openai_input_usd_per_1m", None),
+                getattr(settings, "openai_cached_input_usd_per_1m", None),
+                getattr(settings, "openai_output_usd_per_1m", None),
+            )
 
     def generate_json(
         self,
@@ -42,13 +63,10 @@ class OpenAIClient(LLMClient):
         if response_schema is not None:
             try:
                 output_schema = OpenAICoachOpinionV2 if response_schema is CoachOpinionV2 else response_schema
-                response = self.client.responses.parse(
-                    model=self.model,
-                    instructions=system_prompt,
-                    input=user_prompt,
-                    text_format=output_schema,
-                    store=False,
-                )
+                response = self._request("structured", lambda: self.client.responses.parse(
+                    model=self.model, instructions=system_prompt, input=user_prompt,
+                    text_format=output_schema, store=False,
+                ), settings)
                 if response.output_parsed is None:
                     raise ValueError("Structured model response was empty")
                 return response.output_parsed.model_dump()
@@ -57,13 +75,13 @@ class OpenAIClient(LLMClient):
                                        OpinionDraftV26):
                     raise
 
-        response = self.client.responses.create(
+        response = self._request("json", lambda: self.client.responses.create(
             model=self.model,
             instructions=system_prompt,
             input=f"Return only JSON.\n\n{user_prompt}",
             text={"format": {"type": "json_object"}},
             store=False,
-        )
+        ), settings)
         text = response.output_text
         payload = extract_json(text)
         if payload:
@@ -89,11 +107,11 @@ class OpenAIClient(LLMClient):
                 input_items.append({"role": item["role"], "content": item["content"]})
             else:
                 input_items.append({"role": "user", "content": item["content"]})
-        response = self.client.responses.create(
+        response = self._request("chat", lambda: self.client.responses.create(
             model=self.model, instructions=system_prompt, input=input_items, store=False,
             parallel_tool_calls=False,
             tools=[{"type": "function", **spec} for spec in tool_specs],
-        )
+        ), settings)
         calls = []
         for item in response.output:
             if item.type == "function_call":

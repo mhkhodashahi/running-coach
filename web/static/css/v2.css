@@ -320,6 +320,13 @@
 }
 @media(prefers-reduced-motion:reduce){.v2 *, .v2 *::before, .v2 *::after{scroll-behavior:auto!important;animation-duration:.01ms!important;transition-duration:.01ms!important}}
 
+/* Keep the clicked control's dimensions while an HTMX request is in flight. */
+.v2 .is-htmx-loading{position:relative;pointer-events:none;color:transparent!important}
+.v2 .is-htmx-loading>*{visibility:hidden}
+.v2 .is-htmx-loading::after{content:"";position:absolute;top:50%;left:50%;width:18px;height:18px;border:2px solid var(--ink);border-right-color:transparent;border-radius:50%;transform:translate(-50%,-50%);animation:v2-htmx-spin .7s linear infinite}
+.v2 :is(.button-primary,.v2-chat-send,.v2-apply,.v2-activity-primary).is-htmx-loading::after{border-color:var(--on-volt);border-right-color:transparent}
+@keyframes v2-htmx-spin{to{transform:translate(-50%,-50%) rotate(360deg)}}
+
 .v2-worker-status{display:flex;align-items:flex-start;gap:5px;padding:0 12px;overflow-wrap:anywhere}
 .v2-worker-status svg,.v2-today-status svg{width:15px;height:15px;flex:none}
 .v2-today-status{display:flex;align-items:flex-start;gap:6px;margin:0 0 14px;overflow-wrap:anywhere}

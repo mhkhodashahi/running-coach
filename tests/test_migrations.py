@@ -19,7 +19,7 @@ from db.repository import get_or_create_default_goal, get_or_create_default_user
 from scripts.backup_db import backup_database
 
 SCHEMA = Path(__file__).parents[1] / "db/migrations/baseline.sql"
-HEAD = "0011_worker_jobs"
+HEAD = "0012_openai_usage"
 PLAN_TABLES = ("fixed_commitments", "plan_sessions", "plan_versions", "plan_snapshots",
                "coach_proposals", "proposal_changes")
 
@@ -36,7 +36,7 @@ def snapshot(database):
             "activity_coaching_opinion_history", "coach_chat_turns", "coach_llm_calls",
             *PLAN_TABLES, "protected_habits", "plan_mobility_sessions",
             "activity_efforts", "activity_effort_prompts",
-            "job_runs", "notification_settings",
+            "job_runs", "notification_settings", "openai_api_calls",
         }]
         counts = {table: connection.execute(f'SELECT count(*) FROM "{table}"').fetchone()[0] for table in old_tables}
         payloads = {}
@@ -117,7 +117,7 @@ def test_fresh_upgrade_and_default_user(tmp_path):
     database = tmp_path / "fresh.db"
     assert upgrade_database(database) is None
     with closing(sqlite3.connect(database)) as connection:
-        assert len(tables(connection)) == 30
+        assert len(tables(connection)) == 31
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (HEAD,)
         columns = {row[1]: row for row in connection.execute("PRAGMA table_info(activity_coaching_insights)")}
         for name in ("schema_version", "prompt_version"):
@@ -127,6 +127,7 @@ def test_fresh_upgrade_and_default_user(tmp_path):
         assert "activity_coaching_opinion_history" in tables(connection)
         assert "coach_chat_turns" in tables(connection)
         assert "coach_llm_calls" in tables(connection)
+        assert "openai_api_calls" in tables(connection)
         for name in PLAN_TABLES:
             assert name in tables(connection)
         assert "protected_habits" in tables(connection)
@@ -184,6 +185,7 @@ def test_existing_upgrade_preserves_data_and_body_tables(legacy_copy):
         assert connection.execute("SELECT count(*) FROM activity_coaching_opinion_history").fetchone() == (0,)
         assert connection.execute("SELECT count(*) FROM coach_chat_turns").fetchone() == (0,)
         assert connection.execute("SELECT count(*) FROM coach_llm_calls").fetchone() == (0,)
+        assert connection.execute("SELECT count(*) FROM openai_api_calls").fetchone() == (0,)
         for name in PLAN_TABLES:
             assert connection.execute(f"SELECT count(*) FROM {name}").fetchone() == (0,)
         assert connection.execute("SELECT count(*) FROM protected_habits").fetchone() == (0,)
@@ -328,7 +330,7 @@ def test_missing_tables_are_created_without_adding_body_tables(tmp_path):
         connection.execute("CREATE TABLE users(id INTEGER PRIMARY KEY, age INTEGER, gender VARCHAR(20), weight FLOAT, height FLOAT, max_hr INTEGER)")
     upgrade_database(database)
     with closing(sqlite3.connect(database)) as connection:
-        assert len(tables(connection)) == 28
+        assert len(tables(connection)) == 29
         assert "prediction_snapshots" in tables(connection)
         assert "garmin_sync_status" in tables(connection)
 

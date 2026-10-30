@@ -1,6 +1,53 @@
 let coachOpener = null;
 const proposalOpeners = new Map();
 const focusableSelector = 'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),summary,[tabindex]:not([tabindex="-1"])';
+const htmxSubmitters = new WeakMap();
+const htmxLoading = new WeakMap();
+
+// A form owns the HTMX request, but its clicked submitter is the control users watch.
+document.addEventListener('submit', function (event) {
+  const form = event.target;
+  if (!form.matches('form[hx-post],form[hx-get],form[hx-put],form[hx-delete],form[hx-patch]')) return;
+  if (htmxLoading.has(form)) {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    return;
+  }
+  htmxSubmitters.set(form, event.submitter || form.querySelector('button[type="submit"],input[type="submit"],button:not([type])'));
+}, true);
+
+document.addEventListener('click', function (event) {
+  if (event.target.closest('.is-htmx-loading')) {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+  }
+}, true);
+
+document.addEventListener('htmx:beforeRequest', function (event) {
+  const source = event.detail.elt;
+  if (!source || htmxLoading.has(source)) return;
+  const control = source.matches('form') ? htmxSubmitters.get(source) : source;
+  if (!control || !control.matches('button,a,input[type="submit"]')) return;
+  htmxLoading.set(source, control);
+  control.classList.add('is-htmx-loading');
+  control.setAttribute('aria-busy', 'true');
+  if (control.matches('a')) control.setAttribute('aria-disabled', 'true');
+});
+
+function clearHtmxLoading(event) {
+  const source = event.detail.elt;
+  const control = source && htmxLoading.get(source);
+  if (!control) return;
+  control.classList.remove('is-htmx-loading');
+  control.removeAttribute('aria-busy');
+  if (control.matches('a')) control.removeAttribute('aria-disabled');
+  htmxLoading.delete(source);
+  htmxSubmitters.delete(source);
+}
+
+['htmx:afterRequest', 'htmx:sendError', 'htmx:timeout'].forEach(function (name) {
+  document.addEventListener(name, clearHtmxLoading);
+});
 
 function scrollCoachToNewest() {
   const thread = document.querySelector('#coach-thread');

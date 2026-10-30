@@ -262,6 +262,27 @@ class CoachLLMCall(Base):
     user: Mapped[User] = relationship(back_populates="coach_llm_calls")
 
 
+class OpenAIAPICall(Base):
+    """Provider usage ledger; no athlete content or API credentials."""
+
+    __tablename__ = "openai_api_calls"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    response_id: Mapped[str | None] = mapped_column(String(128))
+    request_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    model: Mapped[str] = mapped_column(String(128), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    input_tokens: Mapped[int | None] = mapped_column(Integer)
+    cached_input_tokens: Mapped[int | None] = mapped_column(Integer)
+    output_tokens: Mapped[int | None] = mapped_column(Integer)
+    total_tokens: Mapped[int | None] = mapped_column(Integer)
+    estimated_cost_usd: Mapped[str | None] = mapped_column(String(32))
+    input_rate_usd_per_1m: Mapped[str | None] = mapped_column(String(32))
+    cached_input_rate_usd_per_1m: Mapped[str | None] = mapped_column(String(32))
+    output_rate_usd_per_1m: Mapped[str | None] = mapped_column(String(32))
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
+
+
 class ActivityCoachingInsight(Base):
     """Stored LLM coach opinion for one activity."""
 

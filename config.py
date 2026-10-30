@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass
+from decimal import Decimal
 from functools import lru_cache
 from pathlib import Path
 
@@ -68,6 +69,9 @@ class Settings:
     auto_opinions: bool = False
     public_url: str = ""
     backup_dir: Path = Path.home() / "pulse-backups"
+    openai_input_usd_per_1m: Decimal | None = None
+    openai_cached_input_usd_per_1m: Decimal | None = None
+    openai_output_usd_per_1m: Decimal | None = None
 
     @property
     def db_url(self) -> str:
@@ -123,7 +127,20 @@ def get_settings() -> Settings:
         auto_opinions=os.getenv("AUTO_OPINIONS", "").lower() == "true",
         public_url=os.getenv("PUBLIC_URL", "").strip().rstrip("/"),
         backup_dir=Path(os.getenv("BACKUP_DIR", "").strip() or str(Path.home() / "pulse-backups")).expanduser(),
+        openai_input_usd_per_1m=_optional_price("OPENAI_INPUT_USD_PER_1M"),
+        openai_cached_input_usd_per_1m=_optional_price("OPENAI_CACHED_INPUT_USD_PER_1M"),
+        openai_output_usd_per_1m=_optional_price("OPENAI_OUTPUT_USD_PER_1M"),
     )
+
+
+def _optional_price(name: str) -> Decimal | None:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return None
+    price = Decimal(raw)
+    if not price.is_finite() or price < 0:
+        raise ValueError(f"{name} must be a non-negative finite USD price per million tokens")
+    return price
 
 
 def _coach_call_limit(raw: str) -> int:
