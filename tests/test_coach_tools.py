@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 import pytest
 from sqlalchemy import create_engine
 
+from coach.agent import _tool_specs
 from coach.tools import CoachTools, comparison_efficiency
 from db.models import Base
 from services.activity_coaching_service import _opinion_metrics_snapshot
@@ -52,6 +53,49 @@ def coach_db(tmp_path):
 
 def tools(coach_db, user_id=1):
     return CoachTools(coach_db, user_id, "Europe/Berlin", 7.5)
+
+
+def test_chat_exposes_bounded_user_scoped_goals(coach_db):
+    with sqlite3.connect(coach_db) as connection:
+        connection.executemany(
+            "INSERT INTO goals(user_id,name,goal_type,target_distance_km,target_time_minutes,"
+            "priority,status,is_active,notes,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            [(1, "Private goal name", "running", 10, 55, "A", "active", 1, "private note",
+              "2026-06-01", "2026-06-01"),
+             (2, "Other user's goal", "running", 5, 25, "A", "active", 1, "other private note",
+              "2026-06-01", "2026-06-01")],
+        )
+    before = coach_db.read_bytes()
+    result = tools(coach_db).call("get_goals", {})
+    assert len(result["goals"]) == 1
+    assert result["goals"][0]["target_distance_km"] == 10
+    assert "Private goal name" not in json.dumps(result)
+    assert "private note" not in json.dumps(result)
+    assert "Other user's goal" not in json.dumps(result)
+    assert {fact["metric"] for fact in result["facts"]} >= {"Goal type", "Target distance", "Target time"}
+    assert coach_db.read_bytes() == before
+
+
+def test_chat_exposes_only_own_recent_effort_ratings(coach_db):
+    with sqlite3.connect(coach_db) as connection:
+        connection.executemany(
+            "INSERT INTO activity_efforts(activity_id,rpe,rated_at,source,note) VALUES(?,?,?,?,?)",
+            [(1, 7, "2026-06-20", "web", "private effort note"),
+             (3, 9, "2026-06-18", "web", "other user's note")],
+        )
+    before = coach_db.read_bytes()
+    result = tools(coach_db).call("get_recent_efforts", {})
+    assert result["efforts"] == [{"activity_id": 1, "date": "2026-06-20", "sport": "running", "rpe": 7}]
+    assert result["facts"][0]["display"] == "7/10"
+    assert "note" not in json.dumps(result)
+    assert coach_db.read_bytes() == before
+
+
+def test_new_read_only_tools_are_available_to_the_chat_model():
+    specs = {item["name"]: item for item in _tool_specs()}
+    for name in ("get_goals", "get_recent_efforts"):
+        assert specs[name]["parameters"] == {"type": "object", "properties": {},
+                                              "required": [], "additionalProperties": False}
 
 
 def test_daily_snapshot_is_dated_and_read_only(coach_db):

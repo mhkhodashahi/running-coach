@@ -42,6 +42,7 @@ SYSTEM_PROMPT = (
     "Use dates as 'Wed 23 Sep' and times as '06:36', never ISO dates or seconds. "
     "For activity questions, use that activity's date and do not mention current sync or freshness. "
     "For recovery trends, call get_trends unless trend facts are already supplied. "
+    "For questions about goals or recent perceived effort, call get_goals or get_recent_efforts. "
     "Only when asked about today, if today's health is missing, answer from the latest available day "
     "and say 'based on Fri 23 Oct' using the supplied date fact. Never refuse solely because today is missing. "
     "Reply JSON: answer, evidence_ids, activity_ids, follow_ups (2-3 short, answerable questions). "
@@ -77,6 +78,8 @@ def _tool_specs() -> list[dict[str, Any]]:
                             "sport": {"type": ["string", "null"]}},
         "get_opinion": {"activity_id": {"type": "integer"}},
         "plan_week": {"start_date": {"type": "string"}},
+        "get_goals": {},
+        "get_recent_efforts": {},
     }
     return [{"name": name, "description": f"Read-only {name} for this athlete",
              "parameters": {"type": "object", "properties": properties,

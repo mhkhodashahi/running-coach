@@ -40,7 +40,7 @@ MAX_LIST = 30
 MAX_TEXT = 500
 MAX_OUTPUT_CHARS = 16000
 TOOL_NAMES = ("get_daily_snapshot", "get_trends", "get_activity", "compare_sessions", "list_activities",
-              "get_opinion", "plan_week")
+              "get_opinion", "plan_week", "get_goals", "get_recent_efforts")
 
 
 @contextmanager
@@ -493,6 +493,51 @@ class CoachTools:
                           "duration_min": session["duration_min"], "fixed": session["origin"] == "fixed"})
         return _bounded({"week_start": start_date.isoformat(), "sessions": items, "facts": facts})
 
+    def get_goals(self) -> dict[str, Any]:
+        """Expose only the current athlete's goal fields, never profile or private notes."""
+        with _readonly(self.database) as connection:
+            rows = connection.execute(
+                "SELECT id, goal_type, target_distance_km, target_time_minutes, target_date, "
+                "priority, status, is_active FROM goals WHERE user_id=? "
+                "ORDER BY is_active DESC, target_date, id LIMIT 10", (self.user_id,),
+            ).fetchall()
+        goals: list[dict[str, Any]] = []
+        facts: list[Fact] = []
+        for row in rows:
+            goal = dict(row)
+            goals.append(goal)
+            prefix = f"GOAL_{row['id']}"
+            facts.extend((
+                _fact(f"{prefix}_TYPE", "Goal type", row["goal_type"], "goals.goal_type"),
+                _fact(f"{prefix}_DISTANCE", "Target distance", f"{row['target_distance_km']:g} km",
+                      "goals.target_distance_km"),
+                _fact(f"{prefix}_TIME", "Target time", f"{row['target_time_minutes']:g} min",
+                      "goals.target_time_minutes"),
+            ))
+            if row["target_date"]:
+                facts.append(_fact(f"{prefix}_DATE", "Target date", short_date(row["target_date"]),
+                                   "goals.target_date"))
+        return _bounded({"goals": goals, "facts": facts})
+
+    def get_recent_efforts(self) -> dict[str, Any]:
+        """Return bounded ratings for this athlete's latest rated sessions."""
+        with _readonly(self.database) as connection:
+            rows = connection.execute(
+                "SELECT a.id, a.date, a.type, e.rpe FROM activity_efforts e "
+                "JOIN activities a ON a.id=e.activity_id WHERE a.user_id=? "
+                "ORDER BY a.date DESC, a.id DESC LIMIT 20", (self.user_id,),
+            ).fetchall()
+        efforts: list[dict[str, Any]] = []
+        facts: list[Fact] = []
+        for row in rows:
+            category = sport_category(row["type"], date.fromisoformat(row["date"]))
+            efforts.append({"activity_id": row["id"], "date": row["date"],
+                            "sport": category, "rpe": row["rpe"]})
+            facts.append(_fact(f"EFFORT_{row['id']}_RPE", f"{category.title()} effort on "
+                               f"{short_date(row['date'])}", f"{row['rpe']}/10",
+                               "activity_efforts.rpe"))
+        return _bounded({"efforts": efforts, "facts": facts})
+
     def call(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         if name not in TOOL_NAMES:
             raise ValueError("Unknown coach tool")
@@ -504,5 +549,7 @@ class CoachTools:
             return getattr(self, name)(int(arguments["activity_id"]))
         if name == "plan_week":
             return self.plan_week(date.fromisoformat(arguments["start_date"]))
+        if name in {"get_goals", "get_recent_efforts"}:
+            return getattr(self, name)()
         return self.list_activities(date.fromisoformat(arguments["start_date"]),
                                     date.fromisoformat(arguments["end_date"]), arguments.get("sport"))
