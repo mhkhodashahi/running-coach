@@ -1,0 +1,25 @@
+{% from 'components/v2_icons.html' import icon %}
+<section id="coach-conversation" class="v2-chat-conversation" aria-label="Conversation">
+  {% include 'components/coach_thread.html' %}
+  <div class="v2-chat-bottom">
+    <a class="chip v2-chat-context" href="{{ selected_context.href }}">{{ selected_context.label }}</a>
+    <div class="v2-chat-quick" aria-label="Quick questions">{% for prompt in quick_questions %}
+      <form method="post" action="/coach/ask" hx-post="/coach/ask" hx-target="#coach-conversation" hx-swap="outerHTML">
+        <input type="hidden" name="question" value="{{ prompt }}"><input type="hidden" name="context" value="{{ context_kind }}">
+        {% if attached_id %}<input type="hidden" name="activity_id" value="{{ attached_id }}">{% endif %}
+        <button class="btn" type="submit" {% if availability.disabled %}disabled{% endif %}>{{ prompt }}</button></form>
+    {% endfor %}</div>
+    {% if availability.disabled %}<p class="v2-chat-disabled" role="status">{{ availability.reason }}</p>{% endif %}
+    <form class="v2-chat-composer" method="post" action="/coach/ask" hx-post="/coach/ask" hx-target="#coach-conversation" hx-swap="outerHTML" hx-indicator="#coach-loading">
+      <label class="v2-sr-only" for="coach-question">Ask the coach</label>
+      <details class="v2-chat-attach"><summary class="btn" aria-label="Attach a session" title="Attach a session">{{ icon('plus') }}</summary>
+        <label for="session-picker">Attach a session</label><select id="session-picker" name="activity_id" {% if availability.disabled %}disabled{% endif %}>
+          <option value="">No session</option>{% for item in sessions %}<option value="{{ item.id }}" {% if attached_id == item.id %}selected{% endif %}>{{ item.date }} · {{ item.label }}</option>{% endfor %}
+        </select></details>
+      <input type="hidden" name="context" value="{{ context_kind }}">
+      <input id="coach-question" name="question" maxlength="500" required placeholder="Ask anything" {% if availability.disabled %}disabled{% endif %}>
+      <button class="v2-chat-send" type="submit" aria-label="Send question" {% if availability.disabled %}disabled{% endif %}>{{ icon('arrow') }}</button>
+      <span id="coach-loading" class="htmx-indicator v2-sr-only" role="status">Thinking…</span>
+    </form>
+  </div>
+</section>

@@ -1,0 +1,8 @@
+{% from 'components/ui.html' import rpe_buttons %}
+<div id="rating-prompt" class="card rating-card">
+{% if unrated %}<form method="post" action="/today/rate" hx-post="/today/rate" hx-target="#rating-prompt" hx-swap="outerHTML">
+  <input type="hidden" name="activity_id" value="{{ unrated.id }}">
+  <div><strong>Rate your last session</strong><span class="subtle">{{ unrated.sport }} · {{ unrated.date }}</span></div>
+  {{ rpe_buttons() }}
+</form>{% else %}<span class="subtle">All recent sessions rated.</span>{% endif %}
+</div>

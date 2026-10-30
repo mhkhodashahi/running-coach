@@ -1,0 +1,25 @@
+{% from 'components/v2_icons.html' import icon %}
+{% if proposal.stale %}
+{% set stale_extra_class = 'v2-stale-desktop' %}{% include 'components/v2_stale_row.html' %}
+{% else %}
+<section class="v2-proposal-wrap" id="proposal-{{ proposal.id }}">
+  <div class="v2-proposal-overlay" data-close-proposal="{{ proposal.id }}"></div>
+  <article id="proposal-review-{{ proposal.id }}" class="v2-proposal card{% if proposal.stale %} is-stale{% endif %}" role="dialog" aria-modal="false" aria-labelledby="proposal-heading-{{ proposal.id }}">
+    <div class="v2-proposal-grip" aria-hidden="true"></div><div class="eyebrow">Coach suggestions · {{ 'next week' if week.start != weeks[0].start else 'this week' }}</div>
+    <div class="v2-proposal-heading"><h2 id="proposal-heading-{{ proposal.id }}" class="num" tabindex="-1">{{ proposal.summary }}</h2><button type="button" class="v2-proposal-close" data-close-proposal="{{ proposal.id }}" aria-label="Close review">{{ icon('close') }}</button></div>
+    {% if proposal.status == 'pending' %}
+      <div class="v2-proposal-load" aria-label="Load now and if applied">
+        <span class="cap">Now</span><span class="v2-proposal-track"><span style="width:{{ [proposal.now_percent or 0,100]|min }}%"></span></span><strong class="num">{{ proposal.now_percent|string + '%' if proposal.now_percent is not none else 'No data' }}</strong>
+        <span class="cap">If applied</span><span class="v2-proposal-track"><span class="is-applied" style="width:{{ [proposal.applied_percent or 0,100]|min }}%"></span></span><strong id="proposal-applied-{{ proposal.id }}" class="num">{{ proposal.applied_percent|string + '%' if proposal.applied_percent is not none else 'No data' }}</strong>
+      </div><p class="cap">of your usual week · safe up to 110%{% if proposal.applied_percent is none %} · {{ sync }}{% endif %}</p>
+      <form method="post" action="/plan/proposals/{{ proposal.id }}/apply" hx-post="/plan/proposals/{{ proposal.id }}/apply" hx-target="#v2-training-content" hx-select="#v2-training-content" hx-swap="outerHTML" class="v2-proposal-form">
+        <div class="v2-proposal-changes">{% for change in proposal.change_rows %}<label class="v2-proposal-change"><input type="checkbox" name="change_ids" value="{{ change.id }}" data-group="{{ change.group_id or change.id }}" checked><span><strong>{{ change.title }}</strong><small class="cap">{{ change.reason }}</small></span><span class="cap">{{ ('%+d load'|format(change.delta)) if change.delta is not none else 'No data' }}</span></label>{% endfor %}</div>
+        <div id="proposal-feedback-{{ proposal.id }}" class="cap" role="status"></div>
+        <div class="v2-proposal-actions"><button class="btn {% if proposal.id == primary_proposal_id %}v2-apply{% else %}v2-apply-secondary{% endif %}" type="submit">Apply {{ proposal.selected_count }} {{ 'change' if proposal.selected_count == 1 else 'changes' }}</button><span class="cap v2-undo-hint">You can undo this later.</span><button class="btn v2-not-now" type="button" data-close-proposal="{{ proposal.id }}">Not now</button></div>
+      </form>
+      <details class="v2-proposal-revise"><summary>Ask for changes</summary><form method="post" action="/plan/proposals/{{ proposal.id }}/revise"><label for="revision-{{ proposal.id }}">What should change?</label><textarea id="revision-{{ proposal.id }}" name="revision" maxlength="500" required></textarea><button class="btn" type="submit">Request revision</button></form></details>
+      <details class="v2-proposal-dismiss"><summary>Dismiss proposal</summary><p class="cap">This removes the suggestion. Not now only closes this review.</p><form method="post" action="/plan/proposals/{{ proposal.id }}/dismiss"><button class="v2-text-button" type="submit">Confirm dismiss</button></form></details>
+    {% endif %}
+  </article>
+</section>
+{% endif %}

@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import time
+from html import escape
+
 import requests
 
 from config import Settings
+from worker.messages import public_link
 
 
 class TelegramService:
@@ -20,6 +24,63 @@ class TelegramService:
     def default_recipient(self) -> str:
         return self.settings.telegram_chat_id
 
+    def redact(self, value: str) -> str:
+        token = self.settings.telegram_bot_token
+        return value.replace(token, "[redacted bot token]") if token else value
+
+    def _request(self, method: str, endpoint: str, **kwargs) -> dict:
+        url = f"https://api.telegram.org/bot{self.settings.telegram_bot_token}/{endpoint}"
+        for attempt in range(3):
+            try:
+                response = requests.post(url, **kwargs) if method == "POST" else requests.get(url, **kwargs)
+                if getattr(response, "status_code", None) == 429 and attempt < 2:
+                    delay = getattr(response, "headers", {}).get("Retry-After", 2 ** attempt)
+                    time.sleep(min(30, max(1, int(delay))))
+                    continue
+                if getattr(response, "status_code", None) == 400:
+                    detail = response.json().get("description", "Telegram rejected the request")
+                    raise RuntimeError(self.redact(str(detail)))
+                response.raise_for_status()
+                payload = response.json()
+                break
+            except Exception as exc:
+                raise RuntimeError(self.redact(str(exc))) from None
+        if not payload.get("ok"):
+            raise RuntimeError(self.redact(str(payload)))
+        return payload
+
+    def send_proposal_prompt(self, text: str, proposal_id: int) -> None:
+        if not self.configured:
+            raise ValueError("Telegram settings are incomplete.")
+        buttons = [[{"text": "Apply all", "callback_data": f"proposal:{proposal_id}:apply"},
+                    {"text": "Dismiss", "callback_data": f"proposal:{proposal_id}:dismiss"}]]
+        link = public_link(self.settings.public_url, "/plan")
+        if link:
+            buttons.append([{"text": "Review in app", "url": link}])
+        self._request("POST", "sendMessage", json={"chat_id": self.settings.telegram_chat_id,
+                      "text": escape(text), "parse_mode": "HTML",
+                      "reply_markup": {"inline_keyboard": buttons}}, timeout=30)
+
+    def send_message(self, html: str, keyboard: tuple[tuple[dict[str, str], ...], ...] = (),
+                     plain: str | None = None) -> str:
+        """Send escaped, formatted worker text and its inline actions."""
+        if not self.configured:
+            raise ValueError("Telegram settings are incomplete.")
+        payload: dict = {"chat_id": self.settings.telegram_chat_id, "text": html,
+                         "parse_mode": "HTML", "disable_web_page_preview": True}
+        if keyboard:
+            payload["reply_markup"] = {"inline_keyboard": [list(row) for row in keyboard]}
+        try:
+            self._request("POST", "sendMessage", json=payload, timeout=30)
+        except RuntimeError as exc:
+            if plain is None or "parse entities" not in str(exc).lower():
+                raise
+            payload.pop("parse_mode")
+            payload["text"] = plain
+            self._request("POST", "sendMessage", json=payload, timeout=30)
+            return "plain"
+        return "html"
+
     def send(self, title: str, body: str, recipient: str | None = None) -> tuple[str, str]:
         chat_id = (recipient or self.settings.telegram_chat_id).strip()
         if not chat_id:
@@ -28,19 +89,11 @@ class TelegramService:
             raise ValueError("Telegram settings are incomplete. Configure TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID.")
 
         text = f"{title.strip()}\n\n{body.strip()}".strip()
-        response = requests.post(
-            f"https://api.telegram.org/bot{self.settings.telegram_bot_token}/sendMessage",
-            json={
+        self._request("POST", "sendMessage", json={
                 "chat_id": chat_id,
                 "text": text,
                 "disable_web_page_preview": True,
-            },
-            timeout=30,
-        )
-        response.raise_for_status()
-        payload = response.json()
-        if not payload.get("ok"):
-            raise RuntimeError(str(payload))
+            }, timeout=30)
         return "sent", f"Sent to Telegram chat {chat_id}"
 
     def send_text(self, text: str, recipient: str | None = None) -> tuple[str, str]:
@@ -52,20 +105,24 @@ class TelegramService:
         if not self.configured:
             raise ValueError("Telegram settings are incomplete. Configure TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID.")
 
-        response = requests.post(
-            f"https://api.telegram.org/bot{self.settings.telegram_bot_token}/sendMessage",
-            json={
+        self._request("POST", "sendMessage", json={
                 "chat_id": chat_id,
                 "text": text.strip(),
                 "disable_web_page_preview": True,
-            },
-            timeout=30,
-        )
-        response.raise_for_status()
-        payload = response.json()
-        if not payload.get("ok"):
-            raise RuntimeError(str(payload))
+            }, timeout=30)
         return "sent", f"Sent to Telegram chat {chat_id}"
+
+    def send_rating_prompt(self, text: str, activity_id: int) -> None:
+        if not self.configured:
+            raise ValueError("Telegram settings are incomplete.")
+        buttons = [[{"text": str(value), "callback_data": f"rpe:{activity_id}:{value}"}
+                    for value in range(start, min(start + 6, 11))] for start in (0, 6)]
+        self._request("POST", "sendMessage", json={"chat_id": self.settings.telegram_chat_id,
+                      "text": text, "reply_markup": {"inline_keyboard": buttons}}, timeout=30)
+
+    def acknowledge_callback(self, callback_id: str, text: str) -> None:
+        self._request("POST", "answerCallbackQuery", json={"callback_query_id": callback_id,
+                      "text": text}, timeout=30)
 
     def get_updates(self, offset: int | None = None, timeout: int = 30) -> list[dict]:
         """Fetch inbound Telegram updates using long polling."""
@@ -74,17 +131,9 @@ class TelegramService:
             raise ValueError("TELEGRAM_BOT_TOKEN is not configured.")
         params: dict[str, int | str] = {
             "timeout": int(timeout),
-            "allowed_updates": '["message"]',
+            "allowed_updates": '["message","callback_query"]',
         }
         if offset is not None:
             params["offset"] = int(offset)
-        response = requests.get(
-            f"https://api.telegram.org/bot{self.settings.telegram_bot_token}/getUpdates",
-            params=params,
-            timeout=timeout + 10,
-        )
-        response.raise_for_status()
-        payload = response.json()
-        if not payload.get("ok"):
-            raise RuntimeError(str(payload))
+        payload = self._request("GET", "getUpdates", params=params, timeout=timeout + 10)
         return list(payload.get("result") or [])

@@ -1,0 +1,518 @@
+"""Deterministic, display-ready facts and session rules for activity opinions."""
+
+from __future__ import annotations
+
+import math
+import re
+import statistics
+from collections.abc import Mapping
+from dataclasses import dataclass
+from datetime import date, timedelta
+from typing import Any, TypedDict
+
+from metrics.sports import sport_category
+from services.fact_display import (
+    as_number as _number,
+)
+from services.fact_display import (
+    duration as _duration,
+)
+from services.fact_display import (
+    heart_rate as _hr,
+)
+from services.fact_display import (
+    hours as _hours,
+)
+from services.fact_display import (
+    milliseconds as _ms,
+)
+from services.fact_display import (
+    pace as _pace,
+)
+from services.fact_display import (
+    percent as _percent,
+)
+from services.fact_display import short_date as _short_date
+from services.hr_zones import heart_rate_zone_bounds
+from services.workout_laps import interpret_laps
+
+
+class Fact(TypedDict):
+    id: str
+    metric: str
+    display: str
+    source: str
+
+
+@dataclass(frozen=True)
+class IntentDecision:
+    intent: str
+    fact_ids: tuple[str, ...]
+
+
+RECOVERY_LOW_ZONE_MIN = 90.0
+RECOVERY_Z2_FRACTION = 0.5
+EASY_LOW_ZONE_MIN = 80.0
+STEADY_Z3_PLUS_MIN = 20.0
+STEADY_Z3_PLUS_MAX = 60.0
+TEMPO_Z3_Z4_MIN = 60.0
+RACE_Z4_PLUS_MIN = 50.0
+FULL_KM_MIN = 0.9
+FULL_KM_MAX = 1.1
+PARTIAL_LAP_MAX_METRES = 100.0
+PARTIAL_LAP_MIN_METRES = 1.0
+CADENCE_STREAM_MAX = 110.0
+CADENCE_LAP_MIN = 140.0
+GPS_TIME_GAP_SECONDS = 30.0
+GPS_DISTANCE_JUMP_KM = 0.2
+EFFORT_HIGH_RPE = 5
+EFFORT_LOW_RPE = 2
+EFFORT_LOW_ZONE_SHARE = 80.0
+EFFORT_HIGH_ZONE_SHARE = 50.0
+
+
+def effort_vs_hr(rpe: int | None, z1_z2_percent: float | None) -> str | None:
+    if rpe is None or z1_z2_percent is None:
+        return None
+    if rpe >= EFFORT_HIGH_RPE and z1_z2_percent >= EFFORT_LOW_ZONE_SHARE:
+        return "higher than HR suggests"
+    if rpe <= EFFORT_LOW_RPE and z1_z2_percent <= EFFORT_HIGH_ZONE_SHARE:
+        return "lower than HR suggests"
+    return "matches"
+
+
+def _pace_seconds(value: Any) -> int | None:
+    display = _pace(value)
+    if display is None:
+        return None
+    minutes, seconds = display.split(" /km")[0].split(":")
+    return int(minutes) * 60 + int(seconds)
+
+
+def _add(facts: list[Fact], fact_id: str, metric: str, display: str | None, source: str) -> None:
+    if display is not None:
+        facts.append({"id": fact_id, "metric": metric, "display": display, "source": source})
+
+
+def _full_km_laps(laps: list[dict[str, Any]]) -> list[tuple[int, dict[str, Any]]]:
+    return [(index, lap) for index, lap in enumerate(laps)
+            if (distance := _number(lap.get("distance"))) is not None
+            and FULL_KM_MIN <= distance <= FULL_KM_MAX]
+
+
+def _partial_lap_metres(laps: list[dict[str, Any]], total_km: float | None) -> tuple[int, float] | None:
+    workout = interpret_laps(laps, running=True)
+    if workout.laps and workout.laps[-1].partial:
+        metres = (workout.laps[-1].distance_km or 0) * 1000
+        if metres >= PARTIAL_LAP_MIN_METRES:
+            return len(workout.laps) - 1, metres
+    return None
+
+
+def _cadence_multiplier(stream_mean: Any, laps: list[dict[str, Any]]) -> int:
+    mean = _number(stream_mean)
+    lap_values = [_number(lap.get("avg_cadence")) for lap in laps]
+    valid_laps = [value for value in lap_values if value is not None and value > 0]
+    return 2 if (mean is not None and 0 < mean < CADENCE_STREAM_MAX
+                 and valid_laps and min(valid_laps) > CADENCE_LAP_MIN
+                 and 0.8 <= 2 * mean / statistics.median(valid_laps) <= 1.2) else 1
+
+
+def recent_comparisons(target: Mapping[str, Any], activities: list[dict[str, Any]]) -> dict[str, Any]:
+    """Choose the same comparable runs as the session tool, without future activity leakage."""
+    day = date.fromisoformat(str(target["date"])[:10])
+    sport = sport_category(target.get("type"), day)
+    distance = _number(target.get("distance"))
+    if distance is None or distance <= 0:
+        return {"median_pace": None, "median_hr": None, "sessions": []}
+    comparable = []
+    for row in activities:
+        row_day = date.fromisoformat(str(row["date"])[:10])
+        row_distance = _number(row.get("distance"))
+        if (row.get("id") == target.get("id") or not day - timedelta(days=120) <= row_day < day
+                or sport_category(row.get("type"), row_day) != sport or row_distance is None
+                or not .85 * distance <= row_distance <= 1.15 * distance):
+            continue
+        comparable.append({"id": row["id"], "date": row_day.isoformat(), "pace": _number(row.get("pace")),
+                           "avg_hr": _number(row.get("avg_hr"))})
+    comparable.sort(key=lambda row: (row["date"], row["id"]), reverse=True)
+    recent = [row for row in comparable if row["date"] >= (day - timedelta(days=56)).isoformat()]
+    paces = [row["pace"] for row in recent if row["pace"] is not None]
+    hrs = [row["avg_hr"] for row in recent if row["avg_hr"] is not None]
+    return {"median_pace": statistics.median(paces) if paces else None,
+            "median_hr": statistics.median(hrs) if hrs else None,
+            "sessions": comparable[:5]}
+
+
+def select_comparison_facts(comparison: Mapping[str, Any]) -> list[Fact]:
+    """Keep only dated comparison and recovery facts from the bounded coach tool."""
+    suffixes = ("_DATE", "_AVG_PACE", "_AVG_HR", "_READINESS", "_TODAY_SLEEP_DURATION",
+                "_HRV_VS_BASELINE", "_SAME_ROUTE", "_PACE_DELTA", "_HR_DELTA", "_EFFICIENCY",
+                "_EFFICIENCY_LABEL")
+    selected: list[Fact] = []
+    for session in comparison.get("sessions") or []:
+        for fact in session.get("facts") or []:
+            if fact["id"].endswith(suffixes) and fact.get("display") != "No data":
+                selected.append(fact)
+    return selected
+
+
+def build_facts(activity_id: int, context: Mapping[str, Any]) -> list[Fact]:
+    """Build a read-only facts pack from already-loaded activity context."""
+    selected = context.get("selected_activity") or {}
+    if selected.get("id") is not None and selected["id"] != activity_id:
+        raise ValueError("Activity context does not match activity_id")
+    facts: list[Fact] = []
+    _add(facts, "ACTIVITY_DATE", "Activity date", _short_date(selected["date"]) if selected.get("date") else None,
+         "selected_activity.date")
+    distance = _number(selected.get("distance_km"))
+    _add(facts, "DISTANCE", "Distance", f"{distance:.1f} km" if distance is not None else None,
+         "selected_activity.distance_km")
+    _add(facts, "DURATION", "Duration", _duration(selected.get("duration_min")), "selected_activity.duration_min")
+    duration_minutes = _number(selected.get("duration_min"))
+    if duration_minutes is not None and duration_minutes >= 5:
+        suggested_minutes = max(5, 5 * round(duration_minutes / 5))
+        _add(facts, "PLAN_DURATION_MIN", "Available plan duration", f"{suggested_minutes} min",
+             "selected_activity.duration_min (rounded to 5 min)")
+    _add(facts, "AVG_HR", "Average heart rate", _hr(selected.get("avg_hr")), "selected_activity.avg_hr")
+    _add(facts, "MAX_HR", "Maximum heart rate", _hr(selected.get("max_hr")), "selected_activity.max_hr")
+    _add(facts, "AVG_PACE", "Average pace", _pace(selected.get("pace")), "selected_activity.pace")
+    effort = context.get("effort_rpe")
+    zones = ((context.get("metrics_snapshot") or {}).get("zones") or {})
+    low_share = context.get("effort_low_zone_share")
+    if low_share is None and isinstance(zones, dict):
+        low_share = sum(float(zones.get(zone, 0) or 0) for zone in ("Below Z1", "Z1", "Z2")) or None
+    if effort is not None:
+        _add(facts, "EFFORT_RPE", "Session effort", f"{int(effort)}/10", "activity_efforts.rpe")
+        mismatch = effort_vs_hr(int(effort), _number(low_share))
+        _add(facts, "EFFORT_VS_HR", "Effort versus HR",
+             f"rated {int(effort)}/10 while {_percent(low_share)} at or below Z2: {mismatch}"
+             if mismatch and _percent(low_share) else None,
+             "activity_efforts.rpe + metrics_snapshot.sessions.zones")
+    for key, fact_id, metric in (("aerobic_effect", "AEROBIC_EFFECT", "Aerobic training effect"),
+                                 ("anaerobic_effect", "ANAEROBIC_EFFECT", "Anaerobic training effect")):
+        value = _number(selected.get(key))
+        _add(facts, fact_id, metric, f"{value:.1f}" if value is not None else None, f"selected_activity.{key}")
+
+    _add(facts, "RECENT_MEDIAN_PACE", "Recent median pace", _pace(context.get("recent_median_pace")),
+         "recent_median_pace")
+    comparison = context.get("recent_similar") or {}
+    median_pace = _number(comparison.get("median_pace"))
+    median_hr = _number(comparison.get("median_hr"))
+    _add(facts, "SIMILAR_8W_MEDIAN_PACE", "Similar-run median pace", _pace(median_pace),
+         "activities.same_sport_distance_15pct.last_8_weeks.pace")
+    _add(facts, "SIMILAR_8W_MEDIAN_HR", "Similar-run median heart rate", _hr(median_hr),
+         "activities.same_sport_distance_15pct.last_8_weeks.avg_hr")
+    current_pace = _pace_seconds(selected.get("pace"))
+    if median_pace is not None and current_pace is not None:
+        median_seconds = _pace_seconds(median_pace)
+        if median_seconds is not None:
+            difference = current_pace - median_seconds
+            _add(facts, "SIMILAR_8W_PACE_DELTA", "Pace versus similar-run median",
+                 f"{abs(difference)} s/km {'slower' if difference > 0 else 'faster' if difference < 0 else 'same pace'}",
+                 "selected_activity.pace - activities.same_sport_distance_15pct.last_8_weeks.pace")
+    current_hr = _number(selected.get("avg_hr"))
+    if median_hr is not None and current_hr is not None:
+        difference = round(current_hr - median_hr)
+        _add(facts, "SIMILAR_8W_HR_DELTA", "Heart rate versus similar-run median",
+             f"{abs(difference)} bpm {'higher' if difference > 0 else 'lower' if difference < 0 else 'same HR'}",
+             "selected_activity.avg_hr - activities.same_sport_distance_15pct.last_8_weeks.avg_hr")
+    for index, row in enumerate(comparison.get("sessions") or [], start=1):
+        _add(facts, f"SIMILAR_{index}_DATE", f"Similar session {index} date", _short_date(row["date"]),
+             f"activities[{row['id']}].date")
+        _add(facts, f"SIMILAR_{index}_PACE", f"Similar session {index} pace", _pace(row.get("pace")),
+             f"activities[{row['id']}].pace")
+        _add(facts, f"SIMILAR_{index}_HR", f"Similar session {index} average heart rate", _hr(row.get("avg_hr")),
+             f"activities[{row['id']}].avg_hr")
+    facts.extend(context.get("similar_session_facts") or [])
+    goal = context.get("active_goal") or {}
+    goal_type = str(goal.get("goal_type") or "").lower()
+    goal_distance = _number(goal.get("target_distance_km"))
+    if goal_distance is None:
+        goal_distance = {"5k_pb": 5, "10k_pb": 10, "half_pb": 21.1,
+                         "running_pb": 42.2}.get(goal_type)
+    goal_kind = (f"{goal_distance:g}K" if goal_distance is not None else
+                 goal_type.replace("_", " ").strip())
+    _add(facts, "GOAL", "Long-term goal", f"your {goal_kind} goal" if goal_kind else None,
+         "active_goal.goal_type + active_goal.target_distance_km")
+    planned = context.get("planned_intent")
+    _add(facts, "PLAN_INTENT", "Planned intent", str(planned) if planned else None, "planned_intent")
+    last_hard_days = _number(context.get("days_since_last_hard"))
+    _add(facts, "DAYS_SINCE_HARD", "Days since last known hard session",
+         f"{round(last_hard_days)} days" if last_hard_days is not None else None,
+         "activities.type + activity_efforts.rpe")
+    sessions_7d = _number(context.get("last_7_sessions"))
+    _add(facts, "LAST_7_SESSIONS", "Sessions in preceding seven days",
+         f"{round(sessions_7d)} sessions" if sessions_7d is not None else None,
+         "metrics_snapshot.sessions (preceding seven days)")
+    load_7d = _number(context.get("last_7_load"))
+    _add(facts, "LAST_7_LOAD", "Load in preceding seven days",
+         f"{round(load_7d)} load" if load_7d is not None else None,
+         "metrics_snapshot.sessions.load (preceding seven days)")
+
+    stream = context.get("stream_analysis") or {}
+    laps = list((context.get("lap_analysis") or {}).get("laps") or [])
+    workout = interpret_laps(laps, running="run" in str(selected.get("type") or "running").lower(),
+                             session_pace=selected.get("pace"), session_hr=selected.get("avg_hr"))
+    if workout.structured:
+        warmups = sum(lap.label == "warm-up" for lap in workout.laps)
+        cooldowns = sum(lap.label == "cool-down" for lap in workout.laps)
+        _add(facts, "WARMUP_LAP_COUNT", "Warm-up laps", str(warmups) if warmups else None,
+             "lap_analysis.laps[*].lap_type + pace + avg_hr")
+        _add(facts, "COOLDOWN_LAP_COUNT", "Cool-down laps", str(cooldowns) if cooldowns else None,
+             "lap_analysis.laps[*].lap_type + pace + avg_hr")
+        _add(facts, "REP_COUNT", "Work repetitions", str(workout.rep_count) if workout.rep_count else None,
+             "lap_analysis.laps[*].lap_type + pace + avg_hr")
+        _add(facts, "REP_AVG_PACE", "Average rep pace", workout.rep_pace, "lap_analysis.laps[*].pace")
+        _add(facts, "REP_AVG_HR", "Average rep heart rate", workout.rep_hr, "lap_analysis.laps[*].avg_hr")
+        _add(facts, "RECOVERY_AVG_HR", "Recovery heart rate", workout.recovery_hr,
+             "lap_analysis.laps[*].avg_hr")
+    cadence = stream.get("cadence_spm") or {}
+    cadence_multiplier = _cadence_multiplier(cadence.get("avg"), laps)
+    for key in ("avg", "min", "max"):
+        value = _number(cadence.get(key))
+        _add(facts, f"STREAM_CADENCE_{key.upper()}", f"Stream cadence {key}",
+             f"{round(value * cadence_multiplier)} spm" if value is not None and value > 0 else None,
+             f"stream_analysis.cadence_spm.{key}" + (" (doubled per-foot scale)" if cadence_multiplier == 2 else ""))
+    for half, label in (("first_half", "FIRST_HALF"), ("second_half", "SECOND_HALF")):
+        data = stream.get(half) or {}
+        _add(facts, f"{label}_PACE", f"{half.replace('_', ' ').title()} pace", _pace(data.get("avg_pace")),
+             f"stream_analysis.{half}.avg_pace")
+        _add(facts, f"{label}_HR", f"{half.replace('_', ' ').title()} heart rate", _hr(data.get("avg_hr")),
+             f"stream_analysis.{half}.avg_hr")
+        half_cadence = _number(data.get("avg_cadence"))
+        _add(facts, f"{label}_CADENCE", f"{half.replace('_', ' ').title()} cadence",
+             f"{round(half_cadence * cadence_multiplier)} spm"
+             if half_cadence is not None and half_cadence > 0 else None,
+             f"stream_analysis.{half}.avg_cadence" + (" (doubled per-foot scale)" if cadence_multiplier == 2 else ""))
+    first = _pace((stream.get("first_half") or {}).get("avg_pace"))
+    second = _pace((stream.get("second_half") or {}).get("avg_pace"))
+    if first and second:
+        first_seconds = int(first.split(":")[0]) * 60 + int(first.split(":")[1].split()[0])
+        second_seconds = int(second.split(":")[0]) * 60 + int(second.split(":")[1].split()[0])
+        pattern = "negative split" if second_seconds < first_seconds else "positive split" if second_seconds > first_seconds else "even split"
+        _add(facts, "SPLIT_PATTERN", "Pacing split", pattern,
+             "stream_analysis.first_half.avg_pace + stream_analysis.second_half.avg_pace")
+        _add(facts, "PROGRESSION", "Progression", "fade" if second_seconds > first_seconds else pattern,
+             "stream_analysis.first_half.avg_pace + stream_analysis.second_half.avg_pace")
+
+    full = _full_km_laps(laps)
+    for km, (index, lap) in enumerate(full, start=1):
+        _add(facts, f"KM{km}_PACE", f"Km {km} pace", _pace(lap.get("pace")), f"lap_analysis.laps[{index}].pace")
+        _add(facts, f"KM{km}_AVG_HR", f"Km {km} average heart rate", _hr(lap.get("avg_hr")),
+             f"lap_analysis.laps[{index}].avg_hr")
+        _add(facts, f"KM{km}_MAX_HR", f"Km {km} maximum heart rate", _hr(lap.get("max_hr")),
+             f"lap_analysis.laps[{index}].max_hr")
+        cadence_value = _number(lap.get("avg_cadence"))
+        _add(facts, f"KM{km}_CADENCE", f"Km {km} cadence",
+             f"{round(cadence_value)} spm" if cadence_value is not None else None,
+             f"lap_analysis.laps[{index}].avg_cadence")
+    if full:
+        first_index, first_lap = full[0]
+        last_index, last_lap = full[-1]
+        _add(facts, "FIRST_FULL_KM", "First full kilometre", "km 1", f"lap_analysis.laps[{first_index}]")
+        _add(facts, "FIRST_FULL_KM_PACE", "First full kilometre pace", _pace(first_lap.get("pace")),
+             f"lap_analysis.laps[{first_index}].pace")
+        _add(facts, "FIRST_FULL_KM_HR", "First full kilometre heart rate", _hr(first_lap.get("avg_hr")),
+             f"lap_analysis.laps[{first_index}].avg_hr")
+        _add(facts, "LAST_FULL_KM", "Last full kilometre", f"km {len(full)}", f"lap_analysis.laps[{last_index}]")
+        _add(facts, "LAST_FULL_KM_PACE", "Last full kilometre pace", _pace(last_lap.get("pace")),
+             f"lap_analysis.laps[{last_index}].pace")
+        _add(facts, "LAST_FULL_KM_HR", "Last full kilometre heart rate", _hr(last_lap.get("avg_hr")),
+             f"lap_analysis.laps[{last_index}].avg_hr")
+        paced = [(index, lap) for index, lap in full if _pace_seconds(lap.get("pace")) is not None]
+        if paced:
+            fastest_index, fastest_lap = min(paced, key=lambda item: _pace_seconds(item[1]["pace"]))
+            slowest_index, slowest_lap = max(paced, key=lambda item: _pace_seconds(item[1]["pace"]))
+            _add(facts, "FASTEST_FULL_KM_PACE", "Fastest full-km pace", _pace(fastest_lap["pace"]),
+                 f"lap_analysis.laps[{fastest_index}].pace")
+            _add(facts, "SLOWEST_FULL_KM_PACE", "Slowest full-km pace", _pace(slowest_lap["pace"]),
+                 f"lap_analysis.laps[{slowest_index}].pace")
+        first_pace = _pace_seconds(first_lap.get("pace"))
+        average_pace = _pace_seconds(selected.get("pace"))
+        first_hr = _number(first_lap.get("avg_hr"))
+        average_hr = _number(selected.get("avg_hr"))
+        if (first_pace is not None and average_pace is not None and first_hr is not None
+                and average_hr is not None and first_pace > average_pace and first_hr < average_hr):
+            _add(facts, "CONSERVATIVE_START", "Conservative first kilometre", "yes",
+                 f"lap_analysis.laps[{first_index}].pace + avg_hr vs selected_activity.pace + avg_hr")
+        cadences = [_number(lap.get("avg_cadence")) for _, lap in full]
+        cadence_values = [value for value in cadences if value is not None]
+        if cadence_values:
+            _add(facts, "LAP_CADENCE_RANGE", "Full-km lap cadence range",
+                 f"{round(min(cadence_values))}–{round(max(cadence_values))} spm",
+                 "lap_analysis.laps[*].avg_cadence")
+    partial = _partial_lap_metres(laps, distance)
+    if partial:
+        _add(facts, "PARTIAL_LAP_DISTANCE", "Short partial lap", f"{partial[1]:.2f} m",
+             f"lap_analysis.laps[{partial[0]}].distance")
+    drift = _number(stream.get("hr_drift_bpm"))
+    _add(facts, "HR_DRIFT", "Heart-rate drift", f"{drift:+.1f} bpm" if drift is not None else None,
+         "stream_analysis.second_half.avg_hr - stream_analysis.first_half.avg_hr")
+
+    snapshot = context.get("metrics_snapshot") or {}
+    session = snapshot.get("activity_session") or {}
+    zones: dict[str, float] = {}
+    for index, zone in enumerate(session.get("hr_zones") or []):
+        match = re.match(r"Z([1-5])\b", str(zone.get("zone") or ""))
+        value = _number(zone.get("percent"))
+        if match and value is not None:
+            name = f"Z{match.group(1)}"
+            zones[name] = value
+            _add(facts, f"ZONE_{name}", f"{name} time", _percent(value),
+                 f"metrics_snapshot.activity_session.hr_zones[{index}].percent")
+    for fact_id, metric, names in (("Z1_Z2_SHARE", "Z1–Z2 time", ("Z1", "Z2")),
+                                   ("Z3_PLUS_SHARE", "Z3+ time", ("Z3", "Z4", "Z5")),
+                                   ("Z3_Z4_SHARE", "Z3–Z4 time", ("Z3", "Z4")),
+                                   ("Z4_PLUS_SHARE", "Z4+ time", ("Z4", "Z5"))):
+        if all(name in zones for name in names):
+            _add(facts, fact_id, metric, _percent(sum(zones[name] for name in names)),
+                 "metrics_snapshot.activity_session.hr_zones.percent")
+    if all(name in zones for name in ("Z3", "Z4", "Z5")):
+        _add(facts, "ABOVE_Z2_SHARE", "Time above Z2",
+             _percent(sum(zones[name] for name in ("Z3", "Z4", "Z5"))),
+             "metrics_snapshot.activity_session.hr_zones.percent")
+    hrmax = _number((session.get("hrmax") or {}).get("value"))
+    if hrmax is not None and hrmax > 0:
+        custom = context.get("custom_heart_rate_zones") or []
+        bounds = ([(zone["zone"], float(zone["lower_bpm"]),
+                    float(zone["upper_bpm"] + 1) if zone["upper_bpm"] is not None else float("inf"))
+                   for zone in custom] if len(custom) == 5 else heart_rate_zone_bounds(round(hrmax)))
+        bounds_source = ("custom_heart_rate_zones" if len(custom) == 5 else
+                         "services.hr_zones.heart_rate_zone_bounds + metrics_snapshot.activity_session.hrmax.value")
+        for zone_name, lower, upper in bounds:
+            zone_id = zone_name.split()[0]
+            _add(facts, f"ZONE_{zone_id}_LOWER_BPM", f"{zone_id} lower heart rate", _hr(math.ceil(lower)),
+                 bounds_source)
+            upper_display = "no upper bpm limit" if math.isinf(upper) else _hr(math.ceil(upper) - 1)
+            _add(facts, f"ZONE_{zone_id}_UPPER_BPM", f"{zone_id} upper heart rate", upper_display,
+                 bounds_source)
+        z2 = bounds[1]
+        _add(facts, "Z2_LOWER_HALF_CAP", "Z2 lower-half ceiling",
+             _hr(z2[1] + RECOVERY_Z2_FRACTION * (z2[2] - z2[1])),
+             bounds_source)
+        _add(facts, "Z3_UPPER_BPM", "Z3 upper boundary",
+             _hr(bounds[2][2] - 1 if len(custom) == 5 else bounds[2][2]),
+             bounds_source)
+
+    readiness_field = (snapshot.get("readiness") or {}).get("score")
+    readiness = _number(readiness_field.get("value") if isinstance(readiness_field, dict) else readiness_field)
+    _add(facts, "READINESS", "Recovery", str(round(readiness)) if readiness is not None else None,
+         "metrics_snapshot.readiness.score.value")
+    for component in (snapshot.get("readiness") or {}).get("components") or []:
+        name = component.get("name")
+        score = _number((component.get("score") or {}).get("value"))
+        if name in {"hrv", "rhr", "sleep", "load"} and score is not None:
+            _add(facts, f"READINESS_{name.upper()}_SCORE", f"Recovery {name.upper()} component",
+                 f"{score:.1f}", f"metrics_snapshot.readiness.components.{name}.score.value")
+    health = snapshot.get("current_health") or {}
+    baselines = {(row.get("field"), row.get("days")): (row.get("mean") or {}).get("value")
+                 for row in snapshot.get("baselines") or []}
+    for key, prefix, days, formatter in (("hrv", "HRV", 28, _ms),
+                                         ("resting_hr", "RHR", 7, _hr),
+                                         ("sleep_duration", "SLEEP", 28, _hours)):
+        current = (health.get(key) or {}).get("value")
+        baseline = baselines.get((key, days))
+        _add(facts, f"{prefix}_CURRENT", f"Current {prefix}", formatter(current),
+             f"metrics_snapshot.current_health.{key}.value")
+        _add(facts, f"{prefix}_BASELINE", f"{days}-day {prefix} baseline", formatter(baseline),
+             f"metrics_snapshot.baselines.{key}.{days}.mean.value")
+        current_value, baseline_value = _number(current), _number(baseline)
+        if current_value is not None and baseline_value is not None:
+            if key == "hrv" and baseline_value > 0:
+                change = _percent((current_value / baseline_value - 1) * 100, signed=True)
+            elif key == "resting_hr":
+                change = f"{round(current_value - baseline_value):+d} bpm"
+            elif key == "sleep_duration":
+                change = f"{'+' if current_value >= baseline_value else '-'}{_hours(abs(current_value - baseline_value))}"
+            else:
+                change = None
+            _add(facts, f"{prefix}_VS_BASELINE", f"{prefix} versus baseline", change,
+                 f"metrics_snapshot.current_health.{key}.value vs metrics_snapshot.baselines.{key}.{days}.mean.value")
+    week_load = _number(context.get("weekly_load"))
+    usual = _number(context.get("usual_week"))
+    if usual is None:
+        _add(facts, "WEEKLY_LIMIT", "Weekly limit", "baseline still building",
+             "coach.planning.usual_week")
+    elif week_load is not None and usual > 0:
+        _add(facts, "WEEKLY_LOAD", "Load", f"{week_load / usual * 100:.0f}% of usual",
+             "activities.load / coach.planning.usual_week")
+        _add(facts, "WEEKLY_LIMIT", "Weekly limit", "110% of usual",
+             "coach.decision.WEEKLY_LIMIT_PCT")
+    return facts
+
+
+def detect_intent(facts: list[Fact], planned_intent: str | None) -> IntentDecision | None:
+    """Classify a session from displayed HR-zone shares and cite deciding facts."""
+    values = {fact["id"]: fact["display"] for fact in facts}
+
+    def numeric(fact_id: str) -> float | None:
+        value = values.get(fact_id)
+        return _number(re.match(r"[-+]?\d+(?:\.\d+)?", value).group() if value and re.match(r"[-+]?\d+(?:\.\d+)?", value) else None)
+
+    if planned_intent == "race" and "PLAN_INTENT" in values:
+        return IntentDecision("race", ("PLAN_INTENT",))
+    z4_plus = numeric("Z4_PLUS_SHARE")
+    if z4_plus is not None and z4_plus >= RACE_Z4_PLUS_MIN:
+        return IntentDecision("race", ("Z4_PLUS_SHARE",))
+    low = numeric("Z1_Z2_SHARE")
+    avg_hr = numeric("AVG_HR")
+    z2_cap = numeric("Z2_LOWER_HALF_CAP")
+    if low is not None and low >= RECOVERY_LOW_ZONE_MIN and avg_hr is not None and z2_cap is not None and avg_hr <= z2_cap:
+        return IntentDecision("recovery", ("Z1_Z2_SHARE", "AVG_HR", "Z2_LOWER_HALF_CAP"))
+    z3_upper = numeric("Z3_UPPER_BPM")
+    km_hrs = [(fact_id, numeric(fact_id)) for fact_id in values if re.fullmatch(r"KM\d+_AVG_HR", fact_id)]
+    if low is not None and low >= EASY_LOW_ZONE_MIN and z3_upper is not None and all(
+        hr is not None and hr < z3_upper for _, hr in km_hrs
+    ):
+        return IntentDecision("easy", ("Z1_Z2_SHARE", "Z3_UPPER_BPM", *(fact_id for fact_id, _ in km_hrs)))
+    z3_z4 = numeric("Z3_Z4_SHARE")
+    if z3_z4 is not None and z3_z4 >= TEMPO_Z3_Z4_MIN:
+        return IntentDecision("tempo", ("Z3_Z4_SHARE",))
+    z3_plus = numeric("Z3_PLUS_SHARE")
+    if z3_plus is not None and STEADY_Z3_PLUS_MIN <= z3_plus <= STEADY_Z3_PLUS_MAX:
+        return IntentDecision("steady", ("Z3_PLUS_SHARE",))
+    return None
+
+
+def build_data_notes(laps: list[dict[str, Any]], track_points: list[dict[str, Any]],
+                     activity_distance_km: float | None, *, missing_hr: bool = False,
+                     stream_cadence_mean: float | None = None) -> list[str]:
+    """Report observed recording anomalies without guessing their cause."""
+    notes: list[str] = []
+    partial = _partial_lap_metres(laps, _number(activity_distance_km))
+    if partial:
+        notes.append(f"Partial lap: {partial[1]:.2f} m. Excluded from full-km analysis.")
+    if missing_hr:
+        notes.append("Heart-rate data is missing; HR-based conclusions are limited.")
+    if _cadence_multiplier(stream_cadence_mean, laps) == 2:
+        notes.append("Stream cadence counts one leg; lap values used.")
+    points = sorted(track_points, key=lambda row: row.get("point_index") or 0)
+    for before, after in zip(points, points[1:], strict=False):
+        t0, t1 = _number(before.get("elapsed_seconds")), _number(after.get("elapsed_seconds"))
+        d0, d1 = _number(before.get("distance_km")), _number(after.get("distance_km"))
+        if ((t0 is not None and t1 is not None and t1 - t0 > GPS_TIME_GAP_SECONDS)
+                or (d0 is not None and d1 is not None and d1 - d0 > GPS_DISTANCE_JUMP_KM)):
+            notes.append("GPS data gap observed between track points (time > 30 s or distance > 200 m).")
+            break
+    return notes
+
+
+def match_text_facts(text: str, facts: list[Fact], preferred_ids: tuple[str, ...] = ()) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Match display values in text and return their IDs plus unsupported numbers."""
+    compact = re.sub(r"\s+", "", text.casefold())
+    preferred = set(preferred_ids)
+    ordered = sorted(facts, key=lambda fact: (fact["id"] not in preferred, -len(fact["display"])))
+    matched: list[str] = []
+    for fact in ordered:
+        display = re.sub(r"\s+", "", fact["display"].casefold())
+        if display and re.search(r"\d", display) and display in compact:
+            compact = compact.replace(display, " ")
+            matched.append(fact["id"])
+    compact = re.sub(r"z[1-5]\+?", " ", compact)
+    return tuple(matched), tuple(sorted(set(re.findall(r"\d+(?:[:.]\d+)*", compact))))
+
+
+def unsupported_text_numbers(text: str, facts: list[Fact]) -> tuple[str, ...]:
+    """Return numeric claims not covered by a fact display after spacing normalization."""
+    return match_text_facts(text, facts)[1]

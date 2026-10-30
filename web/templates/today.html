@@ -1,0 +1,31 @@
+{% extends 'base.html' %}
+{% from 'components/v2_icons.html' import icon %}
+{% block content %}
+{% if worker_status %}<p class="v2-today-status st" role="status">{{ icon('alert') }} {{ worker_status }}</p>{% endif %}
+<div class="v2-today-head"><div><span class="eyebrow">{{ day_label }}</span><h1 class="num">Today</h1></div><div class="v2-phone-sync cap">{{ icon('check') }} {{ sync }}</div></div>
+<section class="v2-dials" aria-label="Recovery, sleep and load">
+  {% for item in dials %}<a class="v2-dial card v2-{{ item.kind }}" href="/trends" aria-label="{{ item.label }} {{ item.spoken_value }}. {{ item.status }}. {{ item.usual or '' }}">
+    <div class="v2-dial-ring"><svg viewBox="0 0 80 80" aria-hidden="true"><circle class="v2-dial-track" cx="40" cy="40" r="34" fill="none" stroke-width="8"/><circle class="v2-dial-progress" cx="40" cy="40" r="34" fill="none" stroke-width="8" pathLength="100" stroke-dasharray="{{ item.percent }} 100" transform="rotate(-90 40 40)"/></svg><span class="num">{{ item.value }}</span></div>
+    <div class="v2-dial-copy"><strong>{{ item.label }}</strong><span class="st">{{ icon(item.icon) }} {{ item.status }}</span><small class="cap">{{ item.usual or '' }}</small></div>
+  </a>{% endfor %}
+</section>
+{% include 'components/v2_today_call.html' %}
+<section class="v2-week card" aria-labelledby="v2-week-title"><div class="v2-week-head"><h2 id="v2-week-title">This week</h2><a class="cap" href="/plan">Training {{ icon('chevron') }}</a></div>
+  <div class="v2-week-strip">{% for item in week_strip %}
+    <div class="v2-day v2-day-{{ item.state|replace(' ', '-') }}"><span class="cap">{{ 'Today' if item.date == day.isoformat() else item.day_label }}</span><span class="v2-day-mark">{% if item.date != day.isoformat() %}{{ icon(item.icon) }}{% endif %}</span><div class="v2-phone-day-text"><strong>{{ item.phone_title }}</strong>{% if item.phone_done %}<small>{{ icon('check') }} {{ item.phone_done }}</small>{% endif %}</div><div class="v2-web-day-text">
+      {% if item.entries %}{% for entry in item.entries %}<div class="v2-day-entry">{% if entry.activity_id %}<a class="v2-day-detail" href="/activities/{{ entry.activity_id }}"><strong>{{ entry.title }}</strong></a>{% else %}<strong>{{ entry.title }}</strong>{% endif %}{% if entry.done %}{{ icon('check') }}{% endif %}
+        {% if entry.origin in ('fixed', 'protected') %}<small class="eyebrow">{{ 'Habit' if entry.origin == 'protected' else 'Fixed' }}</small>{% elif entry.duration and not entry.done %}<small class="cap">{{ entry.duration }}</small>{% endif %}
+        {% if entry.rate_id %}<a class="v2-rate-link" href="/activities/{{ entry.rate_id }}#effort-rating">Rate effort</a>{% endif %}</div>{% endfor %}
+      {% else %}<strong>{{ item.title }}</strong>{% endif %}</div>
+    </div>{% endfor %}</div>
+</section>
+{% endblock %}
+{% block coach_panel %}
+<div class="v2-coach-explanation"><span class="eyebrow">{{ coach_heading }}</span><p>{{ decision_text }}</p></div>
+<div class="v2-coach-facts">{% for fact in coach_evidence %}<span class="chip" title="{{ fact.source }}">{{ fact.label }} {{ fact.value }}</span>{% endfor %}</div>
+<a class="v2-full-chat cap" href="/coach?context=today">Full chat {{ icon('chevron') }}</a>
+<span class="eyebrow">Ask next</span>
+<div class="v2-follow-ups">{% for question in coach_follow_ups %}<form hx-post="/today/ask" hx-target="#v2-coach-answer" hx-swap="innerHTML" method="post"><button class="fu" type="submit" name="question" value="{{ question }}">{{ question }} {{ icon('chevron') }}</button></form>{% endfor %}</div>
+<div id="v2-coach-answer" aria-live="polite"></div>
+<form class="v2-coach-compose" hx-post="/today/ask" hx-target="#v2-coach-answer" hx-swap="innerHTML" method="post"><label class="v2-sr-only" for="v2-question">Ask about today</label><input id="v2-question" name="question" placeholder="Ask about today" maxlength="500" required><button type="submit" aria-label="Send question">{{ icon('arrow') }}</button></form>
+{% endblock %}

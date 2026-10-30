@@ -1,0 +1,17 @@
+{% macro card(title='', extra_class='') -%}<section class="card {{ extra_class }}">{% if title %}<h2>{{ title }}</h2>{% endif %}{{ caller() }}</section>{%- endmacro %}
+{% macro empty(sync) -%}<span class="empty">No data <small>{{ sync or 'Last sync unavailable' }}</small></span>{%- endmacro %}
+{% macro tile(label, value, delta, baseline, sync, sparkline='') -%}
+<div class="metric-tile"><span class="eyebrow">{{ label }}</span><strong class="metric-number">{% if value %}{{ value }}{% else %}{{ empty(sync) }}{% endif %}</strong>
+<div class="tile-footer"><div class="tile-comparison">{% if delta %}<span class="delta">{{ delta }}</span>{% endif %}{% if baseline %}<span class="comparison">Baseline {{ baseline }}</span>{% endif %}</div>{% if sparkline %}{{ sparkline|safe }}{% endif %}</div></div>
+{%- endmacro %}
+{% macro chip(word, symbol='•') -%}<span class="chip"><span aria-hidden="true">{{ symbol }}</span> {{ word }}</span>{%- endmacro %}
+{% macro button(label, href, primary=false) -%}<a class="button {% if primary %}button-primary{% else %}button-secondary{% endif %}" href="{{ href }}">{{ label }}</a>{%- endmacro %}
+{% macro segmented(name, options, selected, post_url, target, coach_pick='') -%}
+<form class="segmented" hx-post="{{ post_url }}" hx-target="{{ target }}" hx-swap="outerHTML" method="post" action="{{ post_url }}" aria-label="{{ name }}">
+{% for value, label in options %}<button type="submit" name="choice" value="{{ value }}" {% if selected == value %}aria-pressed="true"{% else %}aria-pressed="false"{% endif %}><span>{{ label }}</span>{% if coach_pick == value %}<small>Coach</small>{% endif %}</button>{% endfor %}</form>
+{%- endmacro %}
+{% macro zone_bar(zones, sync) -%}
+{% if zones %}<div class="zone-bar" aria-label="Time in heart rate zones">{% for name, percent in zones %}<span class="zone-segment {{ 'zone-below' if name.startswith('Below') else 'zone-' ~ loop.index }}" style="width:{{ [percent, 0]|max }}%" title="{{ name }}: {{ '%.1f'|format(percent) }}%"></span>{% endfor %}</div>{% else %}{{ empty(sync) }}{% endif %}
+{%- endmacro %}
+{% macro load_bar(chart) -%}<div class="chart-wrap">{{ chart|safe }}</div>{%- endmacro %}
+{% macro rpe_buttons(selected=none) -%}<div class="rating-controls" role="group" aria-label="Effort from 0 to 10">{% for value in range(11) %}<button type="submit" name="rpe" value="{{ value }}" aria-pressed="{{ 'true' if selected == value else 'false' }}"><strong>{{ value }}</strong><small>{% if value == 0 %}rest{% elif value == 3 %}moderate{% elif value == 5 %}hard{% elif value == 7 %}very hard{% elif value == 10 %}maximal{% else %}&nbsp;{% endif %}</small></button>{% endfor %}</div>{%- endmacro %}

@@ -1,0 +1,1 @@
+{% if error %}<p class="v2-answer-error" role="alert">{{ error }}</p>{% elif reply %}<div class="v2-answer"><p>{{ reply.text|coach_text }}</p>{% if reply.evidence %}<div class="v2-coach-facts">{% for fact in reply.evidence %}<span class="chip">{{ fact.metric }} {{ fact.display }}</span>{% endfor %}</div>{% endif %}</div>{% endif %}

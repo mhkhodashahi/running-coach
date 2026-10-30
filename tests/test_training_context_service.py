@@ -144,8 +144,8 @@ def test_app_bootstrap_service_loads_training_bundle_through_service_interface()
     assert "ensure_goal:7" in calls
 
 
-def test_streamlit_pages_import_training_context_service_not_bootstrap_utility() -> None:
-    page_paths = [Path("app/dashboard.py"), *Path("app/pages").glob("*.py")]
+def test_web_pages_do_not_import_legacy_bootstrap_utility() -> None:
+    page_paths = list(Path("web").rglob("*.py"))
 
     for path in page_paths:
         source = path.read_text()

@@ -1,0 +1,9 @@
+{% extends 'base.html' %}
+{% from 'components/ui.html' import empty %}
+{% block title %}Activities{% endblock %}
+{% block content %}
+<div class="v2-activities-head"><a href="/trends" class="cap">‹ Insights</a><h1 class="num">All activities</h1></div>
+<nav class="v2-sport-filters" aria-label="Sport filters">{% for value,label in [('', 'All'),('running','Running'),('gym','Gym'),('volleyball','Volleyball'),('football','Football'),('other','Other')] %}<a class="chip" href="/activities?sport={{ value }}&start={{ start }}&end={{ end }}&show_walks={{ 'true' if show_walks else 'false' }}" {% if sport_filter == value %}aria-current="page"{% endif %}>{{ label }}</a>{% endfor %}</nav>
+<details class="v2-more-filters"><summary>More filters</summary><form class="activity-filters v2-activity-filters" method="get" action="/activities" aria-label="Filter activities"><input type="hidden" name="sport" value="{{ sport_filter }}"><label>From<input type="date" name="start" value="{{ start }}"></label><label>To<input type="date" name="end" value="{{ end }}"></label><label class="walk-toggle"><input type="checkbox" name="show_walks" value="true" {% if show_walks %}checked{% endif %}> Show walks</label><button class="button button-secondary" type="submit">Apply filters</button></form></details>
+<div id="activity-weeks">{% include 'components/activity_weeks.html' %}</div>
+{% endblock %}

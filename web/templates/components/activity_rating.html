@@ -1,0 +1,2 @@
+{% from 'components/ui.html' import rpe_buttons %}
+<form id="activity-rating" method="post" action="/activities/{{ activity.id }}/rate" hx-post="/activities/{{ activity.id }}/rate" hx-target="#activity-rating" hx-swap="outerHTML"><input type="hidden" name="activity_id" value="{{ activity.id }}">{% if rating_saved %}<p role="status">Rating saved: {{ activity.rpe }}/10.</p>{% endif %}{{ rpe_buttons(activity.rpe) }}</form>

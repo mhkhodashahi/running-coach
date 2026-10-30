@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass
 from functools import lru_cache
@@ -38,6 +39,8 @@ class Settings:
     llm_provider: str
     openai_api_key: str
     openai_model: str
+    allow_remote_llm: bool
+    remote_athlete_data_approved: bool
     ollama_base_url: str
     ollama_model: str
     default_user_id: int
@@ -57,6 +60,14 @@ class Settings:
     low_sleep_score_threshold: int
     high_intensity_ratio_threshold: float
     long_run_gap_days: int
+    local_timezone: str = "Europe/Berlin"
+    sleep_goal_hours: float = 7.5
+    hr_zones: tuple[tuple[str, int, int | None], ...] = ()
+    coach_daily_call_limit: int = 20
+    sync_interval_hours: int = 2
+    auto_opinions: bool = False
+    public_url: str = ""
+    backup_dir: Path = Path.home() / "pulse-backups"
 
     @property
     def db_url(self) -> str:
@@ -82,7 +93,9 @@ def get_settings() -> Settings:
         mock_health_path=data_dir / "mock_health_metrics.csv",
         llm_provider=os.getenv("LLM_PROVIDER", "ollama").strip().lower(),
         openai_api_key=os.getenv("OPENAI_API_KEY", "").strip(),
-        openai_model=os.getenv("OPENAI_MODEL", "gpt-5-mini").strip(),
+        openai_model=os.getenv("OPENAI_MODEL", "gpt-6-luna").strip(),
+        allow_remote_llm=os.getenv("ALLOW_REMOTE_LLM", "").strip().lower() == "true",
+        remote_athlete_data_approved=os.getenv("REMOTE_ATHLETE_DATA_APPROVED", "").strip().lower() == "true",
         ollama_base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434").strip(),
         ollama_model=os.getenv("OLLAMA_MODEL", "qwen3:14b").strip(),
         default_user_id=int(os.getenv("DEFAULT_USER_ID", "1")),
@@ -102,4 +115,41 @@ def get_settings() -> Settings:
         low_sleep_score_threshold=int(os.getenv("LOW_SLEEP_SCORE_THRESHOLD", "72")),
         high_intensity_ratio_threshold=float(os.getenv("HIGH_INTENSITY_RATIO_THRESHOLD", "0.22")),
         long_run_gap_days=int(os.getenv("LONG_RUN_GAP_DAYS", "14")),
+        local_timezone=os.getenv("LOCAL_TIMEZONE", "Europe/Berlin"),
+        sleep_goal_hours=float(os.getenv("SLEEP_GOAL_HOURS", "7.5")),
+        hr_zones=_parse_hr_zones(os.getenv("HR_ZONES", "")),
+        coach_daily_call_limit=_coach_call_limit(os.getenv("COACH_DAILY_CALL_LIMIT", "")),
+        sync_interval_hours=max(1, int(os.getenv("SYNC_INTERVAL_HOURS", "2"))),
+        auto_opinions=os.getenv("AUTO_OPINIONS", "").lower() == "true",
+        public_url=os.getenv("PUBLIC_URL", "").strip().rstrip("/"),
+        backup_dir=Path(os.getenv("BACKUP_DIR", "").strip() or str(Path.home() / "pulse-backups")).expanduser(),
     )
+
+
+def _coach_call_limit(raw: str) -> int:
+    if not raw.strip():
+        return 20
+    limit = int(raw)
+    if limit < 1:
+        raise ValueError("COACH_DAILY_CALL_LIMIT must be a positive integer")
+    return limit
+
+
+def _parse_hr_zones(raw: str) -> tuple[tuple[str, int, int | None], ...]:
+    if not raw.strip():
+        return ()
+    try:
+        entries = json.loads(raw)
+        if not isinstance(entries, list):
+            raise ValueError("HR_ZONES must be a JSON array")
+        zones = []
+        for entry in entries:
+            name, lower, upper = entry["name"], entry["lower_bpm"], entry["upper_bpm"]
+            if not isinstance(name, str) or not name.strip() or type(lower) is not int or lower < 0:
+                raise ValueError("Invalid HR_ZONES name or lower_bpm")
+            if upper is not None and (type(upper) is not int or upper < lower):
+                raise ValueError("Invalid HR_ZONES upper_bpm")
+            zones.append((name, lower, upper))
+        return tuple(zones)
+    except (TypeError, KeyError, json.JSONDecodeError) as exc:
+        raise ValueError("HR_ZONES must be a JSON array of name, lower_bpm and upper_bpm") from exc

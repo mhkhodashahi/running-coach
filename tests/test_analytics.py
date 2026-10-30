@@ -43,21 +43,36 @@ EMPTY_HEALTH = pd.DataFrame(
 )
 
 
-def test_weekly_mileage_uses_latest_activity_as_reference_day() -> None:
+def test_weekly_mileage_uses_calendar_day_for_current_totals() -> None:
+    today = pd.Timestamp.today().normalize()
     activities = pd.DataFrame(
         [
-            {"date": "2026-01-01", "type": "running", "distance": 10.0, "duration": 50.0},
-            {"date": "2026-01-03", "type": "cycling", "distance": 50.0, "duration": 120.0},
-            {"date": "2026-01-07", "type": "trail_running", "distance": 8.0, "duration": 48.0},
-            {"date": "2025-12-01", "type": "running", "distance": 20.0, "duration": 110.0},
+            {"date": today - pd.Timedelta(days=16), "type": "running", "distance": 10.0, "duration": 50.0},
+            {"date": today - pd.Timedelta(days=3), "type": "cycling", "distance": 50.0, "duration": 120.0},
+            {"date": today + pd.Timedelta(days=1), "type": "running", "distance": 12.0, "duration": 65.0},
         ]
     )
 
     mileage = weekly_mileage(activities)
 
+    assert mileage["7d"] == 0.0
+    assert mileage["28d"] == 10.0
+    assert not mileage["weekly_series"].empty
+
+
+def test_weekly_mileage_supports_historical_reference_day() -> None:
+    activities = pd.DataFrame(
+        [
+            {"date": "2026-01-01", "type": "running", "distance": 10.0, "duration": 50.0},
+            {"date": "2026-01-07", "type": "trail_running", "distance": 8.0, "duration": 48.0},
+            {"date": "2026-01-08", "type": "running", "distance": 5.0, "duration": 30.0},
+        ]
+    )
+
+    mileage = weekly_mileage(activities, pd.Timestamp("2026-01-07"))
+
     assert mileage["7d"] == 18.0
     assert mileage["28d"] == 18.0
-    assert not mileage["weekly_series"].empty
 
 
 def test_consistency_score_counts_unique_recent_running_days() -> None:

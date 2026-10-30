@@ -1,0 +1,8 @@
+{% from 'components/ui.html' import empty %}
+{% from 'components/v2_icons.html' import icon %}
+{% if not groups and page == 1 %}<div class="activity-empty">{{ empty(sync) }}</div>{% endif %}
+{% for group in groups %}<section class="v2-activity-week" aria-label="Week {{ group.label }}">
+  <div class="v2-activity-week-head"><h2>{{ group.label }}</h2><span class="cap">{{ group.sessions }} sessions · {% if group.load is not none %}{{ group.load }} load{% else %}No data · {{ sync }}{% endif %} · {{ group.sports|join(', ') }}</span></div>
+  <div class="v2-activity-rows">{% for item in group['items'] %}<a class="v2-activity-row" href="/activities/{{ item.id }}?from=activities"><span class="v2-activity-sport-icon">{{ icon(item.icon) }}</span><span class="v2-activity-row-main"><strong>{{ item.title }}</strong><small class="cap">{{ item.date }} · {{ item.sport }}{% if item.opinion %} · Coach review{% endif %}</small></span><span class="v2-activity-row-meta"><strong class="num">{{ item.duration or 'No data · ' ~ sync }}</strong><small class="cap">{{ item.detail }}</small></span>{{ icon('chevron') }}</a>{% endfor %}</div>
+</section>{% endfor %}
+{% if has_more %}<div id="load-more" class="load-more"><a class="btn" href="/activities?{{ filter_query }}&page={{ page + 1 }}" hx-get="/activities?{{ filter_query }}&page={{ page + 1 }}" hx-target="#load-more" hx-swap="outerHTML">Load more</a></div>{% endif %}

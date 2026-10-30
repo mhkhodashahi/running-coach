@@ -2,12 +2,24 @@
 
 from __future__ import annotations
 
+import sqlite3
 import time
 from dataclasses import dataclass
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
+from coach.proposals import apply, dismiss, get_proposal, list_proposals, monday
 from config import Settings, get_settings
+from db.session import session_scope
+from db.setup import init_db
+from services.daily_decision_service import get_or_create_daily_decision
+from services.effort_service import rate_activity
 from services.telegram_service import TelegramService
 from services.training_chat_service import TrainingChatService
+from services.weekly_plan_service import get_weekly_plan
+from worker.jobs import day_review_message
+from worker.messages import public_link
+from worker.state import save_preferences
 
 
 @dataclass(frozen=True)
@@ -33,6 +45,48 @@ class TelegramTrainingChatBot:
         self.chat_service = chat_service or TrainingChatService(self.settings)
 
     def handle_update(self, update: dict) -> TelegramHandleResult:
+        callback = update.get("callback_query") or {}
+        if callback:
+            chat_id = str(((callback.get("message") or {}).get("chat") or {}).get("id") or "").strip()
+            if not self._authorized(chat_id):
+                return TelegramHandleResult(handled=True, authorized=False)
+            parts = str(callback.get("data") or "").split(":")
+            if len(parts) == 3 and parts[0] == "proposal" and parts[1].isdigit():
+                try:
+                    proposal_id = int(parts[1])
+                    proposal = get_proposal(self.settings.db_path, self.settings.default_user_id, proposal_id)
+                    if parts[2] == "apply":
+                        ids = [change["id"] for change in proposal["changes"]]
+                        apply(self.settings.db_path, self.settings.default_user_id, proposal_id, ids)
+                        reply = "Proposal applied."
+                    elif parts[2] == "dismiss":
+                        dismiss(self.settings.db_path, self.settings.default_user_id, proposal_id)
+                        reply = "Proposal dismissed."
+                    elif parts[2] == "review":
+                        link = public_link(self.settings.public_url, "/plan")
+                        reply = "Review each change in the app: " + link if link else "Review each change in the app."
+                    else:
+                        return TelegramHandleResult(handled=False)
+                except (ValueError, KeyError) as exc:
+                    if "stale" in str(exc).lower() or "out of date" in str(exc).lower():
+                        reply = ("This proposal is out of date because your plan changed. "
+                                 "Send /plan or open the app for a fresh one.")
+                    else:
+                        reply = "That proposal could not be changed. Send /plan to review it."
+                self.telegram_service.acknowledge_callback(str(callback.get("id") or ""), reply)
+                return TelegramHandleResult(handled=True, reply=reply)
+            if len(parts) != 3 or parts[0] != "rpe" or not parts[1].isdigit() or not parts[2].isdigit():
+                return TelegramHandleResult(handled=False)
+            try:
+                with session_scope() as session:
+                    rate_activity(session, int(parts[1]), self.settings.default_user_id,
+                                  int(parts[2]), "telegram")
+            except ValueError as exc:
+                reply = str(exc)
+            else:
+                reply = f"Effort saved: {parts[2]}/10."
+            self.telegram_service.acknowledge_callback(str(callback.get("id") or ""), reply)
+            return TelegramHandleResult(handled=True, reply=reply)
         message = update.get("message") or {}
         chat = message.get("chat") or {}
         chat_id = str(chat.get("id") or "").strip()
@@ -52,6 +106,7 @@ class TelegramTrainingChatBot:
     def run_polling(self, poll_timeout: int = 30, idle_sleep_seconds: float = 1.0) -> None:
         """Run a local long-polling loop until interrupted."""
 
+        init_db()
         if not self.settings.telegram_bot_token:
             raise ValueError("TELEGRAM_BOT_TOKEN is not configured.")
         if not self.settings.telegram_chat_id:
@@ -81,7 +136,62 @@ class TelegramTrainingChatBot:
                 "- What was my weekly mileage?\n"
                 "- Am I on track for my running goal?\n"
                 "- What should I do tomorrow?"
+                "\n\nCommands: /today, /plan [MONDAY], /review, /pause, /resume. "
+                "Proposal buttons can apply all or dismiss; review individual changes in the app."
             )
+        if command.startswith("/plan"):
+            return self._plan_command(text)
         if command == "/status":
             return self.chat_service.answer("Give me a concise current training status.").text
+        if command in ("/pause", "/resume"):
+            save_preferences(self.settings.db_path, self.settings.default_user_id,
+                             {"paused": command == "/pause"})
+            return "Scheduled messages paused." if command == "/pause" else "Scheduled messages resumed."
+        if command == "/review":
+            day = datetime.now(ZoneInfo(self.settings.local_timezone)).date()
+            return day_review_message(self.settings, day)
+        if command == "/today":
+            day = datetime.now(ZoneInfo(self.settings.local_timezone)).date()
+            decision = get_or_create_daily_decision(day, settings=self.settings)
+            lines = [f"{decision.headline} {decision.explanation}"]
+            if decision.provisional:
+                lines.append(f"Provisional: based on {decision.based_on}; last sync {decision.last_sync_time}.")
+            for item in decision.sports:
+                lines.append(f"{item['rank']}. {item['sport']}: {item['session']['intent']} "
+                             f"({item['session']['duration_min']} min). {item['reason']}.")
+            if decision.optional:
+                lines.append(decision.optional)
+            for option in decision.team_options:
+                lines.append(f"{option['sport'].title()}: {option['label']}.")
+            if decision.athlete_choice:
+                lines.append(f"Your choice: {decision.athlete_choice} (coach: {decision.intensity}).")
+            return "\n".join(lines)
         return self.chat_service.answer(text).text
+
+    def _plan_command(self, text: str) -> str:
+        parts = text.split(maxsplit=2)
+        command = parts[0].lower()
+        start = monday(datetime.now(ZoneInfo(self.settings.local_timezone)).date())
+        try:
+            if command == "/plan" and len(parts) >= 2:
+                selected = date.fromisoformat(parts[1])
+                if selected != monday(selected):
+                    return "Choose a Monday date in YYYY-MM-DD format."
+                start = selected
+            if command == "/plan":
+                plan = get_weekly_plan(start, settings=self.settings)
+                lines = [f"Week of {start.isoformat()} (version {plan['version']}):"]
+                for offset in range(7):
+                    day = start + timedelta(days=offset)
+                    sessions = [item for item in plan["sessions"] if item["date"] == day.isoformat()]
+                    lines.append(f"{day:%a}: " + (", ".join(
+                        f"{item['sport']} {item['intent']} ({item['duration_min']} min)"
+                        f"{' fixed' if item['origin'] == 'fixed' else ''}" for item in sessions) or "rest / open"))
+                for proposal in list_proposals(self.settings.db_path, self.settings.default_user_id, start)[:3]:
+                    pending = [change for change in proposal["changes"] if change["decision"] == "pending"]
+                    lines.append(f"Proposal {proposal['id']}: {proposal['status']}; "
+                                 f"{len(pending)} pending. Review it in the app.")
+                return "\n".join(lines)[:3900]
+            return "Plan changes need individual approval in the app. Use /plan to review."
+        except (ValueError, sqlite3.Error) as exc:
+            return str(exc)

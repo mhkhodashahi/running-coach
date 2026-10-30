@@ -1,6 +1,6 @@
 # Running Coach
 
-Running Coach is a local-first Streamlit app for reviewing Garmin-style running data, recovery metrics, goals, predictions, and optional LLM coaching. It stores data in SQLite on your machine and can work with mock CSV data, Garmin Connect sync, OpenAI, Ollama, Telegram, and Google Maps.
+Pulse Coach is a local-first web app for reviewing Garmin-style training data, recovery metrics, goals, and optional LLM coaching. It stores data in SQLite on your machine and supports CSV import, Garmin Connect sync, OpenAI, Ollama and Telegram.
 
 This project is not affiliated with Garmin, Strava, OpenAI, Telegram, or Google. It is not medical advice.
 
@@ -14,9 +14,9 @@ you to make the corresponding source code available to users of that service.
 
 ## Features
 
-- Streamlit dashboard for weekly mileage, readiness, recovery, VO2max, predicted finish, and goal progress
+- Server-rendered Today, Activities, Trends, Coach, Plan and Settings pages
 - Garmin-style CSV import and optional live Garmin Connect sync
-- Activity detail page with route maps, laps, stream data, HR zones, similar activities, and stored per-run coach opinions
+- Activity detail page with laps, stream data, HR zones, similar activities, and stored per-run coach opinions
 - Goal tracking for 5K, 10K, half, and custom running targets
 - Deterministic training analytics and prediction snapshots after imported or synced runs
 - Daily and weekly coaching digests with optional Telegram delivery
@@ -30,14 +30,17 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
 cp .env.example .env
-streamlit run app/main.py
+python -m scripts.upgrade_db --db db/running_coach.db
+python -m web
 ```
 
-On first launch, the app creates `db/running_coach.db` and loads the bundled mock CSV data if no activities or health metrics exist yet.
+The web app checks the database version on startup and never migrates it. Run the backup-first upgrade command before starting it.
 
 ## Configuration
 
 Edit `.env` after copying `.env.example`.
+Settings can update only `HR_ZONES` and `SLEEP_GOAL_HOURS` in this local file.
+It preserves other keys and restricts `.env` permissions to the owner.
 
 ```bash
 # LLM provider: ollama, openai, or chatgpt
@@ -49,7 +52,9 @@ OLLAMA_MODEL=qwen3:14b
 
 # OpenAI
 OPENAI_API_KEY=
-OPENAI_MODEL=gpt-5-mini
+OPENAI_MODEL=gpt-6-luna
+ALLOW_REMOTE_LLM=
+REMOTE_ATHLETE_DATA_APPROVED=
 
 # Garmin Connect sync
 GARMIN_EMAIL=
@@ -70,22 +75,50 @@ Do not commit `.env`, Garmin token files, SQLite databases, logs, or personal ex
 
 ## Running The App
 
+The new server-rendered Today page runs locally with:
+
 ```bash
-streamlit run app/main.py
+python -m scripts.upgrade_db --db db/running_coach.db
+python -m web
 ```
 
-The dashboard sidebar can import activity/health CSV files or sync recent Garmin data when credentials are configured.
+Open `http://127.0.0.1:8000`. `WEB_HOST` and `WEB_PORT` change the bind address
+and port. By default the web UI only binds to the local machine. Set
+`WEB_PASSWORD` in `.env` to require a signed-cookie login; a password is
+required before binding to a non-local address. Use HTTPS through a trusted
+reverse proxy for remote access. Profile, zones, sleep goal, goals, Garmin sync
+and CSV import are in Settings. Features deferred or dropped from the old UI are
+listed in `docs/milestone-5d-parity.md`.
+No fonts, scripts, or styles are fetched from a CDN.
 
-## Streamlit Pages
+The old Streamlit interface is optional; its startup instructions are in
+`legacy/streamlit/README.md`.
 
-- `Dashboard`: weekly/monthly running progress, recent run log, active goal projection, prediction trend, Garmin sync, and profile management
-- `Activities`: imported and synced activity table
-- `Recovery`: sleep, HRV, resting HR, body battery, stress, and recovery charts
-- `Goal Achievement Readiness`: active-goal confidence, pace gap, and scenario planning
-- `AI Coach`: daily or weekly coaching digest generation and Telegram preview
-- `Goals and Digests`: goal management and digest history
-- `Quality Sessions`: quality-workout detection, workload chart, and session table
-- `Activity Detail`: single-activity view with route, effort stats, prediction after the run, notes, and one-time stored LLM coach opinion
+## Worker, Alerts, And Backups
+
+Start the local scheduler with `python -m worker` after upgrading the database.
+Only one worker runs at a time. It checks Garmin sync, scheduled job failures,
+and missed morning calls, and sends one actionable Telegram alert per problem
+per day. The web rail and Today page show worker or sync trouble too. The
+example [`docs/worker.launchd.plist`](docs/worker.launchd.plist) has
+`RunAtLoad` and `KeepAlive`, so launchd restarts the worker after login or a
+crash; replace its path placeholders with local absolute paths before use.
+
+After a successful morning sync, the worker makes a dated online SQLite backup.
+`BACKUP_DIR` in `.env` defaults to `~/pulse-backups/` and must be outside this
+repository. The backup is integrity-checked; retention keeps 14 daily files
+and eight Sunday copies. Only files named `pulse.daily.YYYY-MM-DD.db` or
+`pulse.weekly.YYYY-MM-DD.db` in that folder are eligible for pruning.
+
+To restore, stop the worker and the web app, then run:
+
+```bash
+python -m scripts.restore_db --from ~/pulse-backups/pulse.daily.YYYY-MM-DD.db
+```
+
+Type `RESTORE` when prompted. The command refuses an active worker lock,
+validates the source, and makes a safety backup of the current database before
+restoring `db/running_coach.db`. It does not touch `db/marathon_coach.db`.
 
 ## Garmin Sync
 
@@ -115,8 +148,14 @@ OpenAI:
 ```bash
 LLM_PROVIDER=openai
 OPENAI_API_KEY=your_openai_api_key
-OPENAI_MODEL=gpt-5-mini
+OPENAI_MODEL=gpt-6-luna
+ALLOW_REMOTE_LLM=true
+REMOTE_ATHLETE_DATA_APPROVED=true
 ```
+
+OpenAI uses the Responses API with response storage disabled. Set `LLM_PROVIDER=openai`
+to use it; Ollama remains the default. `OPENAI_MODEL` can also be set to
+`gpt-6.1-sol` or `gpt-6-astra` for more demanding coaching workloads.
 
 Ollama:
 
@@ -127,6 +166,14 @@ OLLAMA_MODEL=qwen3:14b
 ```
 
 If the configured model is unavailable, some workflows fall back to deterministic rule-based coaching. Ollama prompts are guarded by a local input-size estimate to avoid sending oversized requests.
+
+## Privacy and AI Providers
+
+Local Ollama runs on your machine and needs no remote approval; it is supported but can be slower and weaker than a remote model on detailed session opinions. For OpenAI (including the `chatgpt` provider alias), set both `ALLOW_REMOTE_LLM=true` and `REMOTE_ATHLETE_DATA_APPROVED=true` in your private `.env`. If either is absent, the client refuses before sending data.
+
+`COACH_DAILY_CALL_LIMIT` caps coach chat LLM requests per user and local day, including retries. Leave it empty for the default of 20; set a positive integer to change it.
+
+Per-activity opinions send the rounded facts pack, planned and detected intent, code-generated recording notes, and running memory to the selected provider. Other optional AI coaching and chat flows can send relevant activity, health, goal, and message context. With OpenAI selected, that content goes to OpenAI; with Ollama, it stays on the configured local Ollama server. API keys and Garmin credentials are not included in coaching prompts. OpenAI requests use `store=False`.
 
 ## Telegram Digest
 
@@ -170,7 +217,7 @@ Run checks:
 
 ```bash
 python -m ruff check .
-python -m compileall -q app analytics db llm services ui utils tests
+python -m compileall -q .
 python -m pytest
 ```
 
@@ -179,13 +226,13 @@ CI runs the same ruff, syntax, and pytest checks.
 ## Project Structure
 
 ```text
-app/        Streamlit entry point, dashboard, and pages
+web/        FastAPI routes, templates and self-hosted static assets
 analytics/  Training and recovery analytics
 data/       Mock CSV data and local-only generated memory files
 db/         SQLAlchemy models, SQLite setup, and repository helpers
 llm/        OpenAI and Ollama clients plus response schemas
 services/   Garmin import, coaching, goals, Telegram, and prediction services
-ui/         Plotly chart builders and Streamlit components
+legacy/streamlit/  Optional, retired Streamlit UI
 utils/      CLI workflows and formatting helpers
 tests/      Unit and integration-style regression tests
 ```

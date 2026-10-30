@@ -1,0 +1,18 @@
+{% extends 'base.html' %}
+{% from 'components/v2_icons.html' import icon %}
+{% block title %}Coach{% endblock %}
+{% block content %}
+<header class="v2-chat-head">
+  <div><span class="eyebrow">YOUR TRAINING CONVERSATION</span><h1 class="num">Coach</h1>
+    <p class="cap">Knows today's data and your training · {{ availability.usage }}</p></div>
+  <div class="v2-chat-head-actions"><span class="chip">{{ availability.provider_label }}</span>
+    <a class="btn" href="#coach-history">History {{ icon('chevron') }}</a></div>
+</header>
+{% include 'components/coach_conversation.html' %}
+<details id="coach-history" class="v2-chat-history"><summary>History and scheduled messages</summary>
+  <h2>Messages</h2>{% for item in messages %}<details><summary>{{ item.run_date }} · {{ item.job|replace('_',' ')|title }}</summary><p>{{ item.message_text }}</p></details>{% else %}<p class="cap">No scheduled messages yet.</p>{% endfor %}
+  <h2>What the coach can see</h2><p>{{ data_list|join(', ') }}. Never credentials, tokens, other users' data or device IDs.</p>
+  <h2>Next 7 days</h2><a href="/plan">Open your training plan</a>
+</details>
+{% endblock %}
+{% block coach_panel %}{% endblock %}
