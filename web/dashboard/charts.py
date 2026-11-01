@@ -311,35 +311,40 @@ def training_mix(source: DashboardSource, start: date, end: date, options: Widge
                      tuple(rows))
 
 
+def rolling_usual_band(history: list[dict], index: int, key: str, window: int,
+                       floor: float) -> tuple[float | None, float | None]:
+    """Use only prior calendar days; match the Insights minimum coverage and variation rule."""
+    prior = [float(row[key]) for row in history[max(0, index - window):index] if row[key] is not None]
+    if len(prior) < (window + 1) // 2:
+        return None, None
+    center = mean(prior)
+    variation = max(floor, pstdev(prior) if len(prior) > 1 else 0)
+    return round(center - variation, 1), round(center + variation, 1)
+
+
 def recovery_trends(source: DashboardSource, start: date, end: date, options: WidgetOptions) -> ChartData:
     key = {"recovery": "Recovery", "resting_hr": "Resting HR (bpm)", "hrv": "HRV (ms)"}[
         options.recovery_metric or "recovery"]
-    values = _daily_recovery(source, start, end)
     show_band = options.usual_range is not False
-    previous = []
-    if show_band:
-        previous_end = start - timedelta(days=1)
-        previous_start = previous_end - (end - start)
-        previous = _daily_recovery(source, previous_start, previous_end)
-    observed = [float(row[key]) for row in previous if row[key] is not None]
-    usable = show_band and len(observed) >= (len(previous) + 1) // 2
-    usual = mean(observed) if usable else None
-    floor = MIN_MEANINGFUL_CHANGE.get({"resting_hr": "rhr"}.get(options.recovery_metric or "recovery",
-                                                               options.recovery_metric or "recovery"), 3)
-    variation = max(floor, pstdev(observed) if len(observed) > 1 else 0)
+    window = 7 if key == "Resting HR (bpm)" else 28
+    history = _daily_recovery(source, start - timedelta(days=window if show_band else 0), end)
+    values = history[window:] if show_band else history
+    floor = MIN_MEANINGFUL_CHANGE.get("rhr" if key == "Resting HR (bpm)" else
+                                      "hrv" if key == "HRV (ms)" else "recovery", 3)
     rows = []
     for index, row in enumerate(values):
+        low, high = rolling_usual_band(history, index + window, key, window, floor) if show_band else (None, None)
         item: Row = {"Date": row["Date"], key: round(row[key], 1) if row[key] is not None else None,
-                     "Usual low": round(usual - variation, 1) if usual is not None else None,
-                     "Usual high": round(usual + variation, 1) if usual is not None else None}
+                     "Usual low": low, "Usual high": high}
         if options.moving_average is not False:
             recent = [float(entry[key]) for entry in values[max(0, index - 6):index + 1]
                       if entry[key] is not None]
             item["7-day average"] = round(mean(recent), 1) if recent else None
         rows.append(item)
     columns = ("Date", key, "Usual low", "Usual high") + (("7-day average",) if options.moving_average is not False else ())
-    note = ("Usual band: previous period average +/- normal day-to-day variation."
-            if usable else "Not enough previous-period data for a usual band." if show_band else "")
+    note = (f"Rolling usual band: prior {window} days +/- normal day-to-day variation."
+            if any(row["Usual low"] is not None for row in rows) else
+            "Not enough history for a usual band." if show_band else "")
     return ChartData(columns, tuple(rows), note)
 
 

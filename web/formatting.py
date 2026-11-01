@@ -36,6 +36,12 @@ def activity_duration(minutes: float | None) -> str | None:
     return f"{rounded} min" if rounded < 60 else duration_minutes(minutes)
 
 
+def clock_minutes(value: float) -> str:
+    """Render a measured effort time in m:ss without changing stored minutes."""
+    seconds = round(value * 60)
+    return f"{seconds // 60}:{seconds % 60:02d}"
+
+
 def lap_time(value: str | None) -> str | None:
     """Drop only a leading minute zero, retaining short-lap times like 0:20."""
     if value is None:

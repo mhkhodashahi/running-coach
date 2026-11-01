@@ -505,6 +505,32 @@ def test_startup_only_checks_revision_on_temporary_database(tmp_path, monkeypatc
         engine.dispose()
 
 
+def test_web_and_worker_refuse_behind_head_without_writing(tmp_path, monkeypatch):
+    from dataclasses import replace
+
+    from fastapi.testclient import TestClient
+
+    from config import get_settings
+    from web.app import create_app
+    from worker import __main__ as worker_main
+
+    database = tmp_path / "behind.db"
+    upgrade_database(database, backup_dir=tmp_path / "runner-backups")
+    with closing(sqlite3.connect(database)) as connection:
+        connection.execute("UPDATE alembic_version SET version_num='0014_dashboard_widgets'")
+        connection.commit()
+    before = database.read_bytes()
+    settings = replace(get_settings(), db_path=database, llm_provider="none")
+    with pytest.raises(RuntimeError, match="Database needs an upgrade"):
+        with TestClient(create_app(settings, password="")):
+            pass
+    monkeypatch.setattr(worker_main, "get_settings", lambda: settings)
+    with pytest.raises(RuntimeError, match="Database needs an upgrade"):
+        worker_main.main()
+    assert database.read_bytes() == before
+    assert not database.with_suffix(".worker.lock").exists()
+
+
 def test_raw_alembic_upgrade_cannot_bypass_backup_runner():
     with pytest.raises(RuntimeError, match="automatic backup required"):
         command.upgrade(migration_config(), "head")

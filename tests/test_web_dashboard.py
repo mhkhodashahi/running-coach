@@ -15,7 +15,8 @@ from sqlalchemy import create_engine
 from config import get_settings
 from db.migration_runner import migration_config, upgrade_database
 from web.app import create_app
-from web.dashboard.charts import REGISTRY, load_source
+from web.charts import dashboard_svg
+from web.dashboard.charts import REGISTRY, load_source, rolling_usual_band
 from web.dashboard.storage import Widget, WidgetOptions, read_widgets
 from web.view_models.dashboard import dashboard_state, follow_ups, panel_summary, widget_title, widget_view
 
@@ -81,6 +82,35 @@ def test_registry_data_functions_use_invented_rows_and_gaps(dashboard_db):
     assert recovery.rows[0]["Recovery"] is None
     plans = REGISTRY["planned_vs_done"].data_function(source, DAY - timedelta(days=7), DAY, WidgetOptions())
     assert any(row["Done in plan"] == 30 for row in plans.rows)
+
+
+def test_best_effort_axis_is_faster_up_and_uses_clock_time():
+    chart = dashboard_svg(({"Date": "2026-10-01", "Time (min)": 6.5},
+                           {"Date": "2026-10-08", "Time (min)": 5.25}),
+                          ("Date", "Time (min)"), "line", "Best efforts")
+    assert chart["axis_min_value"] < 5.25 < 6.5 < chart["axis_max_value"]
+    assert chart["axis_high"].count(":") == 1
+    assert chart["y_title"] == "Time · faster ↑"
+    assert "1 Oct" in chart["axis_dates"]
+
+
+def test_easy_pace_scatter_y_axis_uses_hr_data_only():
+    chart = dashboard_svg(({"Date": "2026-10-01", "Pace (min/km)": 6.0, "Avg HR (bpm)": 121},
+                           {"Date": "2026-10-08", "Pace (min/km)": 5.5, "Avg HR (bpm)": 128}),
+                          ("Date", "Pace (min/km)", "Avg HR (bpm)"), "scatter", "Easy pace vs HR")
+    assert 100 < chart["axis_min_value"] < chart["axis_max_value"] < 150
+    assert chart["x_title"] == "Pace (min/km)"
+    assert chart["y_title"] == "Avg HR (bpm)"
+
+
+def test_usual_band_is_rolling_and_requires_history():
+    history = [{"Recovery": value} for value in ([60] * 28 + [80] * 14)]
+    assert rolling_usual_band(history, 13, "Recovery", 28, 3) == (None, None)
+    first = rolling_usual_band(history, 28, "Recovery", 28, 3)
+    later = rolling_usual_band(history, 42, "Recovery", 28, 3)
+    assert first == (57.0, 63.0)
+    assert later[0] > first[0]
+    assert later[1] > first[1]
 
 
 def test_options_reject_unknown_or_invalid():

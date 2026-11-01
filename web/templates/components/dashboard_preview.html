@@ -1,5 +1,5 @@
 {% if widget.empty %}<p class="cap v2-dashboard-empty">{{ widget.empty }}</p>{% else %}
-<div class="v2-dashboard-plot">{{ widget.svg|safe }}</div>
+<div class="v2-chart-layout v2-dashboard-layout"><div class="v2-chart-y" aria-hidden="true"><span>{{ widget.axis_high }}</span>{% if widget.y_title %}<span class="v2-dashboard-axis-title">{{ widget.y_title }}</span>{% endif %}<span>{{ widget.axis_low }}</span></div><div class="v2-chart-body"><div class="v2-dashboard-plot">{{ widget.svg|safe }}</div><div class="v2-chart-x" aria-hidden="true">{% for label in widget.axis_dates %}<span>{{ label }}</span>{% endfor %}</div>{% if widget.x_title %}<div class="v2-dashboard-axis-title" aria-hidden="true">{{ widget.x_title }}</div>{% endif %}</div></div>
 {% if widget.legend %}<div class="v2-dashboard-legend" aria-label="Chart legend">{% for label,tone in widget.legend %}<span><i class="v2-dashboard-swatch swatch-{{ tone }}" aria-hidden="true"></i>{{ label }}</span>{% endfor %}</div>{% endif %}
 {% endif %}
 {% if widget.table_rows %}

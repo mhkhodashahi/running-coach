@@ -8,7 +8,7 @@ from typing import Any
 from xml.etree import ElementTree
 
 from services.fact_display import hours as display_hours
-from web.formatting import short_date
+from web.formatting import clock_minutes, short_date
 
 SPARKLINE_COLORS = {"heart": "var(--heart)", "sleep": "var(--sleep)", "muted": "var(--ink-muted)"}
 TREND_COLORS = {**SPARKLINE_COLORS, "load": "var(--load)"}
@@ -18,8 +18,26 @@ TREND_TOP = 28
 TREND_HEIGHT = 126
 
 
+def _dashboard_axis_value(value: float, key: str) -> str:
+    if key == "Time (min)":
+        return clock_minutes(value)
+    if "Pace" in key:
+        seconds = round(value * 60)
+        return f"{seconds // 60}:{seconds % 60:02d} /km"
+    if "%" in key:
+        return f"{round(value)}%"
+    unit = " bpm" if "HR (bpm)" in key or "Resting HR" in key else (
+        " ms" if "HRV" in key else " min" if "(min)" in key else "")
+    return f"{round(value)}{unit}"
+
+
+def _dashboard_date_label(value: object) -> str:
+    day = date.fromisoformat(str(value)[:10])
+    return f"{day.day} {day:%b}"
+
+
 def dashboard_svg(rows: tuple[dict, ...], columns: tuple[str, ...], chart_type: str,
-                  title: str, notes: tuple[dict, ...] = ()) -> dict[str, str]:
+                  title: str, notes: tuple[dict, ...] = ()) -> dict[str, Any]:
     """Draw the same table values as bounded SVG marks with a spoken summary."""
     numeric = [key for key in columns[1:] if any(isinstance(row.get(key), (float, int)) for row in rows)]
     observed = [row for row in rows if any(isinstance(row.get(key), (float, int)) for key in numeric)]
@@ -29,13 +47,24 @@ def dashboard_svg(rows: tuple[dict, ...], columns: tuple[str, ...], chart_type: 
     building_only = is_weekly and rows and all(row.get("Status") == "baseline still building"
                                                               for row in rows)
     if (not observed or not numeric) and not building_only:
-        return {"svg": "", "summary": summary}
-    width, height, left, top = 600, 210, 38, 16
-    plot_w, plot_h = width - left - 14, height - top - 26
-    values = [float(row[key]) for row in observed for key in numeric if isinstance(row.get(key), (float, int))]
+        return {"svg": "", "summary": summary, "axis_high": "", "axis_low": "", "axis_dates": (),
+                "x_title": "", "y_title": ""}
+    width, height, left, top = 604, 205, TREND_X, TREND_TOP
+    plot_w, plot_h = TREND_WIDTH, TREND_HEIGHT
+    scatter = chart_type == "scatter" and len(numeric) >= 2
+    if scatter:
+        observed = [row for row in observed if all(isinstance(row.get(key), (int, float)) for key in numeric[:2])]
+    y_key = numeric[1] if scatter else numeric[0] if numeric else "% of usual"
+    values = [float(row[y_key]) for row in observed if isinstance(row.get(y_key), (float, int))]
+    if not values and not building_only:
+        return {"svg": "", "summary": summary, "axis_high": "", "axis_low": "", "axis_dates": (),
+                "x_title": "", "y_title": ""}
     stacked_keys = [key for key in numeric if key != "4-week average %"]
     if chart_type == "stacked" and not is_planned:
         values += [sum(float(row.get(key) or 0) for key in stacked_keys) for row in observed]
+    if "Usual low" in columns:
+        values += [float(row[key]) for row in rows for key in ("Usual low", "Usual high")
+                   if isinstance(row.get(key), (int, float))]
     if is_planned:
         values += [sum(float(row.get(key) or 0) for key in numeric[1:]) for row in observed]
     if building_only:
@@ -43,21 +72,28 @@ def dashboard_svg(rows: tuple[dict, ...], columns: tuple[str, ...], chart_type: 
     low = min(0, min(values)) if chart_type in ("bar", "stacked") else min(values)
     high = max(values + ([110] if is_weekly else []))
     if high == low:
-        high = low + 1
+        margin = 5 if "HR" in y_key else 1
+        low, high = low - margin, high + margin
+    elif chart_type in ("line", "scatter"):
+        margin = max((high - low) * .08, .5 if "HR" not in y_key else 2)
+        low, high = low - margin, high + margin
+    faster_up = y_key == "Time (min)"
     def x(index: int) -> float:
         return left + (index + .5) / max(len(rows), 1) * plot_w
     def y(value: float) -> float:
-        return top + (high - value) / (high - low) * plot_h
+        return top + ((value - low) if faster_up else (high - value)) / (high - low) * plot_h
     parts = [f'<line x1="{left}" x2="{left + plot_w}" y1="{top + plot_h}" y2="{top + plot_h}" stroke="var(--line)"/>']
-    if rows and notes:
+    note_marks = []
+    if rows and notes and not scatter:
         for index, row in enumerate(rows):
             stamp = str(row[columns[0]])[:10]
             interval_end = date.fromisoformat(stamp) + timedelta(days=6) if columns[0] == "Week" else date.fromisoformat(stamp)
             matching = [note for note in notes if date.fromisoformat(stamp) <= date.fromisoformat(note["date"]) <= interval_end]
             if matching:
                 description = "; ".join(f'{note["date"]}: {note["text"]}' for note in matching)
-                parts.append(f'<circle class="chart-note-marker" cx="{x(index):.1f}" cy="{top + plot_h - 6:.1f}" '
-                             f'r="4" fill="var(--ink)"><title>{escape(description)}</title></circle>')
+                note_marks.append(f'<circle class="chart-note-marker" cx="{x(index):.1f}" '
+                                  f'cy="{top + plot_h - 6:.1f}" r="4" fill="var(--ink)">'
+                                  f'<title>{escape(description)}</title></circle>')
     if is_weekly:
         parts.append(f'<line x1="{left}" x2="{left + plot_w}" y1="{y(110):.1f}" y2="{y(110):.1f}" '
                      'stroke="var(--ink-muted)" stroke-dasharray="5 4"/>')
@@ -106,7 +142,7 @@ def dashboard_svg(rows: tuple[dict, ...], columns: tuple[str, ...], chart_type: 
                     path.append(f"{'L' if path else 'M'}{x(index):.1f},{y(float(value)):.1f}")
             parts.append(f'<path d="{" ".join(path)}" fill="none" stroke="var(--ink)" '
                          'stroke-width="2" stroke-dasharray="4 3"/>')
-    elif chart_type == "scatter" and len(numeric) >= 2:
+    elif scatter:
         xs = [float(row[numeric[0]]) for row in observed if isinstance(row.get(numeric[0]), (float, int))]
         x_low, x_high = min(xs), max(xs)
         for index, row in enumerate(observed):
@@ -138,15 +174,23 @@ def dashboard_svg(rows: tuple[dict, ...], columns: tuple[str, ...], chart_type: 
             dash = ' stroke-dasharray="4 3"' if column_index else ""
             parts.append(f'<path d="{" ".join(path)}" fill="none" stroke="{color}" '
                          f'stroke-width="2"{dash}/>')
-    parts.append(f'<text x="2" y="{top + 10}" class="axis-label">{high:.0f}</text>')
-    parts.append(f'<text x="2" y="{top + plot_h}" class="axis-label">{low:.0f}</text>')
-    for index in sorted({round(part * (len(rows) - 1) / min(4, max(len(rows) - 1, 1)))
-                         for part in range(min(4, max(len(rows) - 1, 1)) + 1)}):
-        parts.append(f'<text x="{x(index):.1f}" y="{height - 5}" text-anchor="middle" '
-                     f'class="axis-label">{escape(str(rows[index][columns[0]])[5:])}</text>')
+    parts.extend(note_marks)
     svg = (f'<svg class="dashboard-chart" viewBox="0 0 {width} {height}" role="img" '
            f'aria-label="{escape(summary)}"><title>{escape(summary)}</title>{"".join(parts)}</svg>')
-    return {"svg": svg, "summary": summary}
+    if scatter:
+        x_values = [float(row[numeric[0]]) for row in observed if isinstance(row.get(numeric[0]), (int, float))]
+        x_labels = (_dashboard_axis_value(min(x_values), numeric[0]),
+                    _dashboard_axis_value(max(x_values), numeric[0]))
+    else:
+        indices = sorted({round(part * (len(rows) - 1) / min(4, max(len(rows) - 1, 1)))
+                          for part in range(min(4, max(len(rows) - 1, 1)) + 1)})
+        x_labels = tuple(_dashboard_date_label(rows[index][columns[0]]) for index in indices)
+    return {"svg": plot_only(svg), "summary": summary,
+            "axis_high": _dashboard_axis_value(low if faster_up else high, y_key),
+            "axis_low": _dashboard_axis_value(high if faster_up else low, y_key),
+            "axis_dates": x_labels, "axis_min_value": low, "axis_max_value": high,
+            "x_title": numeric[0] if scatter else "", "y_title": (
+                "Time · faster ↑" if faster_up else y_key if scatter else "")}
 
 
 def annotate_time_chart(svg: str, dates: list[str], notes: tuple[dict, ...], *, weekly: bool = False,

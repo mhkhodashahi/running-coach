@@ -78,8 +78,8 @@ def test_decision_prompt_has_generic_coach_context_without_personal_zones() -> N
         rules=[],
     )
 
-    assert "evidence-led endurance coach" in system_prompt
-    assert "Never assume an" in system_prompt
+    assert "AI endurance running coach focused on performance" in system_prompt
+    assert "If a key metric is unavailable, do not invent it" in system_prompt
     assert "110-128 bpm" not in system_prompt
     assert "Map the requested eight-part coaching analysis" in system_prompt
 
@@ -91,7 +91,7 @@ def test_telegram_prompt_uses_generic_coach_style() -> None:
         decision_payload={"summary": "Controlled aerobic day."},
     )
 
-    assert "evidence-led endurance coach" in system_prompt
+    assert "thoughtful running coach writing a Telegram update" in system_prompt
     assert "147-165 bpm" not in system_prompt
 
 

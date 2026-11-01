@@ -7,7 +7,7 @@ from datetime import date, timedelta
 from web.charts import dashboard_svg
 from web.dashboard.charts import REGISTRY, DashboardSource
 from web.dashboard.storage import Widget
-from web.formatting import short_date
+from web.formatting import clock_minutes, short_date
 
 
 def widget_window(day: date, dashboard_days: int, widget: Widget) -> tuple[date, date]:
@@ -46,7 +46,10 @@ def widget_view(widget: Widget, source: DashboardSource, day: date, dashboard_da
         interval_end = (date.fromisoformat(stamp) + timedelta(days=6)).isoformat() if data.columns[0] == "Week" else stamp
         matching = [note for note in relevant_notes if stamp <= note["date"] <= interval_end]
         covered.update(note["date"] for note in matching)
-        table_rows.append({**row, "Notes": "; ".join(note["text"] for note in matching)})
+        display_row = {**row, "Notes": "; ".join(note["text"] for note in matching)}
+        if widget.chart_id == "best_efforts" and isinstance(display_row.get("Time (min)"), (int, float)):
+            display_row["Time"] = clock_minutes(float(display_row.pop("Time (min)")))
+        table_rows.append(display_row)
     for note in relevant_notes:
         if note["date"] not in covered:
             table_rows.append({data.columns[0]: note["date"], "Notes": note["text"]})
@@ -63,12 +66,16 @@ def widget_view(widget: Widget, source: DashboardSource, day: date, dashboard_da
     if ((widget.chart_id == "intensity_share" and widget.options.moving_average is True)
             or (widget.chart_id == "recovery_trends" and widget.options.moving_average is not False)):
         legend = (*legend, ("Moving average", "ink" if widget.chart_id == "intensity_share" else "muted"))
+    table_columns = tuple("Time" if column == "Time (min)" else column for column in data.columns)
     return {"key": str(widget.id if widget.id is not None else -(position + 1)),
             "chart_id": widget.chart_id, "title": title,
             "options": widget.options,
             "period": f"{short_date(start)} – {short_date(end)}", "size": widget.options.size,
-            "svg": rendered["svg"], "summary": rendered["summary"], "columns": data.columns,
-            "rows": data.rows, "table_columns": (*data.columns, "Notes"), "table_rows": tuple(table_rows),
+            "svg": rendered["svg"], "summary": rendered["summary"],
+            "axis_high": rendered["axis_high"], "axis_low": rendered["axis_low"],
+            "axis_dates": rendered["axis_dates"], "x_title": rendered["x_title"],
+            "y_title": rendered["y_title"], "columns": data.columns,
+            "rows": data.rows, "table_columns": (*table_columns, "Notes"), "table_rows": tuple(table_rows),
             "notes": relevant_notes, "footnote": data.footnote, "legend": legend,
             "empty": f"No data for {sport} in this period · {sync}" if not rendered["svg"] else None}
 
@@ -84,7 +91,10 @@ def chart_context_summary(view: dict) -> str:
     usual = next((float(row["Usual high"]) for row in reversed(view["rows"])
                   if isinstance(row.get("Usual high"), (int, float))), None)
     usual_text = f" Usual upper range {usual:g}." if usual is not None else ""
-    return (f"{view['title']} · {view['period']}. Latest {numeric} {values[-1]:g}; "
+    latest = clock_minutes(values[-1]) if numeric == "Time (min)" else f"{values[-1]:g}"
+    if numeric == "Time (min)":
+        direction = "faster" if values[-1] < values[0] else "slower" if values[-1] > values[0] else "steady"
+    return (f"{view['title']} · {view['period']}. Latest {numeric} {latest}; "
             f"{direction} than the start of the period.{usual_text}")
 
 
