@@ -63,7 +63,7 @@ Goals/races ┘   (scheduler)                                (tools over the DB)
 - **Undo is always possible.** Accepting a proposal stores a snapshot of the affected plan first; "Undo last coach changes" restores it. Logged activities are never changed.
 - **Stale proposals cannot overwrite.** If the plan changed after a proposal was created, the proposal is marked stale and cannot be applied; the athlete requests a fresh one.
 - **Scheduled reviews only suggest.** The morning check, the 17:00 day review and the weekly review never apply anything; they end with a proposal to accept or ignore.
-- **What the coach can see** is a fixed, documented list: activities, laps, samples, health metrics, the metrics snapshot, goals, planned intents, the plan, effort ratings and the running memory. Never: credentials, tokens, other users' data, raw device IDs.
+- **What the coach can see** is a fixed, documented list: activities, laps, samples, health metrics, the metrics snapshot, goals, planned intents, the plan, effort ratings, timeline notes and the running memory. Never: credentials, tokens, other users' data, raw device IDs.
 - **Limits:** one coach job per user at a time, and a daily cap on LLM calls per user (config `COACH_DAILY_CALL_LIMIT`).
 
 ## Coach opinion JSON (per activity)

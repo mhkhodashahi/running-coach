@@ -152,15 +152,39 @@ def opinion_preview(opinion: dict[str, Any] | None) -> dict[str, Any] | None:
 
 
 def activity_tabs(opinion: dict[str, Any] | None, laps: list[dict[str, Any]],
-                  similar: list[dict[str, Any]]) -> tuple[dict[str, str], ...]:
+                  similar: list[dict[str, Any]], has_sets: bool = False) -> tuple[dict[str, str], ...]:
     tabs = [{"id": "activity-overview", "label": "Overview"}]
     if opinion:
         tabs.append({"id": "activity-review", "label": "Coach review"})
     if laps:
         tabs.append({"id": "activity-laps", "label": "Laps"})
+    if has_sets:
+        tabs.append({"id": "activity-sets", "label": "Sets"})
     if similar:
         tabs.append({"id": "activity-compare", "label": "Compare"})
     return tuple(tabs)
+
+
+def strength_set_rows(rows: list[dict[str, Any]]) -> tuple[dict[str, str | None], ...]:
+    """Present Garmin intervals without treating candidate names as confirmed exercises."""
+
+    result = []
+    for row in rows:
+        candidates = json.loads(row.get("exercises_json") or "[]")
+        named = next((item for item in candidates if item.get("name")), None)
+        label = "Rest" if row["set_type"] == "REST" else (
+            str(named["name"]).replace("_", " ").title() if named else "Exercise not identified")
+        duration = row.get("duration_seconds")
+        seconds = round(duration) if duration is not None else None
+        duration_label = (f"{seconds // 60}:{seconds % 60:02d}" if seconds is not None else None)
+        reps = row.get("repetition_count")
+        weight = row.get("weight_grams")
+        result.append({"number": str(row["set_index"]), "type": row["set_type"], "label": label,
+                       "duration": duration_label, "reps": f"{reps} reps" if reps is not None else None,
+                       "weight": f"{weight / 1000:g} kg" if weight and weight > 0 else None,
+                       "candidate": None if named or not candidates else
+                       str(candidates[0].get("category") or "").replace("_", " ").title() or None})
+    return tuple(result)
 
 
 def coach_fact_summary(activity: dict[str, Any], facts: list[dict[str, str]], sync: str) -> str:
@@ -225,7 +249,9 @@ def build_activity_view(context: dict[str, Any], facts: list[dict[str, str]]) ->
     numbers, secondary = sport_numbers(context["stats"], activity["category"], context["sync"])
     return {"numbers": numbers, "secondary": secondary,
             "opinion_preview": opinion_preview(context["opinion"]),
-            "tabs": activity_tabs(context["opinion"], context["laps"], context["similar"]),
+            "tabs": activity_tabs(context["opinion"], context["laps"], context["similar"],
+                                  bool(context.get("exercise_sets"))),
+            "strength_sets": strength_set_rows(context.get("exercise_sets", [])),
             "compare_columns": comparison_columns(context["similar"], activity["category"]),
             "coach_summary": coach_fact_summary(activity, facts, context["sync"]),
             "team_note": activity["category"] in ("volleyball", "football"),

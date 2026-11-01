@@ -8,14 +8,19 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import create_engine, select
+from sqlalchemy.orm import Session
 
 from config import get_settings
 from db.migration_runner import upgrade_database
+from db.models import ActivityExerciseSet
+from db.repository import replace_activity_exercise_sets
 from services.daily_decision_service import build_daily_decision
 from web.activities import evidence_source_label
 from web.app import create_app
 from web.charts import heart_rate_chart
 from web.trends import trends_context
+from web.view_models.activity import strength_set_rows
 
 DAY = date(2026, 10, 23)
 
@@ -84,6 +89,53 @@ def test_activities_is_in_both_menus_and_active(browser, path):
         nav = response.text.split(f'<nav class="{nav_class}"', 1)[1].split("</nav>", 1)[0]
         assert 'href="/activities" aria-current="page"' in nav
         assert nav.count('href="/activities"') == 1
+
+
+def test_strength_sets_tab_shows_real_intervals_and_not_candidate_count(browser, activity_db):
+    with sqlite3.connect(activity_db) as connection:
+        connection.execute("INSERT INTO activity_exercise_sets(activity_id,set_index,set_type,duration_seconds,"
+                           "repetition_count,weight_grams,exercises_json) VALUES(103,1,'ACTIVE',32,8,0,?)",
+                           (json.dumps([{"category": "BENCH_PRESS", "name": None},
+                                        {"category": "PUSH_UP", "name": None}]),))
+        connection.execute("INSERT INTO activity_exercise_sets(activity_id,set_index,set_type,duration_seconds,"
+                           "exercises_json) VALUES(103,2,'REST',65,'[]')")
+    html = browser.get("/activities/103").text
+    assert 'href="#activity-sets"' in html
+    assert "8 reps" in html and "0 kg" not in html
+    assert "Suggested category: Bench Press" in html
+    assert "1:05" in html and "Exercise not identified" in html
+    assert "42 exercises" not in html
+
+
+def test_gym_without_set_details_offers_sync(browser):
+    html = browser.get("/activities/103").text
+    assert "Strength sets: No data yet." in html
+    assert 'href="/settings"' in html
+
+
+def test_strength_set_view_model_uses_named_exercise_only_when_available():
+    rows = [{"set_index": 1, "set_type": "ACTIVE", "duration_seconds": 40,
+             "repetition_count": 10, "weight_grams": 12500,
+             "exercises_json": '[{"category":"SQUAT","name":"GOBLET_SQUAT"}]'}]
+    result = strength_set_rows(rows)
+    assert result[0]["label"] == "Goblet Squat"
+    assert result[0]["weight"] == "12.5 kg"
+
+
+def test_strength_set_refresh_replaces_only_imported_sets(activity_db):
+    engine = create_engine(f"sqlite:///{activity_db}")
+    try:
+        with Session(engine) as session:
+            first = [{"set_index": 1, "set_type": "ACTIVE", "duration_seconds": 30,
+                      "repetition_count": 8, "exercises_json": "[]"}]
+            updated = [{**first[0], "repetition_count": 10}]
+            assert replace_activity_exercise_sets(session, 103, first) == 1
+            assert replace_activity_exercise_sets(session, 103, updated) == 1
+            session.commit()
+            rows = session.scalars(select(ActivityExerciseSet).where(ActivityExerciseSet.activity_id == 103)).all()
+            assert len(rows) == 1 and rows[0].repetition_count == 10
+    finally:
+        engine.dispose()
 
 
 def test_list_groups_filters_and_walks(browser):

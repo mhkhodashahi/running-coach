@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import json
 from datetime import date, datetime
 from typing import Any
 
@@ -65,6 +66,35 @@ def safe_datetime(value: Any) -> datetime | None:
     if pd.isna(parsed):
         return None
     return parsed.to_pydatetime()
+
+
+def extract_activity_exercise_sets(payload: Any) -> list[dict[str, Any]]:
+    """Normalize Garmin's active/rest intervals; exercise names are candidates, not certainties."""
+
+    if not isinstance(payload, dict) or not isinstance(payload.get("exerciseSets"), list):
+        return []
+    rows = []
+    for index, item in enumerate(payload["exerciseSets"]):
+        if not isinstance(item, dict):
+            continue
+        set_type = str(item.get("setType") or "UNKNOWN").upper()
+        if set_type not in ("ACTIVE", "REST"):
+            set_type = "UNKNOWN"
+        duration = coerce_numeric(item.get("duration"))
+        repetitions = coerce_numeric(item.get("repetitionCount"))
+        weight = coerce_numeric(item.get("weight"))
+        candidates = []
+        for candidate in item.get("exercises") or []:
+            if isinstance(candidate, dict):
+                candidates.append({key: candidate[key] for key in ("category", "name", "probability")
+                                   if key in candidate})
+        rows.append({"set_index": index + 1, "set_type": set_type,
+                     "start_time": safe_datetime(item.get("startTime")),
+                     "duration_seconds": duration if duration is not None and duration >= 0 else None,
+                     "repetition_count": int(repetitions) if repetitions is not None and repetitions >= 0 else None,
+                     "weight_grams": weight if weight is not None and weight >= 0 else None,
+                     "exercises_json": json.dumps(candidates, separators=(",", ":"))})
+    return rows
 
 
 def dict_path(data: Any, *path: str) -> Any:

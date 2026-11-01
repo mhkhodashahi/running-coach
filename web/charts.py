@@ -1,7 +1,7 @@
 """Bounded, self-contained SVG charts for the Today view."""
 
 from collections import defaultdict
-from datetime import date
+from datetime import date, timedelta
 from html import escape
 from math import ceil, floor
 from typing import Any
@@ -16,6 +16,156 @@ TREND_X = 48
 TREND_WIDTH = 510
 TREND_TOP = 28
 TREND_HEIGHT = 126
+
+
+def dashboard_svg(rows: tuple[dict, ...], columns: tuple[str, ...], chart_type: str,
+                  title: str, notes: tuple[dict, ...] = ()) -> dict[str, str]:
+    """Draw the same table values as bounded SVG marks with a spoken summary."""
+    numeric = [key for key in columns[1:] if any(isinstance(row.get(key), (float, int)) for row in rows)]
+    observed = [row for row in rows if any(isinstance(row.get(key), (float, int)) for key in numeric)]
+    summary = f"{title}: {len(observed)} of {len(rows)} periods have data."
+    is_weekly = "% of usual" in columns and "Status" in columns
+    is_planned = "Done in plan" in columns
+    building_only = is_weekly and rows and all(row.get("Status") == "baseline still building"
+                                                              for row in rows)
+    if (not observed or not numeric) and not building_only:
+        return {"svg": "", "summary": summary}
+    width, height, left, top = 600, 210, 38, 16
+    plot_w, plot_h = width - left - 14, height - top - 26
+    values = [float(row[key]) for row in observed for key in numeric if isinstance(row.get(key), (float, int))]
+    stacked_keys = [key for key in numeric if key != "4-week average %"]
+    if chart_type == "stacked" and not is_planned:
+        values += [sum(float(row.get(key) or 0) for key in stacked_keys) for row in observed]
+    if is_planned:
+        values += [sum(float(row.get(key) or 0) for key in numeric[1:]) for row in observed]
+    if building_only:
+        values = [0, 110]
+    low = min(0, min(values)) if chart_type in ("bar", "stacked") else min(values)
+    high = max(values + ([110] if is_weekly else []))
+    if high == low:
+        high = low + 1
+    def x(index: int) -> float:
+        return left + (index + .5) / max(len(rows), 1) * plot_w
+    def y(value: float) -> float:
+        return top + (high - value) / (high - low) * plot_h
+    parts = [f'<line x1="{left}" x2="{left + plot_w}" y1="{top + plot_h}" y2="{top + plot_h}" stroke="var(--line)"/>']
+    if rows and notes:
+        for index, row in enumerate(rows):
+            stamp = str(row[columns[0]])[:10]
+            interval_end = date.fromisoformat(stamp) + timedelta(days=6) if columns[0] == "Week" else date.fromisoformat(stamp)
+            matching = [note for note in notes if date.fromisoformat(stamp) <= date.fromisoformat(note["date"]) <= interval_end]
+            if matching:
+                description = "; ".join(f'{note["date"]}: {note["text"]}' for note in matching)
+                parts.append(f'<circle class="chart-note-marker" cx="{x(index):.1f}" cy="{top + plot_h - 6:.1f}" '
+                             f'r="4" fill="var(--ink)"><title>{escape(description)}</title></circle>')
+    if is_weekly:
+        parts.append(f'<line x1="{left}" x2="{left + plot_w}" y1="{y(110):.1f}" y2="{y(110):.1f}" '
+                     'stroke="var(--ink-muted)" stroke-dasharray="5 4"/>')
+    palette = ("var(--ink-muted)", "var(--load)",
+               "color-mix(in srgb,var(--load) 55%,var(--ground))", "var(--sleep)", "var(--heart)")
+    if "Usual low" in columns:
+        lower, upper = "Usual low", "Usual high"
+        for index, row in enumerate(rows):
+            a, b = row.get(lower), row.get(upper)
+            if isinstance(a, (int, float)) and isinstance(b, (int, float)):
+                half = plot_w / max(len(rows), 1) / 2
+                parts.append(f'<rect x="{x(index) - half:.1f}" y="{y(float(b)):.1f}" '
+                             f'width="{half * 2:.1f}" height="{y(float(a)) - y(float(b)):.1f}" '
+                             'fill="var(--surface-raised)"/>')
+    if chart_type in ("bar", "stacked"):
+        bar_w = min(32, plot_w / max(len(rows), 1) * .65)
+        for index, row in enumerate(rows):
+            if is_weekly and row.get("Status") == "baseline still building":
+                parts.append(f'<rect x="{x(index) - bar_w / 2:.1f}" y="{top + plot_h - 14:.1f}" '
+                             f'width="{bar_w:.1f}" height="14" fill="var(--ink-muted)"><title>'
+                             f'{escape(str(row[columns[0]]))}: baseline still building</title></rect>')
+                continue
+            baseline = 0.0
+            for column_index, key in enumerate(stacked_keys if chart_type == "stacked" else numeric):
+                value = row.get(key)
+                if not isinstance(value, (float, int)):
+                    continue
+                if chart_type == "bar" and column_index:
+                    continue
+                grouped_plan = is_planned and column_index == 0
+                next_value = (float(value) if grouped_plan else baseline + float(value)) if chart_type == "stacked" else float(value)
+                top_y = min(y(next_value), y(baseline))
+                bar_h = abs(y(next_value) - y(baseline))
+                if bar_h:
+                    label = f"{row[columns[0]]}: {key} {value}"
+                    bar_x = x(index) - bar_w if grouped_plan else x(index) if is_planned else x(index) - bar_w / 2
+                    parts.append(f'<rect x="{bar_x:.1f}" y="{top_y:.1f}" '
+                                 f'width="{bar_w if not is_planned else bar_w * .9:.1f}" height="{bar_h:.1f}" fill="{palette[column_index % len(palette)]}">'
+                                 f'<title>{escape(label)}</title></rect>')
+                baseline = 0 if grouped_plan else next_value
+        if "4-week average %" in numeric:
+            path = []
+            for index, row in enumerate(rows):
+                value = row.get("4-week average %")
+                if isinstance(value, (int, float)):
+                    path.append(f"{'L' if path else 'M'}{x(index):.1f},{y(float(value)):.1f}")
+            parts.append(f'<path d="{" ".join(path)}" fill="none" stroke="var(--ink)" '
+                         'stroke-width="2" stroke-dasharray="4 3"/>')
+    elif chart_type == "scatter" and len(numeric) >= 2:
+        xs = [float(row[numeric[0]]) for row in observed if isinstance(row.get(numeric[0]), (float, int))]
+        x_low, x_high = min(xs), max(xs)
+        for index, row in enumerate(observed):
+            a, b = row.get(numeric[0]), row.get(numeric[1])
+            if not isinstance(a, (float, int)) or not isinstance(b, (float, int)):
+                continue
+            px = left + (float(a) - x_low) / max(x_high - x_low, 1) * plot_w
+            recent = "Pace (min/km)" in columns and index >= max(0, len(observed) - 4)
+            tone = "var(--load)" if recent or "Pace (min/km)" not in columns else "var(--ink-muted)"
+            parts.append(f'<circle cx="{px:.1f}" cy="{y(float(b)):.1f}" r="{5 if recent else 3}" fill="{tone}">'
+                         f'<title>{escape(str(row[columns[0]]))}: {a}, {b}</title></circle>')
+    else:
+        line_keys = [numeric[0]]
+        if "7-day average" in numeric:
+            line_keys.append("7-day average")
+        primary_color = ("var(--heart)" if "Resting HR" in columns[1] else
+                         "var(--sleep)" if "HRV" in columns[1] else
+                         "var(--ink)" if "Recovery" in columns[1] else "var(--load)")
+        for column_index, key in enumerate(line_keys):
+            path, active = [], False
+            for index, row in enumerate(rows):
+                value = row.get(key)
+                if not isinstance(value, (float, int)):
+                    active = False
+                    continue
+                path.append(f"{'L' if active else 'M'}{x(index):.1f},{y(float(value)):.1f}")
+                active = True
+            color = primary_color if column_index == 0 else "var(--ink-muted)"
+            dash = ' stroke-dasharray="4 3"' if column_index else ""
+            parts.append(f'<path d="{" ".join(path)}" fill="none" stroke="{color}" '
+                         f'stroke-width="2"{dash}/>')
+    parts.append(f'<text x="2" y="{top + 10}" class="axis-label">{high:.0f}</text>')
+    parts.append(f'<text x="2" y="{top + plot_h}" class="axis-label">{low:.0f}</text>')
+    for index in sorted({round(part * (len(rows) - 1) / min(4, max(len(rows) - 1, 1)))
+                         for part in range(min(4, max(len(rows) - 1, 1)) + 1)}):
+        parts.append(f'<text x="{x(index):.1f}" y="{height - 5}" text-anchor="middle" '
+                     f'class="axis-label">{escape(str(rows[index][columns[0]])[5:])}</text>')
+    svg = (f'<svg class="dashboard-chart" viewBox="0 0 {width} {height}" role="img" '
+           f'aria-label="{escape(summary)}"><title>{escape(summary)}</title>{"".join(parts)}</svg>')
+    return {"svg": svg, "summary": summary}
+
+
+def annotate_time_chart(svg: str, dates: list[str], notes: tuple[dict, ...], *, weekly: bool = False,
+                        bars: bool = False) -> str:
+    """Place dated note dots in an existing Insights SVG without changing its metric path."""
+    if not svg or not dates or not notes:
+        return svg
+    marks = []
+    for index, stamp in enumerate(dates):
+        start = date.fromisoformat(stamp)
+        end = start + timedelta(days=6) if weekly else start
+        matching = [note for note in notes if start <= date.fromisoformat(note["date"]) <= end]
+        if not matching:
+            continue
+        x = TREND_X + ((index + .5) / len(dates) if bars else index / max(len(dates) - 1, 1)) * TREND_WIDTH
+        description = "; ".join(f'{note["date"]}: {note["text"]}' for note in matching)
+        marks.append(f'<circle class="chart-note-marker" cx="{x:.1f}" cy="{TREND_TOP + TREND_HEIGHT - 6}" '
+                     f'r="4" fill="var(--ink)"><title>{escape(description)}</title></circle>')
+    return svg.replace("</svg>", "".join(marks) + "</svg>")
 
 
 def plot_only(svg: str, *, heart_rate: bool = False) -> str:

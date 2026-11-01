@@ -1,0 +1,6 @@
+{% from 'components/v2_icons.html' import icon %}
+<span id="v2-panel-context" class="chip v2-context" hx-swap-oob="outerHTML">{{ icon('circle') }} About: {{ widget.title }}</span>
+<div class="v2-coach-explanation"><span class="eyebrow">About: {{ widget.title }}</span><p>{{ chart_summary }}</p></div>
+<a class="v2-full-chat cap" href="/coach?context=insights">Full chat {{ icon('chevron') }}</a>
+<div id="v2-coach-answer" aria-live="polite"></div>
+<form class="v2-coach-compose" method="post" hx-post="/insights/dashboard/ask" hx-target="#v2-coach-answer"><input type="hidden" name="key" value="{{ widget.key }}"><input type="hidden" name="dashboard_range" value="{{ range_days }}"><label class="v2-sr-only" for="chart-question">Ask about {{ widget.title }}</label><input id="chart-question" name="question" maxlength="480" placeholder="Ask about this chart" required><button type="submit" aria-label="Send question">{{ icon('arrow') }}</button></form>

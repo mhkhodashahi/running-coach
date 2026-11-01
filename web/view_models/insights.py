@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date, timedelta
 from math import ceil
 from statistics import pstdev
 from typing import Any
 
-from web.charts import plot_only, trend_bars, trend_line, weekly_percent_bars
+from web.charts import annotate_time_chart, plot_only, trend_bars, trend_line, weekly_percent_bars
 from web.formatting import short_date, sleep_hours
 from web.view_models.today import dial_status
 
@@ -96,7 +97,7 @@ def _status(kind: str, value: float | None, usual: float | None) -> tuple[str, s
 
 def _card(title: str, value: float | None, usual: float | None, display: str | None,
           status_kind: str, chart: dict[str, Any], series: list[tuple[str, float | None]],
-          sync: str) -> dict[str, Any]:
+          sync: str, notes: tuple[dict, ...] = ()) -> dict[str, Any]:
     status, icon = _status(status_kind, value, usual)
     if value is None:
         status, icon = "No data", "help"
@@ -116,10 +117,16 @@ def _card(title: str, value: float | None, usual: float | None, display: str | N
                f"latest: {short_date(last_stamp)}" if last_stamp else f"No data · {sync}")
     def axis_value(item: float | None) -> str:
         return f"{round(item)}{unit}" if item is not None else ""
+    end_date = ((date.fromisoformat(series[-1][0]) + timedelta(days=6)).isoformat()
+                if series and title == "Weekly load" else series[-1][0] if series else "")
+    in_period = tuple(note for note in notes if series and series[0][0] <= note["date"] <= end_date)
+    plot = plot_only(chart["svg"]) if chart["svg"] else ""
+    plot = annotate_time_chart(plot, [stamp for stamp, _ in series], in_period,
+                               weekly=title == "Weekly load", bars=title in ("Sleep", "Weekly load"))
     return {"title": title, "value": display or "No data", "caption": caption,
             "status": status, "icon": icon,
             "usual": usual_display,
-            "chart": {**chart, "svg": plot_only(chart["svg"]) if chart["svg"] else ""},
+            "chart": {**chart, "svg": plot}, "notes": in_period,
             "axis_dates": axis_dates(series), "axis_high": axis_value(high),
             "axis_low": axis_value(low),
             "gap_note": gap_note(series), "missing": sync if value is None else None}
@@ -149,7 +156,8 @@ def panel_summary(series: dict[str, list[tuple[str, float | None]]],
 
 
 def build_insights_view(data: dict[str, Any], goal: tuple[str, float] | None,
-                        runs: list[tuple[float, float]], sleep_goal: float | None) -> dict[str, Any]:
+                        runs: list[tuple[float, float]], sleep_goal: float | None,
+                        notes: tuple[dict, ...] = ()) -> dict[str, Any]:
     """No model calls, DB access, or new training metrics."""
     series = data["series"]
     baselines = data["baselines"]
@@ -166,22 +174,22 @@ def build_insights_view(data: dict[str, Any], goal: tuple[str, float] | None,
     cards = (
         _card("Recovery", latest(series["readiness"]), None,
               f"{round(latest(series['readiness']))}" if latest(series["readiness"]) is not None else None,
-              "recovery", trend_line(series["readiness"], "Recovery", "muted"), series["readiness"], sync),
+              "recovery", trend_line(series["readiness"], "Recovery", "muted"), series["readiness"], sync, notes),
         _card("Sleep", latest(series["sleep"]), latest(baselines.get("sleep", [])),
               sleep_hours(latest(series["sleep"])), "sleep",
               trend_bars(series["sleep"], "Sleep", sleep_goal if sleep_goal and sleep_goal > 0 else None, "sleep"),
-              series["sleep"], sync),
+              series["sleep"], sync, notes),
         _card("Resting HR", latest(series["rhr"]), latest(baselines["rhr"]),
               f"{round(latest(series['rhr']))} bpm" if latest(series["rhr"]) is not None else None,
               "sleep", trend_line(series["rhr"], "Resting HR", "heart", baselines["rhr"], unit="bpm"),
-              series["rhr"], sync),
+              series["rhr"], sync, notes),
         _card("HRV", latest(series["hrv"]), latest(baselines["hrv"]),
               f"{round(latest(series['hrv']))} ms" if latest(series["hrv"]) is not None else None,
               "sleep", trend_line(series["hrv"], "HRV", "sleep", baselines["hrv"], unit="ms"),
-              series["hrv"], sync),
+              series["hrv"], sync, notes),
         {**_card("Weekly load", float(load_percent) if load_percent is not None else None, 100,
                  f"{load_percent}% of usual" if load_percent is not None else None,
-                 "load", weekly_percent_bars(weeks, building), weeks, sync),
+                 "load", weekly_percent_bars(weeks, building), weeks, sync, notes),
          "baseline_note": "baseline still building" if building else None},
     )
     goal_view = None

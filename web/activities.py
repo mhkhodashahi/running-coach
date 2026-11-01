@@ -288,6 +288,10 @@ def detail_context(settings: Settings, activity_id: int, *, from_page: str = "ac
         laps = [dict(item) for item in connection.execute(
             "SELECT lap_index,lap_type,distance,duration,pace,avg_hr,avg_cadence FROM activity_laps "
             "WHERE activity_id=? ORDER BY lap_index", (activity_id,))]
+        exercise_sets = ([dict(item) for item in connection.execute(
+            "SELECT set_index,set_type,duration_seconds,repetition_count,weight_grams,exercises_json "
+            "FROM activity_exercise_sets WHERE activity_id=? ORDER BY set_index", (activity_id,))]
+            if _sport(row) == "gym" else [])
         points = [dict(item) for item in connection.execute(
             "SELECT elapsed_seconds,heart_rate FROM activity_track_points WHERE activity_id=? "
             "AND heart_rate IS NOT NULL ORDER BY point_index", (activity_id,))]
@@ -358,7 +362,8 @@ def detail_context(settings: Settings, activity_id: int, *, from_page: str = "ac
             "opinion_supported": supports_activity_coach_opinion(row["type"]),
             "evidence_source_label": evidence_source_label,
             "zones": sorted(zones, key=lambda zone: zone["name"][:2], reverse=True),
-            "laps": [] if whole_lap else laps, "workout": workout, "hr_chart": hr_chart,
+            "laps": [] if whole_lap else laps, "exercise_sets": exercise_sets,
+            "workout": workout, "hr_chart": hr_chart,
             "similar": _similar(settings, activity_id), "intents": INTENTS,
             "ask_suggestions": RUN_SUGGESTIONS if _sport(row) == "running" else OTHER_SUGGESTIONS,
             "sync": sync_label(settings, _local_day(settings)),

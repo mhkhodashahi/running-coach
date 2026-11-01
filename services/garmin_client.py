@@ -20,6 +20,7 @@ from garminconnect import (
 from config import get_settings
 from services import garmin_normalization as gn
 from services.garmin_normalization import (
+    extract_activity_exercise_sets,
     extract_activity_laps,
     extract_activity_track_points,
 )
@@ -563,9 +564,21 @@ class GarminAPIClient(GarminClient):
 
             track_points = extract_activity_track_points(details if isinstance(details, dict) else {})
             laps = extract_activity_laps(splits, split_summaries, typed_splits)
-            if track_points or laps:
+            exercise_sets = None
+            if str(row.get("type") or "").strip().lower() == "strength_training":
+                exercise_payload = self._call_api(
+                    lambda activity_id=external_id: client.get_activity_exercise_sets(activity_id),
+                    default=None,
+                    context=f"activity exercise sets for {external_id}",
+                    suppress_errors=True,
+                )
+                if isinstance(exercise_payload, dict) and isinstance(exercise_payload.get("exerciseSets"), list):
+                    exercise_sets = extract_activity_exercise_sets(exercise_payload)
+            if track_points or laps or exercise_sets is not None:
                 details_by_external_id[external_id] = {
                     "track_points": track_points,
                     "laps": laps,
                 }
+                if exercise_sets is not None:
+                    details_by_external_id[external_id]["exercise_sets"] = exercise_sets
         return details_by_external_id

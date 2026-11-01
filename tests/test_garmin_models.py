@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import date
 from io import StringIO
 
 import pandas as pd
@@ -8,8 +9,49 @@ from pydantic import ValidationError
 
 from services.garmin_client import CSVGarminClient, GarminAPIClient
 from services.garmin_models import validate_laps, validate_track_points
-from services.garmin_normalization import _extract_recovery_time_hours, extract_activity_track_points
+from services.garmin_normalization import (
+    _extract_recovery_time_hours,
+    extract_activity_exercise_sets,
+    extract_activity_track_points,
+)
 from services.route_geometry import downsample_route, encode_polyline, route_heading_degrees
+
+
+def test_strength_sets_preserve_intervals_without_inventing_exercises() -> None:
+    payload = {"exerciseSets": [
+        {"setType": "ACTIVE", "startTime": "2026-10-23 09:00:00", "duration": 32,
+         "repetitionCount": 8, "weight": 0,
+         "exercises": [{"category": "BENCH_PRESS", "name": None, "probability": .6},
+                       {"category": "PUSH_UP", "name": None, "probability": .3}]},
+        {"setType": "REST", "duration": 65, "repetitionCount": None, "exercises": []},
+    ]}
+    rows = extract_activity_exercise_sets(payload)
+    assert len(rows) == 2
+    assert rows[0]["set_type"] == "ACTIVE"
+    assert rows[0]["repetition_count"] == 8
+    assert rows[0]["weight_grams"] == 0
+    assert '"BENCH_PRESS"' in rows[0]["exercises_json"]
+    assert rows[1]["set_type"] == "REST"
+
+
+def test_strength_details_fetch_only_for_gym_and_preserve_failure() -> None:
+    class Fake(GarminAPIClient):
+        def __init__(self, fail: bool = False) -> None:
+            self.fail = fail
+
+        def _get_client(self):
+            return object()
+
+        def _call_api(self, request, *, default, context, suppress_errors):
+            if context.startswith("activity exercise sets"):
+                return None if self.fail else {"exerciseSets": [{"setType": "ACTIVE", "duration": 30}]}
+            return default
+
+    rows = [{"external_id": "1", "type": "strength_training", "date": date(2026, 10, 23)},
+            {"external_id": "2", "type": "running", "date": date(2026, 10, 23)}]
+    assert len(Fake().sync_activity_details(1, rows)["1"]["exercise_sets"]) == 1
+    assert "2" not in Fake().sync_activity_details(1, rows)
+    assert "1" not in Fake(fail=True).sync_activity_details(1, rows)
 
 
 def test_validate_track_points_accepts_normalized_gps_rows() -> None:

@@ -123,6 +123,8 @@ class GarminImportService:
                         activity_id,
                         validate_laps(payload["laps"]),
                     )
+                if "exercise_sets" in payload:
+                    repository.replace_activity_exercise_sets(session, activity_id, payload["exercise_sets"])
 
         summary = ImportSummary(
             activities_imported=activities_imported,

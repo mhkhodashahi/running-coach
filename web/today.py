@@ -17,6 +17,7 @@ from metrics import get_daily_snapshot
 from metrics.sports import RECOMMENDABLE_SPORTS, sport_category
 from services.daily_decision_service import get_or_create_daily_decision, set_athlete_choice
 from services.effort_service import rate_activity, unrated_activities
+from services.timeline_notes import read_notes
 from services.weekly_plan_service import get_weekly_plan
 from web.charts import load_bars, readiness_ring, sparkline
 from web.formatting import (
@@ -65,6 +66,7 @@ def today_context(settings: Settings, *, day: date, llm: Any = None) -> dict[str
     current = {name: item.value for name, item in snapshot.current_health}
     baselines = {(item.field, item.days): item.mean.value for item in snapshot.baselines}
     sync = sync_label(settings, day)
+    timeline_notes = read_notes(settings.db_path, user_id, day - timedelta(days=14), day)
     with _read_only(settings.db_path) as connection:
         health = connection.execute("SELECT body_battery FROM health_metrics WHERE user_id=? AND date=?",
                                     (user_id, decision.based_on)).fetchone()
@@ -139,6 +141,7 @@ def today_context(settings: Settings, *, day: date, llm: Any = None) -> dict[str
     if done_today:
         workout = None
     return {"decision": decision, "ring": readiness_ring(decision.readiness), "sync": sync,
+            "timeline_notes": timeline_notes,
             "day": day, "day_label": short_date(day), "based_on_label": short_date(decision.based_on),
             "recommendations": recommendations, "readiness": metric(decision.readiness),
             "tiles": [

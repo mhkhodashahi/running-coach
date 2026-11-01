@@ -56,6 +56,37 @@ class User(Base):
     garmin_sync_status: Mapped[GarminSyncStatus | None] = relationship(back_populates="user", uselist=False)
     coach_chat_turns: Mapped[list[CoachChatTurn]] = relationship(back_populates="user")
     coach_llm_calls: Mapped[list[CoachLLMCall]] = relationship(back_populates="user")
+    dashboard_widgets: Mapped[list[DashboardWidget]] = relationship(back_populates="user")
+    timeline_notes: Mapped[list[TimelineNote]] = relationship(back_populates="user")
+
+
+class TimelineNote(Base):
+    __tablename__ = "timeline_notes"
+    __table_args__ = (CheckConstraint("length(text) BETWEEN 1 AND 200", name="ck_timeline_notes_text"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    date: Mapped[date] = mapped_column(Date, nullable=False)
+    text: Mapped[str] = mapped_column(String(200), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow, onupdate=_utcnow)
+
+    user: Mapped[User] = relationship(back_populates="timeline_notes")
+
+
+class DashboardWidget(Base):
+    __tablename__ = "dashboard_widgets"
+    __table_args__ = (UniqueConstraint("user_id", "position", name="uq_dashboard_widgets_position"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
+    chart_id: Mapped[str] = mapped_column(String(40), nullable=False)
+    config_json: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow, onupdate=_utcnow)
+
+    user: Mapped[User] = relationship(back_populates="dashboard_widgets")
 
 
 class GarminSyncStatus(Base):
@@ -100,6 +131,7 @@ class Activity(Base):
     user: Mapped[User] = relationship(back_populates="activities")
     track_points: Mapped[list[ActivityTrackPoint]] = relationship(back_populates="activity", cascade="all, delete-orphan")
     laps: Mapped[list[ActivityLap]] = relationship(back_populates="activity", cascade="all, delete-orphan")
+    exercise_sets: Mapped[list[ActivityExerciseSet]] = relationship(back_populates="activity", cascade="all, delete-orphan")
     coaching_insights: Mapped[list[ActivityCoachingInsight]] = relationship(back_populates="activity", cascade="all, delete-orphan")
     coaching_opinion_history: Mapped[list[ActivityCoachingOpinionHistory]] = relationship(back_populates="activity", cascade="all, delete-orphan")
     prediction_snapshots: Mapped[list[PredictionSnapshot]] = relationship(back_populates="activity", cascade="all, delete-orphan")
@@ -170,6 +202,25 @@ class ActivityLap(Base):
     avg_cadence: Mapped[float | None] = mapped_column(Float)
 
     activity: Mapped[Activity] = relationship(back_populates="laps")
+
+
+class ActivityExerciseSet(Base):
+    """One active or rest interval reported by Garmin for a strength activity."""
+
+    __tablename__ = "activity_exercise_sets"
+    __table_args__ = (UniqueConstraint("activity_id", "set_index", name="uq_activity_exercise_sets_index"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    activity_id: Mapped[int] = mapped_column(ForeignKey("activities.id"), index=True, nullable=False)
+    set_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    set_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    start_time: Mapped[datetime | None] = mapped_column(DateTime)
+    duration_seconds: Mapped[float | None] = mapped_column(Float)
+    repetition_count: Mapped[int | None] = mapped_column(Integer)
+    weight_grams: Mapped[float | None] = mapped_column(Float)
+    exercises_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+
+    activity: Mapped[Activity] = relationship(back_populates="exercise_sets")
 
 
 class HealthMetric(Base):

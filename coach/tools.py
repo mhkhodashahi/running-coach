@@ -10,6 +10,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
+from html import escape
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -31,6 +32,7 @@ from services.fact_display import (
     percent,
     short_date,
 )
+from services.timeline_notes import read_notes
 from services.trend_facts import trend_facts
 
 MAX_FACTS = 80
@@ -39,6 +41,7 @@ MAX_SAMPLES = 60
 MAX_LIST = 30
 MAX_TEXT = 500
 MAX_OUTPUT_CHARS = 16000
+MAX_NOTE_FACTS = 12
 TOOL_NAMES = ("get_daily_snapshot", "get_trends", "get_activity", "compare_sessions", "list_activities",
               "get_opinion", "plan_week", "get_goals", "get_recent_efforts")
 
@@ -115,6 +118,13 @@ class CoachTools:
         return get_daily_snapshot(day, database=self.database, user_id=self.user_id,
                                   timezone=self.timezone, sleep_goal_hours=self.sleep_goal_hours,
                                   hr_zones=self.hr_zones)
+
+    def recent_note_facts(self, day: date) -> list[Fact]:
+        """Notes are quoted athlete data, never control text for the coach."""
+        notes = read_notes(self.database, self.user_id, day - timedelta(days=13), day)
+        return [_fact(f"ATHLETE_NOTE_{item['id']}", "Athlete note on " + short_date(item["date"]),
+                      escape(item["text"], quote=True), "timeline_notes.date,text (untrusted athlete data)")
+                for item in notes[-MAX_NOTE_FACTS:]]
 
     def get_daily_snapshot(self, day: date) -> dict[str, Any]:
         with _readonly(self.database) as connection:
@@ -195,6 +205,7 @@ class CoachTools:
             facts.append(_fact("HRV_VS_BASELINE", "HRV versus 28-day baseline",
                                percent((hrv / hrv_baseline - 1) * 100, signed=True),
                                "metrics_snapshot.current_health.hrv.value vs metrics_snapshot.baselines.hrv.28.mean.value"))
+        facts.extend(self.recent_note_facts(day))
         return _bounded({"date": day.isoformat(), "metrics_date": metrics_day.isoformat(),
                          "latest_health_date": latest_health, "last_sync_time": sync_display,
                          "stale_today": stale_today, "facts": facts[:MAX_FACTS],

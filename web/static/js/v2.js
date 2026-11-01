@@ -66,7 +66,7 @@ function trapFocus(event, panel) {
   if (!candidates.length) return;
   const first = candidates[0];
   const last = candidates.at(-1);
-  if (event.shiftKey && (document.activeElement === first || document.activeElement === panel.querySelector('h2'))) {
+  if (event.shiftKey && (document.activeElement === first || document.activeElement === panel.querySelector('h2,h3'))) {
     event.preventDefault();
     last.focus();
   } else if (!event.shiftKey && document.activeElement === last) {
@@ -110,6 +110,16 @@ document.addEventListener('click', function (event) {
   panel?.querySelector('h2')?.focus();
 });
 document.addEventListener('keydown', function (event) {
+  const dashboardSheet = [...document.querySelectorAll('.v2-sheet[open] > .v2-sheet-content')].at(-1);
+  if (dashboardSheet) {
+    if (event.key === 'Tab') { trapFocus(event, dashboardSheet); return; }
+    if (event.key === 'Escape') {
+      const details = dashboardSheet.parentElement;
+      details.open = false;
+      details.querySelector('summary')?.focus();
+      return;
+    }
+  }
   const proposal = matchMedia('(max-width:767px)').matches ? document.querySelector('.v2-proposal-wrap.is-open') : null;
   const panel = proposal?.querySelector('.v2-proposal') ||
     (document.body.classList.contains('v2-coach-open') ? document.querySelector('#v2-coach-panel') : null);
@@ -120,6 +130,26 @@ document.addEventListener('keydown', function (event) {
   const menu = [...document.querySelectorAll('details[open]')].at(-1);
   if (menu) { menu.open = false; menu.querySelector('summary')?.focus(); }
 });
+document.addEventListener('click', function (event) {
+  const button = event.target.closest('[data-close-dashboard-sheet]');
+  if (!button) return;
+  const details = button.closest('details.v2-sheet');
+  details.open = false;
+  details.querySelector('summary')?.focus();
+});
+document.addEventListener('toggle', function (event) {
+  const details = event.target;
+  if (!details.matches?.('details.v2-sheet')) return;
+  const content = details.querySelector(':scope > .v2-sheet-content');
+  if (details.open) {
+    content?.setAttribute('role', 'dialog');
+    content?.setAttribute('aria-modal', 'true');
+    content?.querySelector('h2,h3')?.focus();
+  } else {
+    content?.removeAttribute('role');
+    content?.removeAttribute('aria-modal');
+  }
+}, true);
 document.addEventListener('click', function (event) {
   const opener = event.target.closest('[data-open-proposal]');
   const closer = event.target.closest('[data-close-proposal]');

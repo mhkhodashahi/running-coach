@@ -227,6 +227,7 @@ def trends_context(settings: Settings, day: date, days: int, llm: Any = None,
 
 def insights_context(settings: Settings, day: date, days: int) -> dict[str, Any]:
     """Use computed trend series, with no model call or cache write on render."""
+    from services.timeline_notes import read_notes
     from web.view_models.insights import build_insights_view
 
     data = trends_context(settings, day, days, include_summary=False)
@@ -251,4 +252,6 @@ def insights_context(settings: Settings, day: date, days: int) -> dict[str, Any]
 
     running = [(row[2], row[3]) for row in runs
                if sport_category(row[1], date.fromisoformat(row[0])) == "running"]
-    return build_insights_view(data, goal, running, settings.sleep_goal_hours)
+    notes = read_notes(settings.db_path, settings.default_user_id, start, day)
+    data["as_of"] = day.isoformat()
+    return build_insights_view(data, goal, running, settings.sleep_goal_hours, notes)

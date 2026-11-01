@@ -14,6 +14,7 @@ from db.models import (
     Activity,
     ActivityCoachingInsight,
     ActivityCoachingOpinionHistory,
+    ActivityExerciseSet,
     ActivityLap,
     ActivityTrackPoint,
     CoachingDecision,
@@ -317,6 +318,16 @@ def replace_activity_laps(session: Session, activity_id: int, rows: list[dict[st
 
     for row in rows:
         session.add(ActivityLap(activity_id=activity_id, **row))
+    session.flush()
+    return len(rows)
+
+
+def replace_activity_exercise_sets(session: Session, activity_id: int, rows: list[dict[str, Any]]) -> int:
+    """Refresh imported set details after a successful Garmin response."""
+
+    session.execute(delete(ActivityExerciseSet).where(ActivityExerciseSet.activity_id == activity_id))
+    for row in rows:
+        session.add(ActivityExerciseSet(activity_id=activity_id, **row))
     session.flush()
     return len(rows)
 

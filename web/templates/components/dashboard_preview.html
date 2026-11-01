@@ -1,0 +1,8 @@
+{% if widget.empty %}<p class="cap v2-dashboard-empty">{{ widget.empty }}</p>{% else %}
+<div class="v2-dashboard-plot">{{ widget.svg|safe }}</div>
+{% if widget.legend %}<div class="v2-dashboard-legend" aria-label="Chart legend">{% for label,tone in widget.legend %}<span><i class="v2-dashboard-swatch swatch-{{ tone }}" aria-hidden="true"></i>{{ label }}</span>{% endfor %}</div>{% endif %}
+{% endif %}
+{% if widget.table_rows %}
+<details class="v2-dashboard-table"><summary>Show as table</summary><div class="v2-dashboard-table-scroll"><table><thead><tr>{% for column in widget.table_columns %}<th scope="col">{{ column }}</th>{% endfor %}</tr></thead><tbody>{% for row in widget.table_rows %}<tr>{% for column in widget.table_columns %}<td>{{ row.get(column) if row.get(column) is not none else 'No data' }}</td>{% endfor %}</tr>{% endfor %}</tbody></table></div></details>
+{% endif %}
+{% if widget.footnote %}<p class="cap">{{ widget.footnote }}</p>{% endif %}
