@@ -12,6 +12,7 @@ from llm.schemas import (
     CoachOpinionV2,
     CoachOpinionV21,
     OpenAICoachOpinionV2,
+    OpinionDraftV3,
     OpinionDraftV22,
     OpinionDraftV23,
     OpinionDraftV26,
@@ -72,7 +73,7 @@ class OpenAIClient(LLMClient):
                 return response.output_parsed.model_dump()
             except Exception:
                 if response_schema in (CoachOpinionV2, CoachOpinionV21, OpinionDraftV22, OpinionDraftV23,
-                                       OpinionDraftV26):
+                                       OpinionDraftV26, OpinionDraftV3):
                     raise
 
         response = self._request("json", lambda: self.client.responses.create(

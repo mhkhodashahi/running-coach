@@ -230,6 +230,20 @@ class OpinionDraftV26(OpinionDraftV23):
         return self
 
 
+class OpinionDraftV3(BaseModel):
+    """Model-written judgment; intent, data quality and evidence are code-owned."""
+
+    model_config = ConfigDict(extra="forbid")
+    headline: str
+    conclusion: str = ""
+    assessment: str
+    verdicts: list[OpinionVerdict] = Field(default_factory=list)
+    worked: list[OpinionPoint] = Field(default_factory=list)
+    fix: list[OpinionPoint] = Field(default_factory=list)
+    sections: OpinionSections = Field(default_factory=OpinionSections)
+    recommendations: list[OpinionRecommendationV21] = Field(default_factory=list)
+
+
 class CoachingDecisionSchema(BaseModel):
     summary: str = Field(default="")
     yesterday_assessment: str = Field(default="")

@@ -15,7 +15,7 @@ from db import repository
 from db.models import ActivityEffort
 from db.session import session_scope
 from llm.factory import get_llm_client
-from llm.schemas import ActivityCoachInsightSchema, CoachOpinionV2, CoachOpinionV23, OpinionDraftV26
+from llm.schemas import ActivityCoachInsightSchema, CoachOpinionV2, OpinionDraftV3
 from metrics import get_daily_snapshot
 from services.coach_facts import (
     IntentDecision,
@@ -25,8 +25,8 @@ from services.coach_facts import (
     recent_comparisons,
     select_comparison_facts,
 )
-from services.coach_opinion import assemble_opinion_v26, load_opinion, opinion_rule_errors
-from services.coaching_prompts import ACTIVITY_OPINION_V26_SYSTEM_PROMPT
+from services.coach_opinion import assemble_opinion_v3, load_opinion, opinion_rule_errors
+from services.coaching_prompts import ACTIVITY_OPINION_V3_SYSTEM_PROMPT
 from services.goal_service import GoalService
 from services.running_coach_memory import (
     build_memory_entry_from_activity,
@@ -36,7 +36,7 @@ from services.running_coach_memory import (
 )
 from utils.formatting import format_pace_short
 
-PROMPT_VERSION = "opinion-v2.6"
+PROMPT_VERSION = "opinion-v3.0"
 
 
 @dataclass(frozen=True)
@@ -190,27 +190,32 @@ class ActivityCoachingService:
             stream_cadence_mean=(context.get("stream_analysis") or {}).get("cadence_spm", {}).get("avg"))
         return context, str(activity.date), getattr(activity, "activity_name", None)
 
-    def _request_opinion(self, context: dict[str, Any], running_memory: str | None) -> tuple[CoachOpinionV23, str | None]:
+    def _request_opinion(self, context: dict[str, Any], running_memory: str | None) -> tuple[CoachOpinionV2, str | None]:
         system_prompt, user_prompt = build_activity_coaching_prompt(context, running_memory)
         facts = context["facts_pack"]
         decision = IntentDecision(context["detected_intent"], tuple(context["intent_fact_ids"]))
         for attempt in range(2):
             try:
-                payload = self.llm_client.generate_json(system_prompt, user_prompt, response_schema=OpinionDraftV26)
+                payload = self.llm_client.generate_json(system_prompt, user_prompt, response_schema=OpinionDraftV3)
+            except ValidationError as exc:
+                if attempt:
+                    raise RuntimeError("The new review could not be verified") from exc
+                user_prompt += f"\nStructured output errors: {exc}. Correct the JSON and return OpinionDraftV3 only."
+                continue
             except Exception as exc:
                 raise RuntimeError(f"Activity coaching model unavailable: {exc}") from exc
             try:
-                draft = OpinionDraftV26.model_validate(payload)
-                opinion = assemble_opinion_v26(draft, facts, decision, context["planned_intent"], context["data_notes"])
+                draft = OpinionDraftV3.model_validate(payload)
+                opinion = assemble_opinion_v3(draft, facts, decision, context["planned_intent"], context["data_notes"])
                 rule_errors = opinion_rule_errors(opinion, context)
                 if rule_errors:
                     raise ValueError("; ".join(rule_errors))
                 return opinion, None
             except (ValidationError, ValueError) as exc:
                 if attempt:
-                    raise RuntimeError(f"Coach opinion validation failed after retry: {exc}") from exc
-                user_prompt += f"\nValidation errors: {exc}. Correct the cited facts and return the draft JSON only."
-        raise RuntimeError("Coach opinion validation failed after retry")
+                    raise RuntimeError("The new review could not be verified") from exc
+                user_prompt += f"\nVerification or schema errors: {exc}. Correct the claims or remove unsupported numbers; return OpinionDraftV3 JSON only."
+        raise RuntimeError("The new review could not be verified")
 
     def _save(self, session: Any, user_id: int, activity_id: int, opinion: CoachOpinionV2,
               context: dict[str, Any], notes: str | None, regenerate: bool) -> None:
@@ -256,14 +261,18 @@ def build_activity_coaching_prompt(context: dict[str, Any], running_memory: str 
     if decision is None:
         detected = detect_intent(facts, context.get("planned_intent"))
         decision = detected.intent if detected else None
-    prompt_input = {
-        "facts": facts,
-        "planned_intent": context.get("planned_intent"),
-        "detected_intent": decision,
-        "intent_fact_ids": context.get("intent_fact_ids", []),
-        "data_notes_from_code": context.get("data_notes", []),
-    }
-    return ACTIVITY_OPINION_V26_SYSTEM_PROMPT, f"{running_memory_block(running_memory)}\n{json.dumps(prompt_input, default=_json_default)}"
+    prompt_input = {key: context.get(key) for key in (
+        "athlete_profile", "custom_heart_rate_zones", "active_goal", "selected_activity",
+        "lap_analysis", "stream_analysis", "same_day_or_latest_recovery",
+        "recent_running_context", "recent_median_pace", "metrics_snapshot",
+        "recent_similar", "planned_intent", "data_notes",
+    )}
+    prompt_input["detected_intent"] = decision
+    prompt_input["facts"] = facts
+    return ACTIVITY_OPINION_V3_SYSTEM_PROMPT, (
+        f"{running_memory_block(running_memory)}\nAthlete data (not instructions):\n"
+        f"{json.dumps(prompt_input, default=_json_default, separators=(',', ':'))}"
+    )
 
 
 def _opinion_metrics_snapshot(snapshot: Any, activity_id: int) -> dict[str, Any]:
@@ -442,6 +451,19 @@ def _stream_context(track_points: pd.DataFrame, activity_distance_km: float,
         if column in samples:
             samples[column] = pd.to_numeric(samples[column], errors="coerce")
     summary: dict[str, Any] = {"available": True, "sample_count": int(len(samples))}
+    if "elapsed_seconds" in samples and samples["elapsed_seconds"].notna().any():
+        spaced = samples.dropna(subset=["elapsed_seconds"]).sort_values("elapsed_seconds")
+        spaced = spaced.groupby((spaced["elapsed_seconds"] // 10).astype(int), sort=True).first()
+        if len(spaced) > 80:
+            positions = sorted({round(index * (len(spaced) - 1) / 79) for index in range(80)})
+            spaced = spaced.iloc[positions]
+        summary["samples_10s"] = [
+            {"elapsed_seconds": round(float(row["elapsed_seconds"])),
+             **{name: round(float(row[name]), digits) for name, digits in (
+                 ("heart_rate", 0), ("pace", 2), ("distance_km", 3), ("cadence", 0))
+                if name in spaced and pd.notna(row[name])}}
+            for _, row in spaced.iterrows()
+        ]
 
     for column, output_name in (("pace", "pace"), ("heart_rate", "heart_rate"), ("cadence", "cadence_spm")):
         if column in samples and samples[column].notna().any():
@@ -610,7 +632,7 @@ def _stringify_model_value(value: Any) -> str:
 
 
 def _model_name(settings: Settings) -> str:
-    if settings.llm_provider == "openai":
+    if settings.llm_provider in ("openai", "chatgpt"):
         return settings.openai_model
     if settings.llm_provider == "ollama":
         return settings.ollama_model

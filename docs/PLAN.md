@@ -179,6 +179,16 @@ The target contract is now in `AGENTS.md`. No milestone may rewrite stored data 
 - Acceptance: code supplies rounded, cited facts for full-km splits, halves, HR drift and zones, training effect, comparable sessions, weekly context and recovery. The LLM writes a fuller v2 opinion with enforced section/item/sentence minimums and only known fact IDs. One failed validation gets one repair request; a second failure preserves the current opinion. Old rows are read without regeneration or rewriting. A three-run comparison, including the legacy reference, runs only on a disposable copy with provider approval and at most six calls.
 - Risks: detailed output may exceed local-model capacity or the daily call budget; missing streams and sparse history limit what can be said; a slow comparison query must not delay page rendering because generation remains explicit.
 
+### 6h. Verify-after coach opinions
+
+- Replace citation-based opinion writing with the legacy-depth prompt and a citation-free v3 draft. Send bounded activity, lap, stream, recovery, recent-training and athlete-profile context alongside the 6g facts pack.
+- Verify every model-written numeric claim against code-computed facts with formatting and rounding tolerance. Retry once for unmatched claims; on another failure keep the existing opinion. Code supplies intent, data notes and stored evidence.
+- Verify with fake clients and three approved live generations on a disposable database; keep private outputs outside the repository. See `docs/milestone-6h-results.md`.
+
+### 6j. AI morning brief (pending)
+
+- Reuse the 6h post-generation number verifier. Code builds the decision and facts; an optional LLM writes the brief, with a code-built fallback and once-per-day delivery. Add only missing Garmin night fields and brief storage through additive migrations.
+
 ### 6i. Personal dashboard
 
 - **6i-1, dashboard v1 (implemented):** Keep the current Insights Overview; add `/insights/dashboard` with a fixed registry of eight code-computed charts, validated widget options, accessible SVG/table/CSV views, and an additive `dashboard_widgets` migration. Four default widgets render without saving until the first edit. Dashboard and migration tests pass on disposable databases; the full suite still has two unrelated legacy prompt-copy assertion failures, recorded in `docs/milestone-6i-1-results.md`.

@@ -18,6 +18,7 @@ from llm.schemas import (
     CoachOpinionV21,
     CoachOpinionV22,
     CoachOpinionV23,
+    OpinionDraftV3,
     OpinionDraftV22,
     OpinionDraftV23,
     OpinionDraftV26,
@@ -26,6 +27,7 @@ from services.activity_coaching_service import ActivityCoachingService, _update_
 from services.coach_facts import IntentDecision
 from services.coach_opinion import (
     assemble_opinion,
+    assemble_opinion_v3,
     assemble_opinion_v23,
     assemble_opinion_v26,
     collect_v23_evidence_ids,
@@ -245,6 +247,39 @@ def draft_payload_v26(**changes):
     return payload | changes
 
 
+def draft_payload_v3(**changes):
+    payload = draft_payload_v26()
+    payload.pop("evidence_ids")
+    payload.pop("section_evidence_ids")
+    for item in (*payload["worked"], *payload["fix"], *payload["recommendations"]):
+        item.pop("evidence_ids")
+    return payload | changes
+
+
+def test_v3_draft_has_no_citations_or_code_owned_fields():
+    payload = draft_payload_v3()
+    draft = OpinionDraftV3.model_validate(payload)
+    assert "evidence_ids" not in draft.model_dump()
+    for key in ("intent", "data_notes", "evidence", "confidence", "evidence_ids"):
+        with pytest.raises(ValidationError):
+            OpinionDraftV3.model_validate(payload | {key: []})
+    payload["verdicts"][0]["word"] = "Patient, then abrupt"
+    assert OpinionDraftV3.model_validate(payload).verdicts[0].word == "Patient, then abrupt"
+
+
+def test_v3_evidence_intent_and_data_notes_are_built_by_code():
+    facts = invented_draft_facts()
+    draft = OpinionDraftV3.model_validate(draft_payload_v3())
+    notes = ["A partial lap was excluded."]
+    opinion = assemble_opinion_v3(draft, facts, IntentDecision("steady", ()), "easy", notes)
+    assert opinion.intent.model_dump() == {"planned": "easy", "detected": "steady"}
+    assert opinion.data_notes == notes
+    assert {item.source for item in opinion.evidence} == {
+        "selected_activity.distance_km", "selected_activity.pace", "selected_activity.avg_hr",
+    }
+    assert all(item.value != "40.0%" for item in opinion.evidence)
+
+
 @pytest.mark.parametrize("change", [
     {"assessment": "Only one sentence."},
     {"worked": []},
@@ -302,6 +337,7 @@ def test_v26_single_fix_requires_a_clear_intent_match(opinion_db):
     with factory() as session:
         user = repository.get_or_create_default_user(session, 1)
         context, _, _ = service._prepare(session, user, activity_id)
+    context["prompt_version"] = "opinion-v2.6"
     payload = draft_payload_v26()
     payload["fix"] = payload["fix"][:1]
     draft = OpinionDraftV26.model_validate(payload)
@@ -315,14 +351,38 @@ def test_v26_single_fix_requires_a_clear_intent_match(opinion_db):
 
 def test_v26_repair_retry_saves_only_repaired_draft(opinion_db):
     factory, _, activity_id = opinion_db
-    bad = draft_payload_v26(assessment="Too brief.")
-    llm = MockLLM(bad, draft_payload_v26())
+    bad = draft_payload_v3(assessment="I saw 149 bpm.")
+    llm = MockLLM(bad, draft_payload_v3())
     with factory.begin() as session:
         user = repository.get_or_create_default_user(session, 1)
         result = service_for(opinion_db, llm).generate(session, user=user, activity_id=activity_id)
     assert len(llm.prompts) == 2
-    assert "Validation errors" in llm.prompts[1][1]
+    assert "Unverified numbers" in llm.prompts[1][1]
     assert len(result["worked"]) == 3
+
+
+def test_v3_structured_parse_failure_gets_one_repair_retry(opinion_db):
+    factory, _, activity_id = opinion_db
+    failure = None
+    try:
+        OpinionDraftV3.model_validate({"assessment": "missing headline"})
+    except ValidationError as exc:
+        failure = exc
+
+    class ParseFailOnce(MockLLM):
+        def generate_json(self, system_prompt, user_prompt, response_schema=None):
+            if not self.prompts:
+                self.prompts.append((system_prompt, user_prompt, response_schema))
+                raise failure
+            return super().generate_json(system_prompt, user_prompt, response_schema)
+
+    llm = ParseFailOnce(draft_payload_v3())
+    with factory.begin() as session:
+        user = repository.get_or_create_default_user(session, 1)
+        result = service_for(opinion_db, llm).generate(session, user=user, activity_id=activity_id)
+    assert result["schema_version"] == 2
+    assert len(llm.prompts) == 2
+    assert "Structured output errors" in llm.prompts[1][1]
 
 
 def test_v26_preparation_reuses_dated_similar_session_tool(opinion_db):
@@ -348,7 +408,7 @@ def service_for(opinion_db, llm):
 
 def test_valid_v26_saved_and_plan_passed_to_prompt(opinion_db):
     factory, _, activity_id = opinion_db
-    llm = MockLLM(draft_payload_v26())
+    llm = MockLLM(draft_payload_v3())
     service = service_for(opinion_db, llm)
     with factory.begin() as session:
         repository.set_activity_planned_intent(session, activity_id=activity_id, user_id=1, planned_intent="easy")
@@ -356,16 +416,18 @@ def test_valid_v26_saved_and_plan_passed_to_prompt(opinion_db):
         user = repository.get_or_create_default_user(session, 1)
         result = service.generate(session, user=user, activity_id=activity_id)
     assert result["schema_version"] == 2
-    assert '"planned_intent": "easy"' in llm.prompts[0][1]
+    assert '"planned_intent":"easy"' in llm.prompts[0][1]
     assert "<running_memory>" in llm.prompts[0][1]
-    assert llm.prompts[0][2] is OpinionDraftV26
+    assert '"athlete_profile"' in llm.prompts[0][1]
+    assert '"lap_analysis"' in llm.prompts[0][1]
+    assert llm.prompts[0][2] is OpinionDraftV3
     with factory() as session:
         row = repository.get_activity_coaching_insight(session, activity_id, 1)
-        assert row.schema_version == "2" and row.prompt_version == "opinion-v2.6"
+        assert row.schema_version == "2" and row.prompt_version == "opinion-v3.0"
         assert row.validation_notes is None
         assert json.loads(row.payload_json)["intent"]["planned"] == "easy"
         assert json.loads(row.payload_json)["intent"]["detected"] == "recovery"
-        assert len(json.loads(row.payload_json)["evidence"]) == 5
+        assert len(json.loads(row.payload_json)["evidence"]) >= 3
         assert json.loads(row.prompt_context_json)["metrics_snapshot"]["as_of"] == "2026-05-22"
 
 
@@ -379,10 +441,10 @@ def test_invalid_retry_keeps_existing_opinion(opinion_db):
     llm = MockLLM({"unexpected": "bad"}, {"unexpected": "still bad"})
     with factory.begin() as session:
         user = repository.get_or_create_default_user(session, 1)
-        with pytest.raises(RuntimeError, match="validation failed after retry"):
+        with pytest.raises(RuntimeError, match="new review could not be verified"):
             service_for(opinion_db, llm).generate(session, user=user, activity_id=activity_id, regenerate=True)
     assert len(llm.prompts) == 2
-    assert "Validation errors" in llm.prompts[1][1]
+    assert "Verification or schema errors" in llm.prompts[1][1]
     with factory() as session:
         assert repository.get_activity_coaching_insight(session, activity_id, 1).payload_json == original
         assert session.scalars(select(ActivityCoachingOpinionHistory)).all() == []
@@ -410,14 +472,14 @@ def test_provider_failure_does_not_consume_validation_retry(opinion_db):
 
 def test_unsupported_number_retry_does_not_save(opinion_db):
     factory, _, activity_id = opinion_db
-    bad = draft_payload_v26()
+    bad = draft_payload_v3()
     bad["worked"][0]["detail"] = "The effort was 42 bpm."
     llm = MockLLM(bad, bad)
     with factory.begin() as session:
         user = repository.get_or_create_default_user(session, 1)
-        with pytest.raises(RuntimeError, match="validation failed after retry"):
+        with pytest.raises(RuntimeError, match="new review could not be verified"):
             service_for(opinion_db, llm).generate(session, user=user, activity_id=activity_id)
-    assert "unsupported numbers" in llm.prompts[1][1]
+    assert "Unverified numbers" in llm.prompts[1][1]
     with factory() as session:
         assert repository.get_activity_coaching_insight(session, activity_id, 1) is None
 
@@ -432,7 +494,7 @@ def test_regeneration_archives_legacy_payload_in_same_transaction(opinion_db):
                                                    prompt_context_json=context, model_provider="old", model_name="old")
     with factory.begin() as session:
         user = repository.get_or_create_default_user(session, 1)
-        service_for(opinion_db, MockLLM(draft_payload_v26())).generate(session, user=user,
+        service_for(opinion_db, MockLLM(draft_payload_v3())).generate(session, user=user,
                                                                  activity_id=activity_id, regenerate=True)
     with factory() as session:
         history = session.scalars(select(ActivityCoachingOpinionHistory)).one()
@@ -541,12 +603,13 @@ def test_v21_closed_plan_session_and_verbatim_evidence():
 
 def test_v23_unknown_fact_id_retry_rejects_without_saving(opinion_db):
     factory, _, activity_id = opinion_db
-    bad = draft_payload_v26(evidence_ids=["DISTANCE", "DURATION", "AVG_PACE", "NOT_A_FACT"])
+    bad = draft_payload_v3(evidence_ids=["NOT_A_FACT"])
     llm = MockLLM(bad, bad)
     with factory.begin() as session:
         user = repository.get_or_create_default_user(session, 1)
-        with pytest.raises(RuntimeError, match="unknown fact ID"):
+        with pytest.raises(RuntimeError, match="new review could not be verified"):
             service_for(opinion_db, llm).generate(session, user=user, activity_id=activity_id)
+    assert "evidence_ids" in llm.prompts[1][1]
     with factory() as session:
         assert repository.get_activity_coaching_insight(session, activity_id, 1) is None
 
@@ -563,7 +626,7 @@ def test_v23_unknown_fact_id_retry_rejects_without_saving(opinion_db):
 ])
 def test_v23_mocked_generation_retries_invalid_rules(opinion_db, change):
     factory, _, activity_id = opinion_db
-    bad = draft_payload_v23() | change
+    bad = draft_payload_v3() | change
     llm = MockLLM(bad, bad)
     service = service_for(opinion_db, llm)
     with factory.begin() as session:
@@ -571,10 +634,10 @@ def test_v23_mocked_generation_retries_invalid_rules(opinion_db, change):
         context, _, _ = service._prepare(session, user, activity_id)
     context["selected_activity"]["activity_name"] = "Elmwood Run"
     context["active_goal"]["name"] = "Invented 10K"
-    with pytest.raises(RuntimeError, match="validation failed after retry"):
+    with pytest.raises(RuntimeError, match="new review could not be verified"):
         service._request_opinion(context, None)
     assert len(llm.prompts) == 2
-    assert "Validation errors" in llm.prompts[1][1]
+    assert "Verification or schema errors" in llm.prompts[1][1]
 
 
 def test_v21_goal_reference_is_allowed_in_recommendation():
@@ -717,16 +780,16 @@ def test_v23_fact_id_validation_retries_and_preserves_existing_opinion(opinion_d
             payload_json=original, prompt_context_json='{"context":true}',
             model_provider="old", model_name="old",
         )
-    bad = draft_payload_v26(assessment="I saw AVG_PACE in the data. The run was steady. I would keep control.")
+    bad = draft_payload_v3(assessment="I saw AVG_PACE in the data. The run was steady. I would keep control.")
     llm = MockLLM(bad, bad)
     with factory.begin() as session:
         user = repository.get_or_create_default_user(session, 1)
-        with pytest.raises(RuntimeError, match="validation failed after retry"):
+        with pytest.raises(RuntimeError, match="new review could not be verified"):
             service_for(opinion_db, llm).generate(
                 session, user=user, activity_id=activity_id, regenerate=True,
             )
     assert len(llm.prompts) == 2
-    assert "fact ID in prose AVG_PACE" in llm.prompts[1][1]
+    assert "Fact IDs must not appear in opinion text: AVG_PACE" in llm.prompts[1][1]
     with factory() as session:
         assert repository.get_activity_coaching_insight(session, activity_id, 1).payload_json == original
         assert session.scalars(select(ActivityCoachingOpinionHistory)).all() == []

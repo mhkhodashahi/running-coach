@@ -12,12 +12,14 @@ from llm.schemas import (
     CoachOpinionV21,
     CoachOpinionV22,
     CoachOpinionV23,
+    OpinionDraftV3,
     OpinionDraftV22,
     OpinionDraftV23,
     OpinionDraftV26,
     OpinionIntent,
 )
 from services.coach_facts import Fact, IntentDecision, match_text_facts, unsupported_text_numbers
+from services.number_verifier import NumberFact, verify_numbers
 
 NUMBER = re.compile(r"(?<![\w])(?:\d{1,2}:\d{2}|\d+h\s*\d+m|\d+(?:\.\d+)?)(?![\d.:])", re.IGNORECASE)
 
@@ -402,3 +404,35 @@ def assemble_opinion_v26(draft: OpinionDraftV26, facts: list[Fact], decision: In
                     "evidence": [{"metric": by_id[item]["metric"], "value": by_id[item]["display"],
                                   "source": by_id[item]["source"]} for item in ids if item in by_id]})
     return CoachOpinionV23.model_validate(payload)
+
+
+def assemble_opinion_v3(draft: OpinionDraftV3, facts: list[NumberFact], decision: IntentDecision,
+                        planned_intent: str | None, data_notes: list[str]) -> CoachOpinionV2:
+    """Verify the model's prose, then attach only code-owned intent, notes and evidence."""
+    text = " ".join([
+        draft.headline, draft.conclusion, draft.assessment,
+        *(item.word for item in draft.verdicts),
+        *(item.lead + " " + item.detail for item in (*draft.worked, *draft.fix)),
+        *draft.sections.model_dump().values(),
+        *(item.text for item in draft.recommendations),
+    ])
+    for item in draft.recommendations:
+        if item.action == "add_to_plan":
+            text += f" {item.session.duration_min} min {item.session.hr_cap_bpm} bpm"
+    leaked_ids = [fact["id"] for fact in facts if re.search(
+        rf"(?<![A-Za-z0-9_]){re.escape(fact['id'])}(?![A-Za-z0-9_])", text)]
+    if leaked_ids:
+        raise ValueError("Fact IDs must not appear in opinion text: " + ", ".join(leaked_ids))
+    result = verify_numbers(facts, text)
+    if result.unmatched:
+        raise ValueError("Unverified numbers: " + ", ".join(result.unmatched))
+    payload = draft.model_dump()
+    payload.update({
+        "schema_version": 2,
+        "confidence": "medium",
+        "intent": {"planned": planned_intent, "detected": decision.intent},
+        "data_notes": list(data_notes),
+        "evidence": [{"metric": item["metric"], "value": item["display"], "source": item["source"]}
+                     for item in result.matched],
+    })
+    return CoachOpinionV2.model_validate(payload)

@@ -11,12 +11,24 @@ from db import repository
 from db.models import Base
 from services.activity_coaching_service import (
     ActivityCoachingService,
+    _stream_context,
     build_activity_coaching_context,
     build_activity_coaching_prompt,
     can_generate_activity_coach_opinion,
     normalize_activity_coach_payload,
     supports_activity_coach_opinion,
 )
+
+
+def test_stream_context_includes_bounded_ten_second_samples() -> None:
+    points = pd.DataFrame([{"elapsed_seconds": second, "heart_rate": 120 + second // 100,
+                            "pace": 6.0, "distance_km": second / 360, "cadence": 160}
+                           for second in range(1000)])
+    result = _stream_context(points, 3.0, ())
+    assert result["sample_count"] == 1000
+    assert len(result["samples_10s"]) == 80
+    assert result["samples_10s"][0]["elapsed_seconds"] == 0
+    assert result["samples_10s"][-1]["elapsed_seconds"] == 990
 
 
 def test_activity_coach_opinion_is_only_for_runs() -> None:
@@ -185,16 +197,16 @@ def test_activity_coaching_prompt_uses_profile_and_required_analysis_categories(
         running_memory="# Coach Running Memory\n- Easy days stay easy.",
     )
 
-    assert "OpinionDraftV26" in system_prompt
-    assert "supplies detected intent" in system_prompt
-    assert "3–5 worked items" in system_prompt
+    assert "OpinionDraftV3" in system_prompt
+    assert "code owns them" in system_prompt
+    assert "3-5 items" in system_prompt
     assert "Return JSON only" in system_prompt
-    assert '"display": "6:00 /km"' in user_prompt
-    assert '"display": "6:12 /km"' in user_prompt
-    assert '"athlete_profile"' not in user_prompt
-    assert '"selected_activity"' not in user_prompt
-    assert '"planned_intent": null' in user_prompt
-    assert "Invented Easy" not in user_prompt
+    assert '"display":"6:00 /km"' in user_prompt
+    assert '"display":"6:12 /km"' in user_prompt
+    assert '"athlete_profile"' in user_prompt
+    assert '"selected_activity"' in user_prompt
+    assert '"planned_intent":null' in user_prompt
+    assert "Invented Easy" in user_prompt
     assert "<running_memory>" in user_prompt
     assert "Easy days stay easy." in user_prompt
 
