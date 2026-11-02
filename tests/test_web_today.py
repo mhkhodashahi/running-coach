@@ -1,5 +1,6 @@
 """Milestone 5a web UI tests with invented database rows only."""
 
+import json
 import re
 import sqlite3
 from dataclasses import replace
@@ -98,6 +99,36 @@ def test_today_render_does_not_call_llm(web_db):
     settings = replace(get_settings(), db_path=web_db, llm_provider="none")
     with TestClient(create_app(settings, password="", llm=ExplodingLLM())) as browser:
         assert browser.get("/").status_code == 200
+
+
+def test_today_stored_brief_and_last_review_render_without_model_call(web_db):
+    day = datetime.now(ZoneInfo("Europe/Berlin")).date()
+    with sqlite3.connect(web_db) as connection:
+        connection.execute("INSERT INTO morning_briefs(user_id,date,text,sections_json,source,"
+                           "prompt_version,facts_json,created_at) VALUES(1,?,?,?,?,?,?,?)",
+                           (day.isoformat(), "Invented brief", json.dumps({
+                               "headline": "Easy day", "sleep": "Invented sleep comparison",
+                               "hrv": "Invented HRV comparison", "today": "Invented run advice",
+                               "week": "Invented weekly load", "tip": "Keep bedtime regular."}),
+                            "fallback", "morning-brief-v1.0", "[]", day.isoformat()))
+        connection.execute("INSERT INTO activity_coaching_insights(user_id,activity_id,summary,payload_json,"
+                           "prompt_context_json,created_at,updated_at) VALUES(1,340,'Invented',?,?,?,?)",
+                           (json.dumps({"brutally_honest_conclusion": "Steady invented run.",
+                                        "overall_assessment": "Invented assessment."}), "{}",
+                            day.isoformat(), day.isoformat()))
+    class ExplodingLLM:
+        def generate_json(self, *args, **kwargs):
+            raise AssertionError("Today render called a model")
+
+    settings = replace(get_settings(), db_path=web_db, llm_provider="none")
+    with TestClient(create_app(settings, password="", llm=ExplodingLLM())) as browser:
+        response = browser.get("/")
+    assert response.status_code == 200
+    assert "This morning" in response.text and "Last session" in response.text
+    assert "Invented sleep comparison" in response.text
+    assert "Invented run advice" not in response.text
+    assert "Steady invented run." in response.text
+    assert "Read the full review" in response.text
 
 
 def test_today_uses_short_dates_deltas_and_clock_badge(client, web_db):

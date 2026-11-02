@@ -12,6 +12,7 @@ from llm.base import LLMClient, extract_json
 from llm.schemas import (
     CoachOpinionV2,
     CoachOpinionV21,
+    MorningBriefDraft,
     OpinionDraftV3,
     OpinionDraftV22,
     OpinionDraftV23,
@@ -60,7 +61,7 @@ class OllamaClient(LLMClient):
                 "prompt": user_prompt,
                 "format": response_schema.model_json_schema()
                 if response_schema in (CoachOpinionV2, CoachOpinionV21, OpinionDraftV22, OpinionDraftV23,
-                                       OpinionDraftV26, OpinionDraftV3) else "json",
+                                       OpinionDraftV26, OpinionDraftV3, MorningBriefDraft) else "json",
                 "stream": False,
             },
             timeout=self.timeout_seconds,

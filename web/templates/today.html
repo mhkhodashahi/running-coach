@@ -11,6 +11,32 @@
   </a>{% endfor %}
 </section>
 {% include 'components/v2_today_call.html' %}
+<section class="v2-morning card" aria-labelledby="v2-morning-title">
+  <h2 id="v2-morning-title">This morning</h2>
+  {% if morning_card.ready %}
+    {% for label, body in morning_card.visible %}<div class="v2-morning-section"><h3>{{ label }}</h3><p>{{ body }}</p></div>{% endfor %}
+    {% if morning_card.more %}<div class="v2-morning-more">
+      {% for label, body in morning_card.more %}<div class="v2-morning-section"><h3>{{ label }}</h3><p>{{ body }}</p></div>{% endfor %}
+    </div><details class="v2-morning-phone-more"><summary>Show more</summary>
+      {% for label, body in morning_card.more %}<div class="v2-morning-section"><h3>{{ label }}</h3><p>{{ body }}</p></div>{% endfor %}
+    </details>{% endif %}
+  {% else %}<p class="cap">{{ morning_card.message }}</p>{% endif %}
+</section>
+{% if last_session %}<section class="v2-last-session card" aria-labelledby="v2-last-title">
+  <h2 id="v2-last-title">Last session</h2>
+  <p class="cap">{{ last_session.sport|title }} · {{ last_session.date }} · {{ last_session.duration }} · {{ last_session.load or ('Load: No data · ' ~ sync) }}</p>
+  {% if last_session.headline %}
+    <h3>{{ last_session.headline }}</h3>
+    {% if last_session.verdicts %}<ul class="v2-last-verdicts">{% for item in last_session.verdicts %}
+      <li>{{ icon(item.icon) }} <strong>{{ item.word }}</strong> · {{ item.aspect }}</li>
+    {% endfor %}</ul>{% endif %}
+    <a href="/activities/{{ last_session.id }}?tab=review">Read the full review {{ icon('chevron') }}</a>
+  {% elif last_session.review_supported %}
+    <form method="post" action="/activities/{{ last_session.id }}/opinion">
+      <button class="btn btn-secondary" type="submit">Get a coach review</button>
+    </form>
+  {% else %}<p class="cap">Coach reviews for {{ last_session.sport }} are coming soon.</p>{% endif %}
+</section>{% endif %}
 <section class="v2-week card" aria-labelledby="v2-week-title"><div class="v2-week-head"><h2 id="v2-week-title">This week</h2><a class="cap" href="/plan">Training {{ icon('chevron') }}</a></div>
   <div class="v2-week-strip">{% for item in week_strip %}
     <div class="v2-day v2-day-{{ item.state|replace(' ', '-') }}"><span class="cap">{{ 'Today' if item.date == day.isoformat() else item.day_label }}</span><span class="v2-day-mark">{% if item.date != day.isoformat() %}{{ icon(item.icon) }}{% endif %}</span><div class="v2-phone-day-text"><strong>{{ item.phone_title }}</strong>{% if item.phone_done %}<small>{{ icon('check') }} {{ item.phone_done }}</small>{% endif %}</div><div class="v2-web-day-text">

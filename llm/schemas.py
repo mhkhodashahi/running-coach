@@ -244,6 +244,16 @@ class OpinionDraftV3(BaseModel):
     recommendations: list[OpinionRecommendationV21] = Field(default_factory=list)
 
 
+class MorningBriefDraft(BaseModel):
+    """Only narrative sections; code owns the decision, targets and tip."""
+
+    model_config = ConfigDict(extra="forbid")
+    sleep: str
+    hrv: str
+    heart: str = ""
+    yesterday: str = ""
+
+
 class CoachingDecisionSchema(BaseModel):
     summary: str = Field(default="")
     yesterday_assessment: str = Field(default="")

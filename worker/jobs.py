@@ -21,6 +21,7 @@ from services.daily_decision_service import get_or_create_daily_decision
 from services.effort_service import dispatch_effort_prompts, unrated_activities
 from services.fact_display import signed_delta
 from services.import_service import GarminImportService
+from services.morning_brief import get_or_create_brief
 from services.telegram_service import TelegramService
 from worker.backup import daily_backup
 from worker.health import health_problems
@@ -29,7 +30,7 @@ from worker.messages import (
     data_update,
     day_review,
     decision_reason,
-    morning,
+    morning_brief,
     proposal_items,
     weekly_review,
 )
@@ -89,18 +90,9 @@ def _unrated(settings: Settings, now: datetime, *, day: date | None = None,
 
 def morning_payload(settings: Settings, day: date, *, use_llm: bool,
                     now: datetime | None = None) -> OutboundMessage:
-    decision = _decision(settings, day, use_llm)
-    snapshot = get_daily_snapshot(date.fromisoformat(decision.based_on), database=settings.db_path,
-                                  user_id=settings.default_user_id, timezone=settings.local_timezone,
-                                  sleep_goal_hours=settings.sleep_goal_hours, hr_zones=settings.hr_zones)
-    last_unrated = _unrated(settings, now or datetime.now(ZoneInfo(settings.local_timezone)))
-    with sqlite3.connect(settings.db_path) as db:
-        known_health_day = db.execute("SELECT 1 FROM health_metrics WHERE user_id=? AND date=? "
-                                      "AND sleep_duration IS NOT NULL AND hrv IS NOT NULL",
-                                      (settings.default_user_id, decision.based_on)).fetchone() is not None
-    return morning(decision, _plan_labels(_planned(settings, day)), snapshot.load.ratio.value,
-                   last_unrated[0] if last_unrated else None, public_url=settings.public_url,
-                   known_health_day=known_health_day)
+    decision = _decision(settings, day, False)
+    brief = get_or_create_brief(settings, day, decision, use_ai=use_llm)
+    return morning_brief(brief, public_url=settings.public_url)
 
 
 def morning_message(settings: Settings, day: date, *, use_llm: bool) -> str:
@@ -328,10 +320,12 @@ def _late_morning_update(settings: Settings, telegram: TelegramService, day: dat
             return None
         previous = db.execute("SELECT status,message_text FROM job_runs WHERE user_id=? AND job='morning' "
                               "AND run_date=?", (settings.default_user_id, day.isoformat())).fetchone()
-    if not previous or previous[0] != "sent" or "waiting for your data" not in (previous[1] or ""):
+    if not previous or previous[0] != "sent" or not any(
+        marker in (previous[1] or "") for marker in ("Provisional:", "waiting for your data")
+    ):
         return None
     decision = _decision(settings, day, use_llm)
-    old_intensity = "rest" if "<b>Rest day" in previous[1] else "easy"
+    old_intensity = "rest" if "Rest today" in previous[1] else "easy"
     if decision.intensity == old_intensity:
         if claim(settings.db_path, settings.default_user_id, "morning_update", day, now):
             finish(settings.db_path, settings.default_user_id, "morning_update", day, now)

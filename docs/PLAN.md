@@ -1,6 +1,6 @@
 # Running Coach Implementation Plan
 
-Status: milestones through 6f are implemented. Milestone 6g code is implemented, but its three-run live verification is incomplete; milestone 7 has not started. Root `AGENTS.md` contains the target architecture, opinion contract and decisions.
+Status: milestones through 6f and 6j are implemented. Milestone 6g code is implemented, but its three-run live verification is incomplete; milestone 7 has not started. Root `AGENTS.md` contains the target architecture, opinion contract and decisions.
 
 ## Historical Audit State (2026-10-21)
 
@@ -185,9 +185,10 @@ The target contract is now in `AGENTS.md`. No milestone may rewrite stored data 
 - Verify every model-written numeric claim against code-computed facts with formatting and rounding tolerance. Retry once for unmatched claims; on another failure keep the existing opinion. Code supplies intent, data notes and stored evidence.
 - Verify with fake clients and three approved live generations on a disposable database; keep private outputs outside the repository. See `docs/milestone-6h-results.md`.
 
-### 6j. AI morning brief (pending)
+### 6j. AI morning brief (implemented)
 
-- Reuse the 6h post-generation number verifier. Code builds the decision and facts; an optional LLM writes the brief, with a code-built fallback and once-per-day delivery. Add only missing Garmin night fields and brief storage through additive migrations.
+- Reuse the 6h post-generation number verifier. Code builds the decision and facts; an optional LLM writes the Sleep, HRV, Heart and yesterday sections. An unmatched number or diagnosis gets one repair retry, then the code-built brief is stored. The morning worker sends it once per day, with feedback callbacks.
+- Migration `0016_morning_briefs` adds nullable Garmin night fields, a one-time 28-day night-detail backfill marker and durable brief storage. Today reads the stored brief and the latest eligible session without calling an LLM. See `docs/milestone-6j-results.md`.
 
 ### 6i. Personal dashboard
 

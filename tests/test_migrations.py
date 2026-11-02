@@ -19,7 +19,7 @@ from db.repository import get_or_create_default_goal, get_or_create_default_user
 from scripts.backup_db import backup_database
 
 SCHEMA = Path(__file__).parents[1] / "db/migrations/baseline.sql"
-HEAD = "0015_timeline_notes"
+HEAD = "0016_morning_briefs"
 PLAN_TABLES = ("fixed_commitments", "plan_sessions", "plan_versions", "plan_snapshots",
                "coach_proposals", "proposal_changes")
 
@@ -39,6 +39,7 @@ def snapshot(database):
             "job_runs", "notification_settings", "openai_api_calls", "activity_exercise_sets",
             "dashboard_widgets",
             "timeline_notes",
+            "morning_briefs",
         }]
         counts = {table: connection.execute(f'SELECT count(*) FROM "{table}"').fetchone()[0] for table in old_tables}
         payloads = {}
@@ -119,7 +120,7 @@ def test_fresh_upgrade_and_default_user(tmp_path):
     database = tmp_path / "fresh.db"
     assert upgrade_database(database) is None
     with closing(sqlite3.connect(database)) as connection:
-        assert len(tables(connection)) == 34
+        assert len(tables(connection)) == 35
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (HEAD,)
         columns = {row[1]: row for row in connection.execute("PRAGMA table_info(activity_coaching_insights)")}
         for name in ("schema_version", "prompt_version"):
@@ -335,7 +336,7 @@ def test_missing_tables_are_created_without_adding_body_tables(tmp_path):
         connection.execute("CREATE TABLE users(id INTEGER PRIMARY KEY, age INTEGER, gender VARCHAR(20), weight FLOAT, height FLOAT, max_hr INTEGER)")
     upgrade_database(database)
     with closing(sqlite3.connect(database)) as connection:
-        assert len(tables(connection)) == 32
+        assert len(tables(connection)) == 33
         assert "prediction_snapshots" in tables(connection)
         assert "garmin_sync_status" in tables(connection)
 

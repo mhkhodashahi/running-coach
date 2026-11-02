@@ -96,6 +96,7 @@ class GarminSyncStatus(Base):
 
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), primary_key=True)
     last_synced_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    night_details_backfilled_at: Mapped[datetime | None] = mapped_column(DateTime)
 
     user: Mapped[User] = relationship(back_populates="garmin_sync_status")
 
@@ -240,8 +241,45 @@ class HealthMetric(Base):
     body_battery: Mapped[float | None] = mapped_column(Float)
     recovery_time: Mapped[float | None] = mapped_column(Float)
     vo2max: Mapped[float | None] = mapped_column(Float)
+    sleep_deep_min: Mapped[float | None] = mapped_column(Float)
+    sleep_rem_min: Mapped[float | None] = mapped_column(Float)
+    sleep_light_min: Mapped[float | None] = mapped_column(Float)
+    sleep_awake_min: Mapped[float | None] = mapped_column(Float)
+    sleep_bedtime: Mapped[str | None] = mapped_column(String(32))
+    sleep_wake_time: Mapped[str | None] = mapped_column(String(32))
+    sleep_wakeups: Mapped[int | None] = mapped_column(Integer)
+    hrv_weekly_avg: Mapped[float | None] = mapped_column(Float)
+    hrv_baseline_low: Mapped[float | None] = mapped_column(Float)
+    hrv_baseline_high: Mapped[float | None] = mapped_column(Float)
+    hrv_status: Mapped[str | None] = mapped_column(String(32))
+    body_battery_start: Mapped[float | None] = mapped_column(Float)
+    body_battery_end: Mapped[float | None] = mapped_column(Float)
+    body_battery_charged: Mapped[float | None] = mapped_column(Float)
+    breathing_rate: Mapped[float | None] = mapped_column(Float)
 
     user: Mapped[User] = relationship(back_populates="health_metrics")
+
+
+class MorningBrief(Base):
+    """One verified or code-built brief per athlete and day."""
+
+    __tablename__ = "morning_briefs"
+    __table_args__ = (UniqueConstraint("user_id", "date", name="uq_morning_briefs_user_date"),
+                      CheckConstraint("source IN ('ai','fallback')", name="ck_morning_briefs_source"),
+                      CheckConstraint("feedback IS NULL OR feedback IN ('useful','not_useful')",
+                                      name="ck_morning_briefs_feedback"))
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    date: Mapped[date] = mapped_column(Date, nullable=False)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    sections_json: Mapped[str] = mapped_column(Text, nullable=False)
+    source: Mapped[str] = mapped_column(String(16), nullable=False)
+    model: Mapped[str | None] = mapped_column(String(128))
+    prompt_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    facts_json: Mapped[str] = mapped_column(Text, nullable=False)
+    feedback: Mapped[str | None] = mapped_column(String(16))
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
 
 
 class NutritionEntry(Base):

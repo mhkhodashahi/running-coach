@@ -434,6 +434,82 @@ def extract_hrv_value(hrv_data: Any) -> float | None:
     return round(float(pd.Series(values).median()), 1)
 
 
+def _garmin_clock(value: Any, timezone: str) -> str | None:
+    """Render Garmin's UTC timestamp as the athlete's local clock time."""
+    from datetime import UTC, datetime
+    from zoneinfo import ZoneInfo
+
+    if value is None:
+        return None
+    try:
+        if isinstance(value, (int, float)) or str(value).isdigit():
+            stamp = float(value)
+            if stamp > 1e11:
+                stamp /= 1000
+            moment = datetime.fromtimestamp(stamp, UTC)
+        else:
+            moment = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+            if moment.tzinfo is None:
+                return moment.strftime("%H:%M")
+        return moment.astimezone(ZoneInfo(timezone)).strftime("%H:%M")
+    except (ValueError, OverflowError):
+        return None
+
+
+def extract_night_details(sleep: dict[str, Any], hrv: dict[str, Any], stats: dict[str, Any],
+                          body_battery: Any, timezone: str) -> dict[str, Any]:
+    """Extract optional Garmin night fields without guessing missing values."""
+    dto = sleep.get("dailySleepDTO") or {}
+    summary = hrv.get("hrvSummary") or {}
+    baseline = summary.get("baseline") if isinstance(summary.get("baseline"), dict) else {}
+
+    def minutes(*keys: str) -> float | None:
+        seconds = pick_first_numeric(sleep, [("dailySleepDTO", key) for key in keys])
+        return round(seconds / 60, 1) if seconds is not None else None
+
+    battery_items = body_battery if isinstance(body_battery, list) else [body_battery]
+    battery_levels: list[float] = []
+    charged: float | None = None
+    for item in battery_items:
+        if not isinstance(item, dict):
+            continue
+        direct = pick_first_numeric(item, [("bodyBatteryValue",), ("bodyBattery",), ("value",)])
+        if direct is not None:
+            battery_levels.append(direct)
+        for point in item.get("bodyBatteryValuesArray") or []:
+            if isinstance(point, (list, tuple)) and len(point) >= 2:
+                value = coerce_numeric(point[1])
+                if value is not None:
+                    battery_levels.append(value)
+        item_charged = pick_first_numeric(item, [("bodyBatteryCharged",), ("charged",)])
+        if item_charged is not None:
+            charged = item_charged
+    start = battery_levels[0] if battery_levels else None
+    end = battery_levels[-1] if battery_levels else None
+    return {
+        "sleep_deep_min": minutes("deepSleepSeconds"),
+        "sleep_rem_min": minutes("remSleepSeconds"),
+        "sleep_light_min": minutes("lightSleepSeconds"),
+        "sleep_awake_min": minutes("awakeSleepSeconds"),
+        "sleep_bedtime": _garmin_clock(dto.get("sleepStartTimestampGMT") or dto.get("sleepStartTimestampLocal"),
+                                       timezone),
+        "sleep_wake_time": _garmin_clock(dto.get("sleepEndTimestampGMT") or dto.get("sleepEndTimestampLocal"),
+                                        timezone),
+        "sleep_wakeups": coerce_numeric(dto.get("numberOfAwakenings") if
+                                        dto.get("numberOfAwakenings") is not None else dto.get("awakeningsCount")),
+        "hrv_weekly_avg": pick_first_numeric(hrv, [("hrvSummary", "weeklyAvg"), ("weeklyAvg",)]),
+        "hrv_baseline_low": pick_first_numeric(baseline, [("balancedLow",), ("lower",), ("low",)]),
+        "hrv_baseline_high": pick_first_numeric(baseline, [("balancedUpper",), ("upper",), ("high",)]),
+        "hrv_status": str(summary.get("status") or hrv.get("status") or "") or None,
+        "body_battery_start": start,
+        "body_battery_end": end,
+        "body_battery_charged": charged,
+        "breathing_rate": pick_first_numeric(sleep, [("dailySleepDTO", "avgSleepRespirationValue"),
+                                                      ("avgSleepRespirationValue",)]) or pick_first_numeric(
+                                                          stats, [("avgRespirationValue",), ("averageRespiration",)]),
+    }
+
+
 def extract_vo2max_value(max_metrics_data: Any) -> float | None:
     if isinstance(max_metrics_data, list):
         for entry in max_metrics_data:
@@ -590,6 +666,7 @@ def normalize_live_health_row(
     max_metrics: Any,
     training_readiness: Any,
     training_status: Any,
+    timezone: str = "UTC",
 ) -> dict[str, Any] | None:
     resting_hr = pick_first_numeric(
         stats,
@@ -619,6 +696,7 @@ def normalize_live_health_row(
         "body_battery": extract_body_battery_value(body_battery),
         "recovery_time": normalize_recovery_time_hours(training_readiness, training_status, stats),
         "vo2max": extract_vo2max_value(max_metrics),
+        **extract_night_details(sleep, hrv if isinstance(hrv, dict) else {}, stats, body_battery, timezone),
     }
     if any(value is not None for key, value in row.items() if key not in {"user_id", "date"}):
         return row

@@ -10,6 +10,7 @@ from sqlalchemy import text
 
 from config import get_settings
 from db import repository
+from db.models import GarminSyncStatus
 from services.effort_service import queue_new_activities
 from services.garmin_client import CSVGarminClient, GarminAPIClient, GarminClient
 from services.garmin_models import validate_laps, validate_track_points
@@ -88,10 +89,14 @@ class GarminImportService:
             token_dir=settings.garmin_token_dir,
             rate_limit_cooldown_minutes=settings.garmin_rate_limit_cooldown_minutes,
         )
+        sync_status = session.get(GarminSyncStatus, user_id)
+        backfill_nights = include_health and (
+            sync_status is None or sync_status.night_details_backfilled_at is None)
+        requested_health_days = health_days or settings.garmin_health_sync_days
         activity_rows, health_rows = client.sync_recent_data(
             user_id=user_id,
             days=days or settings.garmin_sync_days,
-            health_days=health_days or settings.garmin_health_sync_days,
+            health_days=max(requested_health_days, 28) if backfill_nights else requested_health_days,
         )
         before_ids = ({row[0] for row in session.execute(
             text("SELECT id FROM activities WHERE user_id=:uid"), {"uid": user_id})}
@@ -142,4 +147,8 @@ class GarminImportService:
             ),
         )
         repository.record_garmin_sync(session, user_id)
+        if backfill_nights and health_rows:
+            from datetime import UTC, datetime
+
+            session.get(GarminSyncStatus, user_id).night_details_backfilled_at = datetime.now(UTC).replace(tzinfo=None)
         return summary

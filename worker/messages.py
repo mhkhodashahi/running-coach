@@ -128,6 +128,27 @@ def morning(decision: Any, planned: list[str], ratio: float | None,
     return _render(lines, tuple(keyboard))
 
 
+def morning_brief(brief: Any, *, public_url: str = "") -> OutboundMessage:
+    """Render the stored section order and feedback controls without recomputing advice."""
+    sections = brief.sections
+    order = (("sleep", "Sleep"), ("hrv", "HRV"), ("heart", "Heart and energy"),
+             ("yesterday", "Yesterday"), ("today", "Today"),
+             ("week", "This week"), ("tip", "Tip"))
+    html = [f"<b>{escape(sections['headline'])}</b>"]
+    for key, label in order:
+        if sections.get(key):
+            html.append(f"<b>{label}:</b> {escape(sections[key])}")
+    day = brief.date.strftime("%Y%m%d")
+    keyboard = [({"text": "Done", "callback_data": f"brief:{day}:done"},
+                 {"text": "Rest instead", "callback_data": f"brief:{day}:rest"})]
+    link = public_link(public_url, "/coach?context=today")
+    keyboard.append(({"text": "Ask the coach", "url": link} if link else
+                     {"text": "Ask the coach", "callback_data": f"brief:{day}:ask"},))
+    keyboard.append(({"text": "Useful", "callback_data": f"brief:{day}:useful"},
+                     {"text": "Not useful", "callback_data": f"brief:{day}:not_useful"}))
+    return OutboundMessage("\n\n".join(html), brief.text, tuple(keyboard))
+
+
 def data_update(headline: str, reason: str | None = None, *, illness: bool = False) -> OutboundMessage:
     if reason:
         line = f"Data is in. {headline.rstrip('.')}: {reason}."

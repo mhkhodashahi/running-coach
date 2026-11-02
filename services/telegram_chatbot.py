@@ -12,8 +12,9 @@ from coach.proposals import apply, dismiss, get_proposal, list_proposals, monday
 from config import Settings, get_settings
 from db.session import session_scope
 from db.setup import init_db
-from services.daily_decision_service import get_or_create_daily_decision
+from services.daily_decision_service import get_or_create_daily_decision, set_athlete_choice
 from services.effort_service import rate_activity
+from services.morning_brief import save_feedback
 from services.telegram_service import TelegramService
 from services.training_chat_service import TrainingChatService
 from services.weekly_plan_service import get_weekly_plan
@@ -51,6 +52,25 @@ class TelegramTrainingChatBot:
             if not self._authorized(chat_id):
                 return TelegramHandleResult(handled=True, authorized=False)
             parts = str(callback.get("data") or "").split(":")
+            if len(parts) == 3 and parts[0] == "brief" and len(parts[1]) == 8 and parts[1].isdigit():
+                try:
+                    day = datetime.strptime(parts[1], "%Y%m%d").date()
+                    if parts[2] in {"useful", "not_useful"}:
+                        saved = save_feedback(self.settings.db_path, self.settings.default_user_id, day, parts[2])
+                        reply = "Thanks for the feedback." if saved else "That brief is no longer available."
+                    elif parts[2] == "rest":
+                        set_athlete_choice(day, "rest", settings=self.settings)
+                        reply = "Rest recorded as your choice. Your coach's decision is unchanged."
+                    elif parts[2] == "done":
+                        reply = "Noted. Sync your completed session to record it in your training history."
+                    elif parts[2] == "ask":
+                        reply = "Send your question here and I'll answer with today's data."
+                    else:
+                        return TelegramHandleResult(handled=False)
+                except ValueError:
+                    reply = "That brief action could not be completed."
+                self.telegram_service.acknowledge_callback(str(callback.get("id") or ""), reply)
+                return TelegramHandleResult(handled=True, reply=reply)
             if len(parts) == 3 and parts[0] == "proposal" and parts[1].isdigit():
                 try:
                     proposal_id = int(parts[1])

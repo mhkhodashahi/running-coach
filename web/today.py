@@ -15,8 +15,10 @@ from coach.planning import propose_week
 from config import Settings
 from metrics import get_daily_snapshot
 from metrics.sports import RECOMMENDABLE_SPORTS, sport_category
+from services.coach_opinion import load_opinion
 from services.daily_decision_service import get_or_create_daily_decision, set_athlete_choice
 from services.effort_service import rate_activity, unrated_activities
+from services.morning_brief import read_brief
 from services.timeline_notes import read_notes
 from services.weekly_plan_service import get_weekly_plan
 from web.charts import load_bars, readiness_ring, sparkline
@@ -29,6 +31,7 @@ from web.formatting import (
     sleep_hours,
     sync_time,
 )
+from web.view_models.morning import brief_card, last_session
 from web.view_models.today import (
     TODAY_FOLLOW_UPS,
     call_headline,
@@ -66,6 +69,7 @@ def today_context(settings: Settings, *, day: date, llm: Any = None) -> dict[str
     current = {name: item.value for name, item in snapshot.current_health}
     baselines = {(item.field, item.days): item.mean.value for item in snapshot.baselines}
     sync = sync_label(settings, day)
+    morning = brief_card(read_brief(settings.db_path, user_id, day), sync)
     timeline_notes = read_notes(settings.db_path, user_id, day - timedelta(days=14), day)
     with _read_only(settings.db_path) as connection:
         health = connection.execute("SELECT body_battery FROM health_metrics WHERE user_id=? AND date=?",
@@ -80,6 +84,30 @@ def today_context(settings: Settings, *, day: date, llm: Any = None) -> dict[str
         rows = connection.execute(
             "SELECT id,date,type,distance,duration,avg_hr FROM activities WHERE user_id=? AND date<? "
             "ORDER BY date DESC,id DESC", (user_id, (day + timedelta(days=1)).isoformat())).fetchall()
+        latest_rows = connection.execute(
+            "SELECT a.id,a.date,a.type,a.duration,"
+            "(SELECT MIN(p.timestamp) FROM activity_track_points p WHERE p.activity_id=a.id) AS started_at,"
+            "i.payload_json,i.schema_version FROM activities a "
+            "LEFT JOIN activity_coaching_insights i ON i.activity_id=a.id AND i.user_id=a.user_id "
+            "WHERE a.user_id=? AND a.date>=? AND a.date<=? ORDER BY a.date DESC,a.id DESC LIMIT 20",
+            (user_id, (day - timedelta(days=2)).isoformat(), day.isoformat())).fetchall()
+    recent = []
+    for row in latest_rows:
+        item = dict(row)
+        item["opinion"] = load_opinion(item) if item["payload_json"] else None
+        session = next((part for part in snapshot.sessions if part.activity_id == item["id"]), None)
+        item["load"] = session.load.value if session else None
+        recent.append(item)
+    last = last_session(recent, datetime.now(ZoneInfo(settings.local_timezone)))
+    if last and last["load"] is None:
+        activity_day = date.fromisoformat(next(item["date"] for item in recent if item["id"] == last["id"]))
+        activity_snapshot = get_daily_snapshot(activity_day, database=settings.db_path, user_id=user_id,
+                                               timezone=settings.local_timezone,
+                                               sleep_goal_hours=settings.sleep_goal_hours, hr_zones=settings.hr_zones)
+        activity_session = next((item for item in activity_snapshot.sessions
+                                 if item.activity_id == last["id"]), None)
+        if activity_session and activity_session.load.value is not None:
+            last["load"] = f"{round(activity_session.load.value)} load"
     sessions = {session.activity_id: session for session in snapshot.sessions}
     activities = []
     for row in rows:
@@ -141,6 +169,7 @@ def today_context(settings: Settings, *, day: date, llm: Any = None) -> dict[str
     if done_today:
         workout = None
     return {"decision": decision, "ring": readiness_ring(decision.readiness), "sync": sync,
+            "morning_card": morning, "last_session": last,
             "timeline_notes": timeline_notes,
             "day": day, "day_label": short_date(day), "based_on_label": short_date(decision.based_on),
             "recommendations": recommendations, "readiness": metric(decision.readiness),

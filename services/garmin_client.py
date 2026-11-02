@@ -517,6 +517,7 @@ class GarminAPIClient(GarminClient):
                 max_metrics=max_metrics,
                 training_readiness=training_readiness,
                 training_status=training_status,
+                timezone=get_settings().local_timezone,
             )
             if health_row is not None:
                 health_rows.append(health_row)

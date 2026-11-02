@@ -173,7 +173,13 @@ def test_migration_0015_preserves_existing_data_and_downgrades(tmp_path):
         before = connection.execute("SELECT * FROM users").fetchall()
         connection.execute("INSERT INTO dashboard_widgets(user_id,position,chart_id,config_json,created_at,updated_at) "
                            "VALUES(1,0,'weekly_load','{}','2026-01-01','2026-01-01')")
-    upgrade_database(path, backup_dir=tmp_path / "backups")
+    engine = create_engine(f"sqlite:///{path}")
+    try:
+        with engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.upgrade(config, "0015_timeline_notes")
+    finally:
+        engine.dispose()
     with sqlite3.connect(path) as connection:
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0015_timeline_notes",)
         assert connection.execute("SELECT * FROM users").fetchall() == before
