@@ -655,6 +655,33 @@ def normalize_live_activity_row(row: dict[str, Any], *, user_id: int) -> dict[st
     }
 
 
+_HEALTH_FIELD_SOURCES = {
+    "sleep_duration": ("sleep",),
+    "sleep_score": ("sleep",),
+    "sleep_deep_min": ("sleep",),
+    "sleep_rem_min": ("sleep",),
+    "sleep_light_min": ("sleep",),
+    "sleep_awake_min": ("sleep",),
+    "sleep_bedtime": ("sleep",),
+    "sleep_wake_time": ("sleep",),
+    "sleep_wakeups": ("sleep",),
+    "resting_hr": ("stats",),
+    "stress": ("stats",),
+    "hrv": ("hrv",),
+    "hrv_weekly_avg": ("hrv",),
+    "hrv_baseline_low": ("hrv",),
+    "hrv_baseline_high": ("hrv",),
+    "hrv_status": ("hrv",),
+    "body_battery": ("body_battery",),
+    "body_battery_start": ("body_battery",),
+    "body_battery_end": ("body_battery",),
+    "body_battery_charged": ("body_battery",),
+    "vo2max": ("max_metrics",),
+    "recovery_time": ("training_readiness", "training_status", "stats"),
+    "breathing_rate": ("sleep", "stats"),
+}
+
+
 def normalize_live_health_row(
     *,
     user_id: int,
@@ -667,6 +694,8 @@ def normalize_live_health_row(
     training_readiness: Any,
     training_status: Any,
     timezone: str = "UTC",
+    failed_sources: frozenset[str] = frozenset(),
+    include_empty: bool = False,
 ) -> dict[str, Any] | None:
     resting_hr = pick_first_numeric(
         stats,
@@ -698,9 +727,12 @@ def normalize_live_health_row(
         "vo2max": extract_vo2max_value(max_metrics),
         **extract_night_details(sleep, hrv if isinstance(hrv, dict) else {}, stats, body_battery, timezone),
     }
+    for field, sources in _HEALTH_FIELD_SOURCES.items():
+        if row[field] is None and any(source in failed_sources for source in sources):
+            del row[field]
     if any(value is not None for key, value in row.items() if key not in {"user_id", "date"}):
         return row
-    return None
+    return row if include_empty else None
 
 
 _extract_recovery_time_hours = normalize_recovery_time_hours

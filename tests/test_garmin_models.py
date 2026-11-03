@@ -112,10 +112,62 @@ def test_live_garmin_client_preserves_activity_name() -> None:
                 ]
             return default
 
-    activity_rows, health_rows = FakeGarminAPIClient().sync_recent_data(user_id=1, days=1, health_days=0)
+    result = FakeGarminAPIClient().sync_recent_data(user_id=1, days=1, health_days=0)
 
-    assert health_rows == []
-    assert activity_rows[0]["activity_name"] == "Lunch Threshold Run"
+    assert result.health_rows == []
+    assert result.activity_rows[0]["activity_name"] == "Lunch Threshold Run"
+
+
+def test_live_health_fetch_distinguishes_failed_and_empty_sleep() -> None:
+    class FakeGarmin:
+        sleep_fails = True
+
+        def get_activities_by_date(self, *_args):
+            return []
+
+        def get_stats(self, _day):
+            return {"restingHeartRate": 53}
+
+        def get_sleep_data(self, _day):
+            if self.sleep_fails:
+                raise RuntimeError("temporary sleep endpoint failure")
+            return {}
+
+        def get_body_battery(self, *_args):
+            return []
+
+        def get_hrv_data(self, _day):
+            return {"hrvSummary": {"lastNightAvg": 64}}
+
+        def get_max_metrics(self, _day):
+            return {}
+
+        def get_morning_training_readiness(self, _day):
+            return {}
+
+        def get_training_readiness(self, _day):
+            return {}
+
+        def get_training_status(self, _day):
+            return {}
+
+    class FakeGarminAPIClient(GarminAPIClient):
+        def __init__(self):
+            self.fake = FakeGarmin()
+
+        def _get_client(self):
+            return self.fake
+
+    client = FakeGarminAPIClient()
+    failed = client.sync_recent_data(user_id=1, days=1, health_days=1)
+    assert failed.night_details_complete is False
+    assert "sleep_duration" not in failed.health_rows[0]
+    assert failed.health_rows[0]["hrv"] == 64
+
+    client.fake.sleep_fails = False
+    empty = client.sync_recent_data(user_id=1, days=1, health_days=1)
+    assert empty.night_details_complete is True
+    assert empty.health_rows[0]["sleep_duration"] is None
 
 
 def test_recovery_time_ignores_generic_training_readiness_value() -> None:

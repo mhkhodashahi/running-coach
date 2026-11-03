@@ -9,6 +9,8 @@ from sqlalchemy.orm import sessionmaker
 
 from db import repository
 from db.models import Base
+from services.garmin_client import GarminSyncResult
+from services.garmin_normalization import normalize_live_health_row
 from services.import_service import GarminImportService
 
 
@@ -169,7 +171,7 @@ def test_garmin_sync_status_is_saved_only_after_success(monkeypatch) -> None:
             pass
 
         def sync_recent_data(self, **kwargs):
-            return [], []
+            return GarminSyncResult([], [], True)
 
     class FailingClient(SuccessfulClient):
         def sync_recent_data(self, **kwargs):
@@ -192,6 +194,106 @@ def test_garmin_sync_status_is_saved_only_after_success(monkeypatch) -> None:
         with pytest.raises(RuntimeError, match="Garmin unavailable"):
             GarminImportService().sync_garmin(session, user_id=1)
         assert repository.get_last_garmin_sync(session, 1) == synced_at
+
+
+def test_partial_garmin_health_sync_preserves_existing_values(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    session_factory = sessionmaker(bind=engine, future=True)
+    day = date(2026, 10, 26)
+    state = {"mode": "failed"}
+
+    class PartialClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        def sync_recent_data(self, **_kwargs):
+            mode = state["mode"]
+            row = normalize_live_health_row(
+                user_id=1, current_day=day, stats={"restingHeartRate": 53},
+                sleep=({"dailySleepDTO": {"sleepTimeSeconds": 28800},
+                        "sleepScores": {"overall": {"value": 84}}} if mode == "data" else {}),
+                body_battery=[],
+                hrv={"hrvSummary": {"lastNightAvg": 64}} if mode == "data" else {},
+                max_metrics={},
+                training_readiness={}, training_status={},
+                failed_sources=frozenset({"sleep", "hrv"}) if mode == "failed" else frozenset(),
+                include_empty=True,
+            )
+            return GarminSyncResult([], [row], mode != "failed")
+
+    with session_factory.begin() as session:
+        repository.get_or_create_default_user(session, 1)
+        repository.bulk_upsert_health_metrics(session, [{
+            "user_id": 1, "date": day, "sleep_duration": 7.5,
+            "sleep_score": 82, "sleep_deep_min": 65,
+            "hrv": 62, "hrv_weekly_avg": 61, "resting_hr": 55,
+        }])
+
+    monkeypatch.setattr("services.import_service.GarminAPIClient", PartialClient)
+    with session_factory.begin() as session:
+        GarminImportService().sync_garmin(session, 1, include_activities=False)
+
+    with session_factory() as session:
+        metric = session.execute(text(
+            "SELECT sleep_duration,sleep_score,sleep_deep_min,hrv,hrv_weekly_avg,resting_hr "
+            "FROM health_metrics WHERE user_id=1 AND date=:day"
+        ), {"day": day.isoformat()}).one()
+        assert tuple(metric) == (7.5, 82, 65, 62, 61, 53)
+        assert session.execute(text(
+            "SELECT night_details_backfilled_at FROM garmin_sync_status WHERE user_id=1"
+        )).scalar_one() is None
+
+    state["mode"] = "empty"
+    with session_factory.begin() as session:
+        GarminImportService().sync_garmin(session, 1, include_activities=False)
+
+    with session_factory() as session:
+        metric = session.execute(text(
+            "SELECT sleep_duration,sleep_score,sleep_deep_min,hrv,hrv_weekly_avg,resting_hr "
+            "FROM health_metrics WHERE user_id=1 AND date=:day"
+        ), {"day": day.isoformat()}).one()
+        assert tuple(metric) == (None, None, None, None, None, 53)
+        assert session.execute(text(
+            "SELECT night_details_backfilled_at FROM garmin_sync_status WHERE user_id=1"
+        )).scalar_one() is not None
+
+    state["mode"] = "data"
+    with session_factory.begin() as session:
+        GarminImportService().sync_garmin(session, 1, include_activities=False)
+    with session_factory() as session:
+        metric = session.execute(text(
+            "SELECT sleep_duration,sleep_score,hrv FROM health_metrics WHERE user_id=1 AND date=:day"
+        ), {"day": day.isoformat()}).one()
+        assert tuple(metric) == (8.0, 84, 64)
+    engine.dispose()
+
+
+def test_default_health_upsert_can_clear_a_value() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    with sessionmaker(bind=engine, future=True)() as session:
+        repository.get_or_create_default_user(session, 1)
+        row = {"user_id": 1, "date": date(2026, 10, 26), "sleep_duration": 7.5}
+        repository.bulk_upsert_health_metrics(session, [row])
+        repository.bulk_upsert_health_metrics(session, [{**row, "sleep_duration": None}])
+        assert session.execute(text(
+            "SELECT sleep_duration FROM health_metrics WHERE user_id=1"
+        )).scalar_one() is None
+    engine.dispose()
+
+
+def test_live_health_upsert_skips_empty_new_days() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    with sessionmaker(bind=engine, future=True)() as session:
+        repository.get_or_create_default_user(session, 1)
+        count = repository.bulk_upsert_health_metrics(session, [{
+            "user_id": 1, "date": date(2026, 10, 26), "sleep_duration": None,
+        }], skip_empty_inserts=True)
+        assert count == 0
+        assert session.execute(text("SELECT COUNT(*) FROM health_metrics")).scalar_one() == 0
+    engine.dispose()
 
 
 def test_nutrition_entries_can_be_created_listed_and_deleted() -> None:

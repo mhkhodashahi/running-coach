@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 
 from config import get_settings
 from db.migration_runner import migration_config, upgrade_database
+from services.garmin_client import GarminSyncResult
 from services.garmin_normalization import extract_night_details
 from services.import_service import GarminImportService
 from services.morning_brief import (
@@ -134,7 +135,8 @@ def test_first_health_sync_backfills_night_details_only_once(tmp_path, monkeypat
 
         def sync_recent_data(self, **kwargs):
             calls.append(kwargs["health_days"])
-            return [], [{"user_id": 1, "date": date(2026, 10, 26), "sleep_duration": 7.5}]
+            return GarminSyncResult([], [{"user_id": 1, "date": date(2026, 10, 26),
+                                          "sleep_duration": 7.5}], True)
 
     monkeypatch.setattr("services.import_service.GarminAPIClient", FakeClient)
     engine = create_engine(f"sqlite:///{database}")
@@ -149,6 +151,45 @@ def test_first_health_sync_backfills_night_details_only_once(tmp_path, monkeypat
             service.sync_garmin(session, 1, health_days=3, include_activities=False)
             session.commit()
         assert calls == [28, 3]
+    finally:
+        engine.dispose()
+
+
+def test_night_backfill_retries_after_partial_fetch(tmp_path, monkeypatch) -> None:
+    database = tmp_path / "partial-garmin.db"
+    upgrade_database(database)
+    calls: list[int] = []
+
+    class FakeClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        def sync_recent_data(self, **kwargs):
+            calls.append(kwargs["health_days"])
+            return GarminSyncResult([], [{"user_id": 1, "date": date(2026, 10, 26),
+                                          "resting_hr": 53}], len(calls) != 1)
+
+    monkeypatch.setattr("services.import_service.GarminAPIClient", FakeClient)
+    engine = create_engine(f"sqlite:///{database}")
+    try:
+        with Session(engine) as session:
+            session.execute(text("INSERT INTO users(id,name,marathon_goal_time) "
+                                 "VALUES(1,'Invented','04:00:00')"))
+            session.commit()
+            service = GarminImportService()
+            service.sync_garmin(session, 1, health_days=3, include_activities=False)
+            session.commit()
+            assert session.execute(text(
+                "SELECT night_details_backfilled_at FROM garmin_sync_status WHERE user_id=1"
+            )).scalar_one() is None
+            service.sync_garmin(session, 1, health_days=3, include_activities=False)
+            session.commit()
+            assert session.execute(text(
+                "SELECT night_details_backfilled_at FROM garmin_sync_status WHERE user_id=1"
+            )).scalar_one() is not None
+            service.sync_garmin(session, 1, health_days=3, include_activities=False)
+            session.commit()
+        assert calls == [28, 28, 3]
     finally:
         engine.dispose()
 

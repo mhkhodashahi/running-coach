@@ -532,8 +532,10 @@ def prediction_snapshots_dataframe(session: Session, user_id: int) -> pd.DataFra
     return df
 
 
-def bulk_upsert_health_metrics(session: Session, rows: list[dict[str, Any]]) -> int:
-    """Insert or update health metric rows."""
+def bulk_upsert_health_metrics(
+    session: Session, rows: list[dict[str, Any]], *, skip_empty_inserts: bool = False,
+) -> int:
+    """Upsert health rows; omitted fields on existing rows are left unchanged."""
 
     inserted = 0
     for row in rows:
@@ -544,6 +546,10 @@ def bulk_upsert_health_metrics(session: Session, rows: list[dict[str, Any]]) -> 
             )
         ).first()
         if metric is None:
+            if skip_empty_inserts and not any(
+                value is not None for field, value in row.items() if field not in {"user_id", "date"}
+            ):
+                continue
             metric = HealthMetric(**row)
             session.add(metric)
             inserted += 1

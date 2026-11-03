@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, BinaryIO
@@ -26,6 +27,13 @@ from services.garmin_normalization import (
 )
 
 _extract_recovery_time_hours = gn.normalize_recovery_time_hours
+
+
+@dataclass(frozen=True)
+class GarminSyncResult:
+    activity_rows: list[dict[str, Any]]
+    health_rows: list[dict[str, Any]]
+    night_details_complete: bool
 
 try:
     from garth.exc import GarthHTTPError
@@ -122,7 +130,7 @@ class GarminClient(ABC):
     def load_health_metrics(self, source: str | Path | BinaryIO, user_id: int) -> list[dict[str, Any]]:
         """Load health metric rows from a source."""
 
-    def sync_recent_data(self, user_id: int, days: int, health_days: int) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    def sync_recent_data(self, user_id: int, days: int, health_days: int) -> GarminSyncResult:
         """Sync recent data directly from Garmin when supported."""
 
         raise NotImplementedError("This Garmin client does not support direct sync.")
@@ -435,7 +443,7 @@ class GarminAPIClient(GarminClient):
     def load_health_metrics(self, source: str | Path | BinaryIO, user_id: int) -> list[dict[str, Any]]:
         raise NotImplementedError("Use sync_recent_data for the live Garmin connector.")
 
-    def sync_recent_data(self, user_id: int, days: int, health_days: int) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    def sync_recent_data(self, user_id: int, days: int, health_days: int) -> GarminSyncResult:
         client = self._get_client()
         today = datetime.now(ZoneInfo(get_settings().local_timezone)).date()
         activities_start = today - timedelta(days=max(days - 1, 0))
@@ -456,37 +464,39 @@ class GarminAPIClient(GarminClient):
                 activity_rows.append(activity_row)
 
         health_rows: list[dict[str, Any]] = []
+        night_details_complete = health_days > 0
         health_start = today - timedelta(days=max(health_days - 1, 0))
-        for offset in range((today - health_start).days + 1):
+        for offset in range(health_days):
             current_day = health_start + timedelta(days=offset)
             current_day_str = current_day.strftime("%Y-%m-%d")
+            unavailable = object()
             stats = self._call_api(
                 lambda current_day_str=current_day_str: client.get_stats(current_day_str) or {},
-                default={},
+                default=unavailable,
                 context=f"stats for {current_day_str}",
                 suppress_errors=True,
             )
             sleep = self._call_api(
                 lambda current_day_str=current_day_str: client.get_sleep_data(current_day_str) or {},
-                default={},
+                default=unavailable,
                 context=f"sleep data for {current_day_str}",
                 suppress_errors=True,
             )
             body_battery = self._call_api(
                 lambda current_day_str=current_day_str: client.get_body_battery(current_day_str, current_day_str) or [],
-                default=[],
+                default=unavailable,
                 context=f"body battery for {current_day_str}",
                 suppress_errors=True,
             )
             hrv = self._call_api(
                 lambda current_day_str=current_day_str: client.get_hrv_data(current_day_str) or {},
-                default={},
+                default=unavailable,
                 context=f"HRV data for {current_day_str}",
                 suppress_errors=True,
             )
             max_metrics = self._call_api(
                 lambda current_day_str=current_day_str: client.get_max_metrics(current_day_str) or {},
-                default={},
+                default=unavailable,
                 context=f"VO2 max data for {current_day_str}",
                 suppress_errors=True,
             )
@@ -496,33 +506,44 @@ class GarminAPIClient(GarminClient):
                     or client.get_training_readiness(current_day_str)
                     or {}
                 ),
-                default={},
+                default=unavailable,
                 context=f"training readiness for {current_day_str}",
                 suppress_errors=True,
             )
             training_status = self._call_api(
                 lambda current_day_str=current_day_str: client.get_training_status(current_day_str) or {},
-                default={},
+                default=unavailable,
                 context=f"training status for {current_day_str}",
                 suppress_errors=True,
             )
 
+            payloads = {
+                "stats": stats, "sleep": sleep, "body_battery": body_battery,
+                "hrv": hrv, "max_metrics": max_metrics,
+                "training_readiness": training_readiness, "training_status": training_status,
+            }
+            failed_sources = frozenset(name for name, value in payloads.items() if value is unavailable)
+            if "sleep" in failed_sources or "hrv" in failed_sources:
+                night_details_complete = False
+
             health_row = gn.normalize_live_health_row(
                 user_id=user_id,
                 current_day=current_day,
-                stats=stats,
-                sleep=sleep,
-                body_battery=body_battery,
-                hrv=hrv,
-                max_metrics=max_metrics,
-                training_readiness=training_readiness,
-                training_status=training_status,
+                stats={} if stats is unavailable else stats,
+                sleep={} if sleep is unavailable else sleep,
+                body_battery=[] if body_battery is unavailable else body_battery,
+                hrv={} if hrv is unavailable else hrv,
+                max_metrics={} if max_metrics is unavailable else max_metrics,
+                training_readiness={} if training_readiness is unavailable else training_readiness,
+                training_status={} if training_status is unavailable else training_status,
                 timezone=get_settings().local_timezone,
+                failed_sources=failed_sources,
+                include_empty=True,
             )
             if health_row is not None:
                 health_rows.append(health_row)
 
-        return activity_rows, health_rows
+        return GarminSyncResult(activity_rows, health_rows, night_details_complete)
 
     def sync_activity_details(
         self,

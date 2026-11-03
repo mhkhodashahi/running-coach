@@ -93,11 +93,12 @@ class GarminImportService:
         backfill_nights = include_health and (
             sync_status is None or sync_status.night_details_backfilled_at is None)
         requested_health_days = health_days or settings.garmin_health_sync_days
-        activity_rows, health_rows = client.sync_recent_data(
+        result = client.sync_recent_data(
             user_id=user_id,
             days=days or settings.garmin_sync_days,
             health_days=max(requested_health_days, 28) if backfill_nights else requested_health_days,
         )
+        activity_rows, health_rows = result.activity_rows, result.health_rows
         before_ids = ({row[0] for row in session.execute(
             text("SELECT id FROM activities WHERE user_id=:uid"), {"uid": user_id})}
             if include_activities else set())
@@ -133,7 +134,9 @@ class GarminImportService:
 
         summary = ImportSummary(
             activities_imported=activities_imported,
-            health_rows_imported=repository.bulk_upsert_health_metrics(session, health_rows) if include_health else 0,
+            health_rows_imported=(repository.bulk_upsert_health_metrics(
+                session, health_rows, skip_empty_inserts=True,
+            ) if include_health else 0),
             track_points_imported=track_points_imported,
             laps_imported=laps_imported,
             prediction_snapshots_stored=(
@@ -147,7 +150,7 @@ class GarminImportService:
             ),
         )
         repository.record_garmin_sync(session, user_id)
-        if backfill_nights and health_rows:
+        if backfill_nights and result.night_details_complete:
             from datetime import UTC, datetime
 
             session.get(GarminSyncStatus, user_id).night_details_backfilled_at = datetime.now(UTC).replace(tzinfo=None)
