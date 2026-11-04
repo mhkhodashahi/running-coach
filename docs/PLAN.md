@@ -1,6 +1,6 @@
 # Running Coach Implementation Plan
 
-Status: milestones through 6f and 6j are implemented. Milestone 6g code is implemented, but its three-run live verification is incomplete; milestone 7 has not started. Root `AGENTS.md` contains the target architecture, opinion contract and decisions.
+Status: milestones through 6f, 6h, 6i, 6j and 6k are implemented. Milestone 6g code is implemented, but its three-run live verification is incomplete; milestone 7 has not started. Root `AGENTS.md` contains the target architecture, opinion contract and decisions.
 
 ## Historical Audit State (2026-10-21)
 
@@ -195,6 +195,12 @@ The target contract is now in `AGENTS.md`. No milestone may rewrite stored data 
 - **6i-1, dashboard v1 (implemented):** Keep the current Insights Overview; add `/insights/dashboard` with a fixed registry of eight code-computed charts, validated widget options, accessible SVG/table/CSV views, and an additive `dashboard_widgets` migration. Four default widgets render without saving until the first edit. Dashboard and migration tests pass on disposable databases; the full suite still has two unrelated legacy prompt-copy assertion failures, recorded in `docs/milestone-6i-1-results.md`.
 - **6i-2, dashboard notes and chart context (implemented):** Add matching Overview cards without duplicate chart/metric/range combinations. Store user-scoped timeline notes in additive migration `0015_timeline_notes`; show notes on dated charts and tables; include bounded, escaped notes as untrusted athlete facts in daily decisions and chat. A chart's Ask action opens its deterministic context in the coach panel without a model call until Send. Recovery time series can toggle the usual band and 7-day average. Verify migration up/down, CRUD, mapping and chart/context tests on disposable databases; see `docs/milestone-6i-2-results.md`.
 - **6i-3, dashboard reliability and chart corrections:** Audit the working DB's 0015 upgrade against its runner backup without changing it, assert web/worker startup never migrates, refresh stale coach-prompt test expectations, and repair dashboard axes, best-effort time direction/format, scatter scaling, and rolling daily usual bands. Use disposable data for tests and screenshots; see `docs/milestone-6i-3-results.md`.
+
+### 6k. Detailed plan suggestions (implemented)
+
+- Code owns the workout library, personal HR/pace targets, phase, progression, load estimate and week safety rules. The LLM may explain the plan but cannot change it; numeric claims are checked by the 6h verifier and fall back to code text after one repair retry.
+- Add nullable workout type and structured steps to plans and proposal changes through a backup-first Alembic revision. Approval copies the workout; undo restores it. Existing unstructured sessions remain valid.
+- Show full workouts in proposal review and planned sessions on Today; preserve athlete approval, fixed commitments and the 110% usual-week limit. Tests use invented data; live verification runs on a disposable copy only.
 
 ### 7. Open-source packaging
 

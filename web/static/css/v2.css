@@ -398,3 +398,13 @@
 .v2-last-verdicts li{display:inline-flex;align-items:center;gap:4px}.v2-last-verdicts svg{width:16px;height:16px}
 .v2-last-session a{min-height:44px;display:inline-flex;align-items:center;gap:4px}
 @media(max-width:767px){.v2-morning-more{display:none}.v2-morning-phone-more{display:block;border-top:1px solid var(--line)}.v2-morning-phone-more>summary{min-height:44px;display:flex;align-items:center;cursor:pointer}}
+.v2-proposal-change-wrap{border-bottom:1px solid var(--line)}
+.v2-workout-detail{padding:0 12px 12px 44px;color:var(--ink)}
+.v2-workout-detail summary{min-height:44px;display:flex;align-items:center;cursor:pointer;font-weight:600}
+.v2-workout-detail ol{padding-left:20px;display:grid;gap:6px}
+.v2-workout-detail p{margin:8px 0}
+.v2-workout-profile.v2-workout-profile-steps .v2-step-mark{height:18px;background:var(--zone-2)}
+.v2-workout-profile.v2-workout-profile-steps .v2-step-mark.is-hard{height:40px;background:var(--zone-4)}
+.v2-training-type{display:inline-flex;width:max-content;max-width:100%;margin-top:4px;white-space:normal}
+.v2-workout-variant{margin-top:8px;border-top:1px solid var(--line)}
+.v2-workout-variant summary{min-height:44px;cursor:pointer}

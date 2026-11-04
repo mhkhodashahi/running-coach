@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import date, timedelta
 from math import ceil
 from typing import Any
@@ -54,6 +55,9 @@ def proposal_view(proposal: dict[str, Any], week: dict[str, Any], model: Any,
     existing = {session.get("id"): session for day in week["days"] for session in day["sessions"]}
     for group in groups:
         for change in group["changes"]:
+            workout = change["session"].get("workout")
+            if workout is None and change.get("workout_json"):
+                workout = json.loads(change["workout_json"])
             after = estimate_load(change["session"], model)
             before_session = existing.get(change["session"].get("id"))
             before = estimate_load(before_session, model) if before_session else None
@@ -67,7 +71,7 @@ def proposal_view(proposal: dict[str, Any], week: dict[str, Any], model: Any,
                             f"{session_name(change['session']['sport'], change['session']['intent']).capitalize()} "
                             f"{display_duration(change['session']['duration_min'])}",
                             "delta": round(load) if load is not None else None,
-                            "selected": change["id"] in selected})
+                            "selected": change["id"] in selected, "workout": workout})
     return {**proposal, "change_rows": details, "selected_group_ids": selected_group_ids,
             "selected_count": count, "now_percent": percentage(week["total"], week.get("usual")),
             "applied_percent": percentage(proposal.get("projected_total"), week.get("usual")),

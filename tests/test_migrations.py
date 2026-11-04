@@ -19,7 +19,7 @@ from db.repository import get_or_create_default_goal, get_or_create_default_user
 from scripts.backup_db import backup_database
 
 SCHEMA = Path(__file__).parents[1] / "db/migrations/baseline.sql"
-HEAD = "0016_morning_briefs"
+HEAD = "0017_detailed_workouts"
 PLAN_TABLES = ("fixed_commitments", "plan_sessions", "plan_versions", "plan_snapshots",
                "coach_proposals", "proposal_changes")
 
@@ -122,6 +122,12 @@ def test_fresh_upgrade_and_default_user(tmp_path):
     with closing(sqlite3.connect(database)) as connection:
         assert len(tables(connection)) == 35
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (HEAD,)
+        for table in ("plan_sessions", "proposal_changes"):
+            columns = {row[1]: row for row in connection.execute(f"PRAGMA table_info({table})")}
+            assert columns["workout_type"][3] == 0
+            assert columns["workout_json"][3] == 0
+
+
         columns = {row[1]: row for row in connection.execute("PRAGMA table_info(activity_coaching_insights)")}
         for name in ("schema_version", "prompt_version"):
             assert columns[name][3:5] == (0, None)
@@ -167,6 +173,28 @@ def test_fresh_upgrade_and_default_user(tmp_path):
     before = database.read_bytes()
     assert upgrade_database(database) is None
     assert database.read_bytes() == before
+
+
+def test_0017_upgrade_and_downgrade_on_disposable_database(tmp_path):
+    database = tmp_path / "workout-migration.db"
+    upgrade_database(database)
+    with closing(sqlite3.connect(database)) as connection:
+        assert connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+    engine = create_engine(f"sqlite:///{database}")
+    try:
+        config = migration_config()
+        with engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.downgrade(config, "0016_morning_briefs")
+    finally:
+        engine.dispose()
+    with closing(sqlite3.connect(database)) as connection:
+        for table in ("plan_sessions", "proposal_changes"):
+            assert "workout_json" not in {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
+    upgrade_database(database)
+    with closing(sqlite3.connect(database)) as connection:
+        for table in ("plan_sessions", "proposal_changes"):
+            assert "workout_json" in {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
 
 
 def test_existing_upgrade_preserves_data_and_body_tables(legacy_copy):
@@ -261,7 +289,7 @@ def test_0008_adds_empty_protected_habits_without_rewriting_plan_rows(tmp_path):
         connection.commit()
     assert upgrade_database(database) is not None
     with closing(sqlite3.connect(database)) as connection:
-        assert connection.execute("SELECT * FROM plan_sessions").fetchall() == before
+        assert [row[:len(before[0])] for row in connection.execute("SELECT * FROM plan_sessions")] == before
         assert connection.execute("SELECT count(*) FROM protected_habits").fetchone() == (0,)
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (HEAD,)
         assert connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)
@@ -281,7 +309,8 @@ def test_0009_adds_mobility_table_without_rebuilding_existing_plan(tmp_path):
         before_plan = connection.execute("SELECT sql FROM sqlite_master WHERE name='plan_sessions'").fetchone()[0]
     assert upgrade_database(database) is not None
     with closing(sqlite3.connect(database)) as connection:
-        assert connection.execute("SELECT sql FROM sqlite_master WHERE name='plan_sessions'").fetchone()[0] == before_plan
+        after_plan = connection.execute("SELECT sql FROM sqlite_master WHERE name='plan_sessions'").fetchone()[0]
+        assert after_plan.replace("workout_type VARCHAR(32), workout_json TEXT, ", "") == before_plan
         assert connection.execute("SELECT count(*) FROM plan_mobility_sessions").fetchone() == (0,)
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (HEAD,)
 

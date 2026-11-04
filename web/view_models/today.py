@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from datetime import date, timedelta
 from typing import Any
@@ -164,12 +165,19 @@ def workout_model(decision: Any, sessions: list[dict[str, Any]]) -> dict[str, An
     ranked = decision.sports[0] if decision.sports else None
     if planned:
         structure = planned.get("structure")
+        details = planned.get("workout")
+        if details is None and planned.get("workout_json"):
+            details = json.loads(planned["workout_json"])
+        steps = tuple(details.get("steps", ())) if details else ()
+        if not steps and structure:
+            steps = tuple(part.strip() for part in structure.split(",") if part.strip())
         return {"title": session_name(planned["sport"], planned.get("intent")),
                 "intent": planned.get("intent"),
                 "planned": True, "duration_min": planned.get("duration_min"),
+                "session_id": planned.get("id"),
                 "duration": display_duration(planned.get("duration_min")),
-                "structure": structure, "steps": tuple(part.strip() for part in structure.split(",") if part.strip())
-                if structure else (), "sport": planned["sport"], "purpose": planned.get("purpose")}
+                "structure": structure, "steps": steps,
+                "sport": planned["sport"], "purpose": details.get("purpose") if details else planned.get("purpose")}
     if not ranked:
         return None
     session = ranked["session"]

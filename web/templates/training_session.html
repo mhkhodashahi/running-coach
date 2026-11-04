@@ -1,0 +1,28 @@
+{% extends 'base.html' %}
+{% from 'components/v2_icons.html' import icon %}
+{% block content %}
+<a class="v2-back" href="{{ back_url }}">‹ {{ back_label }}</a>
+<p class="eyebrow">{{ session.date }} · {{ session.sport|title }}</p>
+<h1>{{ title }}</h1>
+<p class="num">{{ duration }}{% if session.hr_cap_bpm %} · under {{ session.hr_cap_bpm }} bpm{% endif %}</p>
+{% if workout %}
+  <section class="card v2-session-detail">
+    <p>{{ workout.purpose }}</p><p>{{ workout.why_session or workout.benefit }}</p>
+    <p>{{ workout.why_day }}</p>
+    <p>{{ workout.benefit }} · estimated load {{ workout.estimated_load if workout.estimated_load is not none else 'No data' }}</p>
+    <div class="v2-workout-profile v2-workout-profile-steps" role="img" aria-label="Workout profile">
+      {% for step in workout.steps %}<span class="v2-step-mark{% if step.zone in ('Z4','Z5') %} is-hard{% endif %}" title="{{ step.label }} {{ step.hr_target or step.effort }}"></span>{% endfor %}
+    </div>
+    <ol>{% for step in workout.steps %}<li><strong>{{ step.get('label', 'Step') }}</strong> · {% if step.get('rounds') %}{{ step.get('rounds') }} rounds · {% elif step.get('reps', 1) > 1 %}{{ step.get('reps') }} × {% endif %}{{ step.get('duration_min') }} min{% if step.get('hr_target') %} · {{ step.get('hr_target') }}{% endif %}{% if step.get('pace_target') %} · {{ step.get('pace_target') }}{% endif %}{% if step.get('recovery_min') %} · {{ step.get('recovery_min') }} min easy recovery{% endif %}{% if step.get('exercises') %} · {{ step.get('exercises')|join(', ') }}{% endif %}</li>{% endfor %}</ol>
+    <p>How it should feel: {{ workout.how_it_feels }}. Done right if: {{ workout.done_right_if }}.</p>
+    <p>If tired: {{ workout.fallback }}.</p>
+    <p>{{ workout.pace_note or '' }}</p>
+  </section>
+{% else %}<p class="card">No detailed workout for this session.</p>{% endif %}
+<div class="v2-session-actions">
+  {% if shorter_available %}<form method="post" action="/training/session/{{ session.id }}/shorter"><button class="btn" type="submit">Do the shorter version</button></form>{% endif %}
+  <details><summary class="btn">Move to another day</summary><form method="post" action="/training/session/{{ session.id }}/move"><label>New date <input name="new_date" type="date" required></label><button class="btn" type="submit">Create proposal</button></form></details>
+  <a class="btn" href="/coach?context=session&amp;session_id={{ session.id }}">Ask the coach</a>
+</div>
+{% endblock %}
+{% block coach_panel %}<p class="cap">Workout details are code-built from your approved plan.</p><a class="btn" href="/coach?context=session&amp;session_id={{ session.id }}">Ask about this session</a>{% endblock %}

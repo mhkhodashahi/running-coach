@@ -5,8 +5,9 @@
     {% if decision.athlete_choice %}<div class="v2-choice-note st">{{ icon('check') }} Your choice <form action="/today/choice" method="post" hx-post="/today/choice" hx-target="#coach-card" hx-swap="outerHTML"><button type="submit" name="choice" value="clear">Back to coach</button></form></div>{% endif %}
   </div>
   {% if workout %}<div class="v2-workout"><div class="v2-workout-top"><strong class="num">{{ workout.duration }}</strong><span class="cap">{{ workout.sport }}</span></div><strong class="v2-workout-title">{{ workout.title|capitalize }}</strong>
-    {% if workout.steps %}<div class="v2-workout-profile" role="img" aria-label="Workout steps"><span></span><span></span><span></span><span></span><span></span></div><ol>{% for step in workout.steps %}<li>{{ step }}</li>{% endfor %}</ol>
+    {% if workout.steps %}<div class="v2-workout-profile v2-workout-profile-steps" role="img" aria-label="Workout profile">{% for step in workout.steps %}<span class="v2-step-mark{% if step.zone == 'Z4' or step.zone == 'Z5' %} is-hard{% endif %}" title="{{ step.label if step.label is defined else step }}"></span>{% endfor %}</div><ol>{% for step in workout.steps %}<li>{% if step.label is defined %}{{ step.label }}: {% if step.reps is defined and step.reps > 1 %}{{ step.reps }} × {% endif %}{{ step.duration_min }} min{% if step.hr_target is defined and step.hr_target %} · {{ step.hr_target }}{% endif %}{% if step.pace_target is defined and step.pace_target %} · {{ step.pace_target }}{% endif %}{% if step.recovery_min is defined and step.recovery_min %} · {{ step.recovery_min }} min easy between reps{% endif %}{% if step.exercises is defined and step.exercises %} · {{ step.exercises|join(', ') }}{% endif %}{% else %}{{ step }}{% endif %}</li>{% endfor %}</ol>
     {% elif workout.structure %}<p>{{ workout.structure }}</p>{% endif %}
+    {% if workout.planned and workout.session_id %}<a class="v2-full-workout" href="/training/session/{{ workout.session_id }}?from=today">Full workout ›</a>{% endif %}
   </div>{% endif %}
   <div class="v2-call-actions">
     <button class="btn v2-why" type="button" data-open-coach>Why this?</button>

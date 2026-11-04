@@ -169,3 +169,17 @@ def test_workout_uses_planned_session_and_code_facts():
     assert workout_model(decision, planned)["steps"] == ()
     assert workout_model(decision, [])["structure"] == "HR under 130 bpm"
     assert workout_model(SimpleNamespace(**{**vars(decision), "intensity": "rest"}), planned) is None
+
+
+def test_planned_structured_workout_appears_in_today_model():
+    import json
+
+    from coach.workouts import build_workout
+
+    decision = SimpleNamespace(date="2026-10-27", intensity="easy", sports=())
+    details = build_workout("upper_core", 30, zones={}, paces={})
+    planned = [{"date": decision.date, "sport": "gym", "intent": "light", "status": "planned",
+                "duration_min": 30, "workout_type": "upper_core", "workout_json": json.dumps(details)}]
+    result = workout_model(decision, planned)
+    assert result["purpose"] == details["purpose"]
+    assert result["steps"] == tuple(details["steps"])

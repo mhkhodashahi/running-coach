@@ -16,13 +16,14 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from metrics.sports import sport_category
-from services.coach_facts import unsupported_text_numbers
+from services.number_verifier import verify_numbers
 
 SPORTS = frozenset({"running", "gym", "football", "volleyball", "mobility"})
 TEAM_SPORTS = frozenset({"football", "volleyball"})
 SUPPRESS_PROPOSAL_NOTICE: ContextVar[bool] = ContextVar("suppress_proposal_notice", default=False)
 SESSION_FIELDS = ("id", "user_id", "date", "sport", "intent", "duration_min", "hr_cap_bpm",
-                  "notes", "origin", "status", "linked_activity_id", "fixed_commitment_id")
+                  "notes", "workout_type", "workout_json", "origin", "status", "linked_activity_id",
+                  "fixed_commitment_id")
 
 
 def _now() -> str:
@@ -234,10 +235,13 @@ def _insert_session(connection: sqlite3.Connection, item: dict[str, Any]) -> int
         return -int(cursor.lastrowid)
     cursor = connection.execute(
         "INSERT INTO plan_sessions(user_id,date,sport,intent,duration_min,hr_cap_bpm,notes,origin,status,"
-        "linked_activity_id,fixed_commitment_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "linked_activity_id,fixed_commitment_id,workout_type,workout_json,created_at,updated_at) "
+        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (item["user_id"], item["date"], item["sport"], item["intent"], item["duration_min"],
          item.get("hr_cap_bpm"), item.get("notes"), item["origin"], item.get("status", "planned"),
-         item.get("linked_activity_id"), item.get("fixed_commitment_id"), stamp, stamp))
+         item.get("linked_activity_id"), item.get("fixed_commitment_id"), item.get("workout_type"),
+         json.dumps(item["workout"]) if item.get("workout") is not None else item.get("workout_json"),
+         stamp, stamp))
     return int(cursor.lastrowid)
 
 
@@ -293,7 +297,7 @@ def manual_session(database: Path, user_id: int, item: dict[str, Any], *, sessio
             if row is None or row["origin"] == "fixed" or row["status"] == "done":
                 raise ValueError("Fixed or logged sessions cannot be edited here")
             connection.execute("UPDATE plan_sessions SET date=?,sport=?,intent=?,duration_min=?,hr_cap_bpm=?,"
-                               "notes=?,updated_at=? WHERE id=? AND user_id=?",
+                               "notes=?,workout_type=NULL,workout_json=NULL,updated_at=? WHERE id=? AND user_id=?",
                                (item["date"], item["sport"], item["intent"], item["duration_min"],
                                 item.get("hr_cap_bpm"), item.get("notes"), _now(), session_id, user_id))
         _bump(connection, user_id)
@@ -318,6 +322,8 @@ def _proposal_view(connection: sqlite3.Connection, row: sqlite3.Row) -> dict[str
     for change in changes:
         change["session"] = json.loads(change.pop("session_json"))
         change["fact_ids"] = json.loads(change.pop("fact_ids_json"))
+        if change.get("workout_json") and not change["session"].get("workout"):
+            change["session"]["workout"] = json.loads(change["workout_json"])
     result = dict(row)
     result["facts"] = json.loads(result.pop("facts_json"))
     result["changes"] = changes
@@ -356,11 +362,20 @@ def _validate_changes(kind: str, facts: list[dict[str, str]], changes: list[dict
             raise ValueError("Invalid proposal change")
         if not change["fact_ids"] or set(change["fact_ids"]) - known:
             raise ValueError("Each change must cite known facts")
-        if unsupported_text_numbers(change["reason"], facts):
+        if verify_numbers(facts, change["reason"]).unmatched:
             raise ValueError("Proposal reason contains a number absent from its facts")
         if re.search(r"\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\b", change["reason"]):
             raise ValueError("Fact IDs belong in fact_ids, not in the reason")
         _validate_session(item)
+        if item.get("workout") is not None:
+            from coach.workouts import TEMPLATES
+
+            workout = item["workout"]
+            if (not isinstance(workout, dict) or workout.get("type") not in TEMPLATES or
+                    item.get("workout_type", workout.get("type")) != workout.get("type") or
+                    workout.get("duration_min") != item["duration_min"] or
+                    TEMPLATES[workout["type"]].sport != item["sport"]):
+                raise ValueError("Structured workout does not match the session")
         group_id = change.get("group_id")
         if group_id is not None and (not isinstance(group_id, str) or not 1 <= len(group_id) <= 64 or
                                      re.fullmatch(r"[A-Za-z0-9_-]+", group_id) is None):
@@ -375,10 +390,14 @@ def _insert_proposal(connection: sqlite3.Connection, user_id: int, kind: str, su
     proposal_id = int(cursor.lastrowid)
     for index, change in enumerate(changes, start=1):
         connection.execute("INSERT INTO proposal_changes(proposal_id,change_type,session_json,reason,"
-                           "fact_ids_json,decision,group_id) VALUES(?,?,?,?,?,'pending',?)",
+                           "fact_ids_json,decision,group_id,workout_type,workout_json) "
+                           "VALUES(?,?,?,?,?,'pending',?,?,?)",
                            (proposal_id, change["change_type"], json.dumps(change["session"]),
                             change["reason"], json.dumps(change["fact_ids"]),
-                            change.get("group_id") or f"change-{index}"))
+                            change.get("group_id") or f"change-{index}",
+                            change["session"].get("workout_type"),
+                            json.dumps(change["session"]["workout"])
+                            if change["session"].get("workout") is not None else None))
     return proposal_id
 
 
@@ -507,11 +526,15 @@ def apply(database: Path, user_id: int, proposal_id: int, accepted_change_ids: l
                 _insert_session(connection, {**item, "user_id": user_id, "origin": "coach"})
             elif row["change_type"] == "modify":
                 _validate_session(item)
+                workout_columns = "" if table == "plan_mobility_sessions" else "workout_type=?,workout_json=?,"
+                values = (item["sport"], item["intent"], item["duration_min"], item.get("hr_cap_bpm"),
+                          item.get("notes"), item.get("status", target["status"]))
+                if workout_columns:
+                    values += (item.get("workout_type"), json.dumps(item["workout"])
+                               if item.get("workout") is not None else item.get("workout_json"))
                 connection.execute(f"UPDATE {table} SET sport=?,intent=?,duration_min=?,hr_cap_bpm=?,"
-                                   "notes=?,status=?,updated_at=? WHERE id=? AND user_id=?",
-                                   (item["sport"], item["intent"], item["duration_min"], item.get("hr_cap_bpm"),
-                                    item.get("notes"), item.get("status", target["status"]), _now(),
-                                    target_id, user_id))
+                                   f"notes=?,status=?,{workout_columns}updated_at=? WHERE id=? AND user_id=?",
+                                   (*values, _now(), target_id, user_id))
             else:
                 connection.execute(f"UPDATE {table} SET status='skipped',updated_at=? WHERE id=? AND user_id=?",
                                    (_now(), target_id, user_id))
@@ -612,10 +635,12 @@ def undo_last(database: Path, user_id: int) -> dict[str, Any]:
                                             _now(), target_id, user_id))
                     else:
                         connection.execute("UPDATE plan_sessions SET sport=?,intent=?,duration_min=?,hr_cap_bpm=?,"
-                                           "notes=?,status=?,linked_activity_id=?,updated_at=? WHERE id=? AND user_id=?",
+                                           "notes=?,status=?,linked_activity_id=?,workout_type=?,workout_json=?,"
+                                           "updated_at=? WHERE id=? AND user_id=?",
                                            (restored["sport"], restored["intent"], restored["duration_min"],
                                             restored["hr_cap_bpm"], restored["notes"], restored["status"],
-                                            restored["linked_activity_id"], _now(), target_id, user_id))
+                                            restored["linked_activity_id"], restored["workout_type"],
+                                            restored["workout_json"], _now(), target_id, user_id))
         connection.execute("UPDATE plan_snapshots SET undone_at=? WHERE id=?", (_now(), record["id"]))
         version = _bump(connection, user_id)
     return {"undone_snapshot_id": record["id"], "version": version}

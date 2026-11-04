@@ -11,6 +11,7 @@ from fastapi import APIRouter, BackgroundTasks, Form, HTTPException, Query, Requ
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from pydantic import ValidationError
 
+from coach.session_workouts import propose_move, read_session, use_shorter_variant
 from llm.base import NullLLMClient
 from services.timeline_notes import delete_note, save_note
 from web.activities import (
@@ -56,6 +57,7 @@ from web.today import choose_intensity, create_week_proposal, save_rating, today
 from web.trends import insights_context
 from web.view_models.coach import context_question, proposed_change_question
 from web.view_models.dashboard import chart_context_summary
+from web.view_models.session import session_detail
 
 router = APIRouter()
 
@@ -460,6 +462,49 @@ def plan(request: Request, start: str = "", view: str = "week"):
         raise HTTPException(400, "Invalid week") from exc
     return request.app.state.templates.TemplateResponse(
         request, "plan.html", plan_context(request.app.state.settings, _day(request), start=selected, view=view))
+
+
+@router.get("/training/session/{session_id}", response_class=HTMLResponse)
+def training_session(request: Request, session_id: int):
+    try:
+        row = read_session(request.app.state.settings.db_path,
+                           request.app.state.settings.default_user_id, session_id)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    back = request.query_params.get("from", "training")
+    if back not in {"training", "today"}:
+        back = "training"
+    return request.app.state.templates.TemplateResponse(
+        request, "training_session.html",
+        {**session_detail(row), "back_url": "/" if back == "today" else "/plan",
+         "back_label": "Today" if back == "today" else "Training"})
+
+
+@router.post("/training/session/{session_id}/shorter")
+def training_session_shorter(request: Request, session_id: int):
+    try:
+        use_shorter_variant(request.app.state.settings.db_path,
+                            request.app.state.settings.default_user_id, session_id)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return RedirectResponse(f"/training/session/{session_id}", status_code=303)
+
+
+@router.post("/training/session/{session_id}/move")
+def training_session_move(request: Request, session_id: int, new_date: str = Form(...)):
+    row = read_session(request.app.state.settings.db_path, request.app.state.settings.default_user_id, session_id)
+    try:
+        target = date.fromisoformat(new_date)
+    except ValueError as exc:
+        raise HTTPException(400, "Choose a valid date") from exc
+    if target == date.fromisoformat(row["date"]):
+        raise HTTPException(400, "Choose a different day")
+    try:
+        propose_move(request.app.state.settings.db_path, request.app.state.settings.default_user_id,
+                     session_id, target)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return RedirectResponse("/plan", status_code=303)
 
 
 @router.post("/plan/ask", response_class=HTMLResponse)

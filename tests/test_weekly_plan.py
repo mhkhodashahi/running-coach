@@ -21,6 +21,7 @@ from coach.planning import (
     _context,
     apply_draft,
     build_habit_week,
+    detailed_changes,
     estimate_load,
     habit_pattern,
     is_hard,
@@ -75,6 +76,87 @@ def session(day: date, sport: str = "running", intent: str = "easy", minutes: in
             identifier: int | None = None) -> dict:
     return {"id": identifier, "date": day.isoformat(), "sport": sport, "intent": intent,
             "duration_min": minutes, "hr_cap_bpm": 130 if sport == "running" else None, "notes": None}
+
+
+def test_detailed_workout_survives_apply_and_undo(database):
+    from coach.planning import WeekBuild
+
+    settings = replace(get_settings(), db_path=database)
+    item = {**session(START, minutes=40), "workout_type": "easy_base"}
+    change_row = {"change_type": "add", "session": item,
+                  "reason": "This fits the easy day.", "fact_ids": ["TRAINING_LOAD"]}
+    model = LoadModel(200, {("running", "easy"): 1}, {"running": 1})
+    built = WeekBuild((change_row,), "A safe running week.", ({**item, "origin": "coach"},), ())
+    prepared, extra_facts, summary = detailed_changes(database, 1, START, settings, built, model)
+    assert prepared[0]["session"]["workout"]["steps"]
+    assert prepared[0]["session"]["workout"]["estimated_load"] == 40
+    assert "Maintenance phase" in summary
+    assert extra_facts
+    proposal = create_proposal(database, 1, "weekly_plan", summary, FACTS + extra_facts, prepared)
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("SELECT count(*) FROM plan_sessions WHERE user_id=1").fetchone()[0] == 0
+    apply(database, 1, proposal["id"], [proposal["changes"][0]["id"]])
+    with sqlite3.connect(database) as connection:
+        stored = connection.execute("SELECT workout_type,workout_json FROM plan_sessions WHERE user_id=1").fetchone()
+    assert stored[0] == "easy_base" and json.loads(stored[1])["steps"]
+    undo_last(database, 1)
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("SELECT count(*) FROM plan_sessions WHERE user_id=1").fetchone()[0] == 0
+
+
+def test_unverified_plan_numbers_retry_then_use_code_text(database):
+    class UnverifiedLLM:
+        calls = 0
+
+        def generate_json(self, system, prompt, response_schema):
+            self.calls += 1
+            count = len(json.loads(prompt.split("\nValidation errors:")[0])["code_built_changes"])
+            return {"summary": "Run 999 min this week.", "reasons": [
+                {"reason": "Run 999 min.", "fact_ids": ["LOAD_BASE"]} for _ in range(count)]}
+
+    llm = UnverifiedLLM()
+    settings = replace(get_settings(), db_path=database, llm_provider="none")
+    proposal = propose_week(START, settings=settings, llm=llm, today=START - timedelta(days=3))
+    assert llm.calls == 2
+    assert "999" not in proposal["summary"]
+    assert all("workout" in row["session"] for row in proposal["changes"]
+               if row["session"]["sport"] != "mobility")
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("SELECT count(*) FROM plan_sessions WHERE user_id=1").fetchone()[0] == 0
+
+
+def test_goal_week_uses_one_quality_run_and_long_run_with_spacing():
+    model = LoadModel(400, {("running", "easy"): 1, ("running", "tempo"): 1.5,
+                            ("gym", "light"): 1}, {"running": 1, "gym": 1})
+    habits = HabitPattern({"running": 2, "gym": 1}, {"running": 45, "gym": 30})
+    built = build_habit_week([], model, habits, START, START - timedelta(days=1), {}, True, 130,
+                             longest_recent_run_min=60)
+    active = [item for item in built.candidate if item.get("status", "planned") == "planned"]
+    assert sum(item["sport"] == "running" and item["intent"] == "tempo" for item in active) == 1
+    assert sum(item["workout_type"] == "long" for item in (change["session"] for change in built.changes)) == 1
+    assert validate_week(active, model, today=START - timedelta(days=1), decisions={}, week_start=START) == []
+
+
+def test_hard_days_two_calendar_days_apart_are_not_verified_as_48_hours():
+    model = LoadModel(500, {("running", "tempo"): 1}, {"running": 1})
+    planned = [session(START, intent="tempo"), session(START + timedelta(days=2), intent="tempo")]
+    assert any("48 h" in error for error in validate_week(planned, model,
+                                                           today=START - timedelta(days=7), decisions={}))
+
+
+def test_running_goal_keeps_run_before_shrinking_flexible_gym():
+    model = LoadModel(100, {("running", "easy"): 1, ("gym", "light"): 1},
+                      {"running": 1, "gym": 1})
+    gym = {**session(START + timedelta(days=2), sport="gym", intent="light", minutes=60, identifier=7),
+           "origin": "athlete", "status": "planned"}
+    habits = HabitPattern({"running": 1, "gym": 1}, {"running": 60, "gym": 60})
+    built = build_habit_week([gym], model, habits, START, START - timedelta(days=1), {}, True, 130,
+                             longest_recent_run_min=60)
+    active = [item for item in built.candidate if item.get("status", "planned") == "planned"]
+    run = next(item for item in active if item["sport"] == "running")
+    gym_after = next(item for item in active if item["sport"] == "gym")
+    assert run["duration_min"] == 60
+    assert gym_after["duration_min"] == 50
 
 
 def change(day: date, *, action: str = "add", sport: str = "running", intent: str = "easy",
@@ -324,7 +406,7 @@ def test_mocked_llm_week_draft_is_validated_and_never_applied(database):
             self.calls += 1
             assert response_schema.__name__ == "WeekNarrative"
             import json
-            count = len(json.loads(prompt)["code_built_changes"])
+            count = len(json.loads(prompt.split("\nValidation errors:", 1)[0])["code_built_changes"])
             return {"summary": "Easy week", "reasons": [
                 {"reason": "Keep the week controlled.", "fact_ids": ["LOAD_BASE"]} for _ in range(count)]}
 
@@ -603,10 +685,9 @@ def test_builder_keeps_fixed_match_and_trims_flexible_first():
                             ("running", "easy"): 1}, {"football": 1, "gym": 1, "running": 1})
     result = build_habit_week([fixed, gym], model, HabitPattern({"running": 1, "gym": 1},
                                 {"running": 60, "gym": 40}), START, START - timedelta(days=7), {}, True, 135)
-    assert not result.warnings
+    assert result.warnings and "gym" in result.warnings[0]
     assert next(item for item in result.candidate if item["origin"] == "fixed") == fixed
-    assert any(item["sport"] == "running" and item["duration_min"] < 60 for item in result.candidate)
-    assert "shorter" in result.summary
+    assert any(item["sport"] == "running" and item["status"] == "planned" for item in result.candidate)
     preview = week_load_breakdown(list(result.candidate), model, START)
     assert preview["weekly_total"] <= preview["cap"]
     assert len(preview["days"]) == 7 and any(item["rest"] for item in preview["days"])

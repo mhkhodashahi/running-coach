@@ -1,0 +1,19 @@
+<details class="v2-workout-detail">
+  <summary>Full workout · {{ detail.title or detail.type|replace('_', ' ')|title }}</summary>
+  <p>{{ detail.purpose }} {{ detail.why_day }}</p>
+  <p>{{ detail.benefit }} · {{ detail.duration_min }} min{% if detail.estimated_load is not none %} · estimated load {{ detail.estimated_load }}{% endif %}{% if detail.week_percent_after is not none %} · week {{ detail.week_percent_after }}% of usual{% endif %}</p>
+  <ol>
+  {% for step in detail.steps %}
+    <li><strong>{{ step.label }}</strong> · {% if step.rounds is defined and step.rounds %}{{ step.rounds }} rounds of {% elif step.reps is defined and step.reps > 1 %}{{ step.reps }} × {% endif %}{{ step.duration_min }} min{% if step.hr_target is defined and step.hr_target %} · {{ step.hr_target }}{% endif %}{% if step.pace_target is defined and step.pace_target %} · {{ step.pace_target }}{% endif %}{% if step.recovery_min is defined and step.recovery_min %} · {{ step.recovery_min }} min easy between repeats{% endif %}{% if step.exercises is defined and step.exercises %} · {{ step.exercises|join(', ') }}{% endif %}</li>
+  {% endfor %}
+  </ol>
+  <p>How it should feel: {{ detail.how_it_feels }}. Done right if: {{ detail.done_right_if }}.</p>
+  <p>If tired: {{ detail.fallback }}.</p>
+  {% for label, variant in detail.variants.items() %}{% if variant %}
+  <details class="v2-workout-variant"><summary>{{ label|title }} option · {{ variant.duration_min }} min</summary>
+    <ol>{% for step in variant.steps %}<li>{{ step.label }} · {% if step.rounds is defined and step.rounds %}{{ step.rounds }} rounds of {% elif step.reps is defined and step.reps > 1 %}{{ step.reps }} × {% endif %}{{ step.duration_min }} min{% if step.hr_target is defined and step.hr_target %} · {{ step.hr_target }}{% endif %}</li>{% endfor %}</ol>
+  </details>
+  {% endif %}{% endfor %}
+  {% if detail.race_targets %}<p>{% for distance, pace in detail.race_targets.items() %}{{ distance }} pace {{ pace }}{% if not loop.last %} · {% endif %}{% endfor %}</p>{% endif %}
+  {% if detail.pace_note %}<p>{{ detail.pace_note }}.</p>{% endif %}
+</details>

@@ -58,6 +58,17 @@ class Brief:
     facts: tuple[NumberFact, ...]
 
 
+def format_workout_steps(workout: dict[str, Any] | None) -> str:
+    """Compact, deterministic step line for a structured session in the brief."""
+    if not workout or not workout.get("steps"):
+        return ""
+    return "; ".join(
+        f"{step.get('label', 'Step')}: {step.get('duration_min')} min"
+        + (f" at {step['hr_target']}" if step.get("hr_target") else "")
+        + (f", {step['pace_target']}" if step.get("pace_target") else "")
+        for step in workout["steps"])
+
+
 def trend_word(values: list[float]) -> str | None:
     """A change under five percent of the observed mean is steady."""
     if len(values) < MIN_BASELINE_7D:
@@ -120,6 +131,9 @@ def build_morning_facts(settings: Settings, day: date, decision: Any) -> BriefCo
                                 "ORDER BY a.id LIMIT 20", (user_id, (day - timedelta(days=1)).isoformat())).fetchall()
         today_activities = db.execute("SELECT type FROM activities WHERE user_id=? AND date=? LIMIT 20",
                                       (user_id, day.isoformat())).fetchall()
+        planned_row = db.execute("SELECT workout_json FROM plan_sessions WHERE user_id=? AND date=? "
+                                 "AND status='planned' AND workout_json IS NOT NULL ORDER BY id LIMIT 1",
+                                 (user_id, day.isoformat())).fetchone()
         commitments = db.execute("SELECT sport,kind,weekday FROM fixed_commitments WHERE user_id=? AND active=1 "
                                  "AND weekday IN (?,?) LIMIT 4", (user_id, day.weekday(),
                                                                    (day + timedelta(days=1)).weekday())).fetchall()
@@ -134,7 +148,18 @@ def build_morning_facts(settings: Settings, day: date, decision: Any) -> BriefCo
     _fact(facts, "SEVEN_DAY_WINDOW", "Seven-day comparison window", "7 days", "brief.baseline_window")
     _fact(facts, "USUAL_WINDOW", "Usual comparison window", "28 days", "brief.usual_window")
     _fact(facts, "WEEKLY_LIMIT", "Weekly limit", "110% of usual", "coach.decision.weekly_limit")
-    values: dict[str, Any] = {"last_sync": sync[0] if sync else None, "fixed": [dict(row) for row in commitments]}
+    planned_workout = json.loads(planned_row[0]) if planned_row else None
+    if planned_workout:
+        for index, step in enumerate(planned_workout.get("steps", ()), start=1):
+            _fact(facts, f"PLAN_STEP_{index}_DURATION", f"Planned step {index} duration",
+                  f"{step['duration_min']} min" if step.get("duration_min") is not None else None,
+                  f"plan_sessions.workout_json.steps[{index - 1}].duration_min")
+            _fact(facts, f"PLAN_STEP_{index}_HR", f"Planned step {index} HR target",
+                  step.get("hr_target"), f"plan_sessions.workout_json.steps[{index - 1}].hr_target")
+            _fact(facts, f"PLAN_STEP_{index}_PACE", f"Planned step {index} pace target",
+                  step.get("pace_target"), f"plan_sessions.workout_json.steps[{index - 1}].pace_target")
+    values: dict[str, Any] = {"last_sync": sync[0] if sync else None, "fixed": [dict(row) for row in commitments],
+                              "planned_workout": json.loads(planned_row[0]) if planned_row else None}
     values["done"] = any(sport_category(row["type"], day) in ("running", "gym", "football", "volleyball")
                          for row in today_activities)
     values["match_today"] = next((row["sport"] for row in commitments
@@ -350,6 +375,13 @@ def _fallback_sections(context: BriefContext) -> dict[str, str]:
         today += "; or rest if your legs feel heavy."
     else:
         today = "Keep today easy; or rest if your legs feel heavy."
+    workout = values.get("planned_workout")
+    if workout:
+        compact = format_workout_steps(workout)
+    else:
+        compact = ""
+    if compact:
+        today += f" Steps: {compact}."
     if values["illness"]:
         today = "Rest today. Your resting HR and HRV both point to strain. If you feel unwell or this lasts several days, talk to a doctor."
     elif values.get("done"):
