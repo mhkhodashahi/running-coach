@@ -12,6 +12,7 @@ from coach.planning import propose_requested_change
 from coach.proposals import monday
 from config import Settings
 from metrics.sports import RECOMMENDABLE_SPORTS, sport_category
+from services.coach_memory_service import list_memories, save_memory
 from services.training_chat_service import TrainingChatReply, TrainingChatService
 from web.formatting import short_date
 from web.plan_page import plan_context
@@ -20,7 +21,8 @@ from web.view_models.coach import QUICK_QUESTIONS, coach_availability, coach_tur
 from worker.state import history as worker_history
 
 COACH_DATA_LIST = ("Activities", "Laps", "Samples", "Health metrics", "Metrics snapshot",
-                   "Goals", "Planned intents", "Plan", "Effort ratings", "Running memory")
+                   "Goals", "Planned intents", "Plan", "Effort ratings", "Timeline notes",
+                   "Running memory", "Active coach memories")
 
 
 def _db(settings: Settings) -> sqlite3.Connection:
@@ -81,7 +83,9 @@ def coach_context(settings: Settings, day: date, *, reply: TrainingChatReply | N
             "quick_questions": QUICK_QUESTIONS,
             "sync": sync_label(settings, day),
             "messages": [row for row in worker_history(settings.db_path, settings.default_user_id)
-                         if row["message_text"] and row["job"] in ("morning", "day_review", "weekly_review")]}
+                         if row["message_text"] and row["job"] in ("morning", "day_review", "weekly_review")],
+            "memory_suggestions": [row for row in list_memories(settings.db_path, settings.default_user_id)
+                                   if row["status"] == "suggested"]}
 
 
 def ask_coach(settings: Settings, day: date, question: str, activity_id: int | None,
@@ -90,6 +94,23 @@ def ask_coach(settings: Settings, day: date, question: str, activity_id: int | N
     question = question.strip()
     if not 1 <= len(question) <= 500:
         raise ValueError("Ask a question of at most 500 characters")
+    lowered = question.casefold()
+    prefix = next((value for value in ("remember:", "merk dir:") if lowered.startswith(value)), None)
+    if prefix:
+        remembered = " ".join(question[len(prefix):].split())
+        if not remembered:
+            raise ValueError("Add the memory text after Remember:")
+        memory_id = save_memory(settings.db_path, settings.default_user_id, remembered)
+        text = "I saved that as an active memory."
+        with sqlite3.connect(settings.db_path) as connection:
+            connection.execute("INSERT INTO coach_chat_turns(user_id,question,answer,evidence_json,activity_ids_json,"
+                               "tool_calls_json,model_provider,model_name,prompt_version,created_at) "
+                               "VALUES(?,?,?,?,?,?,?,?,?,?)",
+                               (settings.default_user_id, question, text, "[]", "[]",
+                                json.dumps([{"name": "save_coach_memory", "arguments": {"memory_id": memory_id}}]),
+                                "code", "none",
+                                "remember-v1", datetime.now(UTC).replace(tzinfo=None).isoformat()))
+        return TrainingChatReply(text, False)
     if activity_id is not None:
         with _db(settings) as connection:
             if connection.execute("SELECT 1 FROM activities WHERE id=? AND user_id=?",

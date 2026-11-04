@@ -210,7 +210,7 @@ def test_brief_storage_feedback_and_migration(tmp_path):
     backup = upgrade_database(database, backup_dir=tmp_path / "backups")
     assert backup is not None
     with sqlite3.connect(database) as db:
-        assert db.execute("SELECT version_num FROM alembic_version").fetchone() == ("0017_detailed_workouts",)
+        assert db.execute("SELECT version_num FROM alembic_version").fetchone() == ("0018_coach_memories",)
         assert db.execute("SELECT * FROM users").fetchall() == before
         assert db.execute("PRAGMA integrity_check").fetchone() == ("ok",)
         assert db.execute("PRAGMA foreign_key_check").fetchall() == []

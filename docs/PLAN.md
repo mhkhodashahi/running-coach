@@ -202,6 +202,12 @@ The target contract is now in `AGENTS.md`. No milestone may rewrite stored data 
 - Add nullable workout type and structured steps to plans and proposal changes through a backup-first Alembic revision. Approval copies the workout; undo restores it. Existing unstructured sessions remain valid.
 - Show full workouts in proposal review and planned sessions on Today; preserve athlete approval, fixed commitments and the 110% usual-week limit. Tests use invented data; live verification runs on a disposable copy only.
 
+### 6l. Coach memory v1 (implemented)
+
+- Store athlete-owned memories and structured schedule/workout/body rules per user; preserve the legacy running-memory file and migrate its entries as active, migrated records.
+- Athlete edits are immediate; model-extracted changes remain suggestions until explicitly kept. Extraction is opt-in, bounded by the daily LLM cap and remote-provider approval.
+- Inject bounded, escaped memory context into chat, planning, daily briefs and activity opinions; enforce structured rules in deterministic code. See `docs/milestone-6l-results.md`.
+
 ### 7. Open-source packaging
 
 - Files to touch: `README.md`, `CONTRIBUTING.md`, `SECURITY.md`, `.env.example`, `pyproject.toml`, `.gitignore`, `docs/upgrade.md`, `.github/workflows/`, release docs, and example data/tests.

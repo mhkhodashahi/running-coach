@@ -343,6 +343,9 @@ def tick(settings: Settings, now: datetime, telegram: TelegramService,
     clock = local.strftime("%H:%M")
     pref = preferences(settings.db_path, settings.default_user_id)
     results = []
+    if pref.get("suggest_memories_llm"):
+        from worker.memory import suggest_from_idle_chat
+        suggest_from_idle_chat(settings, local)
     sync_job = sync_job or (lambda: sync(settings))
     morning_sync = (MORNING_START <= clock < pref["morning_latest"] and
                     (local.hour * 60 + local.minute - 5 * 60 - 30) % MORNING_POLL_MINUTES < 5 and

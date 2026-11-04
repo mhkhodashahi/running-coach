@@ -41,6 +41,7 @@ Read this file before every task. If a task conflicts with it, stop and say so.
 - **Weekly limit wins (owner decision, 29 Oct 2026):** a suggested session is shortened so the planned week stays at or below 110% of usual. If the shortest useful version does not fit, the day becomes easy.
 - **Usual week (owner decision, 29 Oct 2026):** median weekly load of the last 8 weeks that had any training (weeks with no training are ignored). With fewer than 4 such weeks the baseline is "still building" and the weekly limit is not applied.
 - **One visible safety rule (owner decision, 29 Oct 2026):** users see the 110% weekly limit, as "% of usual". The acute:chronic ratio stays internal to `coach/decision.py` and is never shown or named in UI, Telegram or coach text.
+- **Coach memory:** short facts and preferences about the athlete, stored per user. The athlete adds them directly; the coach may only suggest them, and a suggestion is used only after the athlete keeps it. Schedule rules, excluded workouts and injuries are enforced by code in the planner, not left to the LLM. Memory text is athlete data, never instructions.
 - **Scheduler (milestone 6):** one long-running worker process (`python -m worker`) runs all timed jobs in the local timezone. Every job is idempotent: a `job_runs` record per job and day prevents duplicate messages, and a lock allows only one worker. Jobs only sync, compute, notify and create proposals; they never apply plan changes. Automatic LLM use by jobs is opt-in per job in Settings.
 - **LLM provider:** the owner chooses per install (local Ollama or a remote API). Never send athlete data to a remote provider without the owner's explicit approval in config.
 
@@ -63,7 +64,7 @@ Goals/races ┘   (scheduler)                                (tools over the DB)
 - **Undo is always possible.** Accepting a proposal stores a snapshot of the affected plan first; "Undo last coach changes" restores it. Logged activities are never changed.
 - **Stale proposals cannot overwrite.** If the plan changed after a proposal was created, the proposal is marked stale and cannot be applied; the athlete requests a fresh one.
 - **Scheduled reviews only suggest.** The morning check, the 17:00 day review and the weekly review never apply anything; they end with a proposal to accept or ignore.
-- **What the coach can see** is a fixed, documented list: activities, laps, samples, health metrics, the metrics snapshot, goals, planned intents, the plan, effort ratings, timeline notes and the running memory. Never: credentials, tokens, other users' data, raw device IDs.
+- **What the coach can see** is a fixed, documented list: activities, laps, samples, health metrics, the metrics snapshot, goals, planned intents, the plan, effort ratings, timeline notes, the running memory and active coach memories. Never: credentials, tokens, other users' data, raw device IDs.
 - **Limits:** one coach job per user at a time, and a daily cap on LLM calls per user (config `COACH_DAILY_CALL_LIMIT`).
 
 ## Coach opinion JSON (per activity)

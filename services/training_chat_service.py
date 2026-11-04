@@ -10,6 +10,7 @@ from typing import Any
 from coach.agent import CoachAgent
 from config import Settings, get_settings
 from llm.factory import get_llm_client
+from services.coach_memory_service import memory_context
 from services.running_coach_memory import load_running_memory
 
 
@@ -39,7 +40,10 @@ class TrainingChatService:
             return TrainingChatReply("Ask me a training question.", False)
         agent = CoachAgent(self.settings, self.llm_client, user_id or self.settings.default_user_id)
         try:
-            result = agent.answer(question, activity_id=activity_id, running_memory=load_running_memory())
+            persistent = memory_context(self.settings.db_path, user_id or self.settings.default_user_id)
+            legacy = load_running_memory()
+            context = "\n".join(value for value in (persistent, legacy) if value)
+            result = agent.answer(question, activity_id=activity_id, running_memory=context)
         except (RuntimeError, ValueError) as exc:
             return TrainingChatReply(str(exc), False)
         evidence = tuple(result.evidence)
@@ -50,12 +54,13 @@ class TrainingChatService:
     def history(self, user_id: int | None = None, limit: int = 20) -> list[dict[str, Any]]:
         database = self.settings.db_path
         with sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True) as connection:
-            rows = connection.execute("SELECT question,answer,evidence_json,activity_ids_json,created_at "
+            rows = connection.execute("SELECT question,answer,evidence_json,activity_ids_json,created_at,tool_calls_json "
                                       "FROM coach_chat_turns "
                                       "WHERE user_id=? ORDER BY id DESC LIMIT ?",
                                       (user_id or self.settings.default_user_id, min(max(limit, 1), 30))).fetchall()
         return [{"question": row[0], "answer": row[1], "evidence": json.loads(row[2]),
-                 "activity_ids": json.loads(row[3]), "created_at": row[4]} for row in reversed(rows)]
+                 "activity_ids": json.loads(row[3]), "created_at": row[4],
+                 "tool_calls": json.loads(row[5])} for row in reversed(rows)]
 
 
 def _telegram_limit(text: str, limit: int = 3900) -> str:

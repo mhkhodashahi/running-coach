@@ -12,7 +12,7 @@ from pathlib import Path
 
 DEFAULTS = {"morning_enabled": 1, "morning_latest": "10:00", "day_review_time": "17:00",
             "weekly_weekday": 6, "weekly_time": "18:00", "quiet_start": "22:00", "quiet_end": "05:30",
-            "morning_llm": 0, "day_llm": 0, "weekly_llm": 0, "paused": 0}
+            "morning_llm": 0, "day_llm": 0, "weekly_llm": 0, "suggest_memories_llm": 0, "paused": 0}
 
 
 @contextmanager
@@ -44,7 +44,7 @@ def save_preferences(database: Path, user_id: int, values: dict) -> None:
             raise ValueError(f"Invalid {field} time")
     if int(merged["weekly_weekday"]) not in range(7):
         raise ValueError("Invalid weekly review day")
-    for field in ("morning_enabled", "morning_llm", "day_llm", "weekly_llm", "paused"):
+    for field in ("morning_enabled", "morning_llm", "day_llm", "weekly_llm", "suggest_memories_llm", "paused"):
         if merged[field] not in (0, 1, False, True):
             raise ValueError(f"Invalid {field} value")
     fields = list(DEFAULTS)

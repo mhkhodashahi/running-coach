@@ -25,6 +25,7 @@ from services.coach_facts import (
     recent_comparisons,
     select_comparison_facts,
 )
+from services.coach_memory_service import memory_context as coach_memory_context
 from services.coach_opinion import assemble_opinion_v3, load_opinion, opinion_rule_errors
 from services.coaching_prompts import ACTIVITY_OPINION_V3_SYSTEM_PROMPT
 from services.goal_service import GoalService
@@ -235,7 +236,9 @@ class ActivityCoachingService:
         if existing is not None and not regenerate:
             return load_opinion(existing).model_dump()
         context, activity_day, activity_name = self._prepare(session, user, activity_id)
-        opinion, notes = self._request_opinion(context, load_running_memory())
+        memories = coach_memory_context(self.settings.db_path, user.id, categories={"goal", "body"})
+        opinion, notes = self._request_opinion(context, "\n".join(
+            value for value in (memories, load_running_memory()) if value))
         self._save(session, user.id, activity_id, opinion, context, notes, regenerate)
         _update_activity_memory(activity_day, activity_name, opinion)
         return opinion.model_dump()
@@ -248,7 +251,9 @@ class ActivityCoachingService:
             if existing is not None and not regenerate:
                 return load_opinion(existing).model_dump()
             context, activity_day, activity_name = self._prepare(session, user, activity_id)
-        opinion, notes = self._request_opinion(context, load_running_memory())
+        memories = coach_memory_context(self.settings.db_path, user_id, categories={"goal", "body"})
+        opinion, notes = self._request_opinion(context, "\n".join(
+            value for value in (memories, load_running_memory()) if value))
         with session_scope() as session:
             self._save(session, user_id, activity_id, opinion, context, notes, regenerate)
         _update_activity_memory(activity_day, activity_name, opinion)

@@ -85,11 +85,14 @@ def coach_turns(thread: list[dict[str, Any]]) -> tuple[dict[str, Any], ...]:
         cards = turn.get("cards") or []
         chip = context_chip(context, cards[0]) if cards else context_chip(context)
         answer = str(turn["answer"])
+        memory_id = next((call.get("arguments", {}).get("memory_id") for call in turn.get("tool_calls", [])
+                          if call.get("name") == "save_coach_memory"), None)
         proposed = "proposal" in answer.lower() and "not been applied" in answer.lower()
         evidence_chips = (coach_evidence_chip(fact) for fact in turn.get("evidence") or [])
         result.append({**turn, "display_question": question, "context_chip": chip,
                        "evidence_chips": tuple(item for item in evidence_chips if item is not None),
                        "proposal_link": proposed,
+                       "memory_link": f"/settings#coach-memory-{memory_id}" if memory_id else None,
                        "suggest_change": not proposed and plan_change_question(answer)
                        and len(answer) <= 470})
     return tuple(result)

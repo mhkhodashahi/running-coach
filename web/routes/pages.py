@@ -13,6 +13,7 @@ from pydantic import ValidationError
 
 from coach.session_workouts import propose_move, read_session, use_shorter_variant
 from llm.base import NullLLMClient
+from services.coach_memory_service import delete_memory, edit_memory, resolve_suggestion, save_memory, set_memory_status
 from services.timeline_notes import delete_note, save_note
 from web.activities import (
     add_recommendation,
@@ -45,6 +46,7 @@ from web.settings_page import (
     MAX_CSV_BYTES,
     change_goal_state,
     import_csv,
+    memory_rule_from_form,
     save_goal,
     save_local_config,
     save_messages,
@@ -419,7 +421,8 @@ def coach_ask(request: Request, question: str = Form(...), activity_id: int | No
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     try:
-        if current["availability"]["disabled"]:
+        is_remember = question.strip().casefold().startswith(("remember:", "merk dir:"))
+        if current["availability"]["disabled"] and not is_remember:
             error = current["availability"]["reason"]
         else:
             reply = ask_coach(request.app.state.settings, _day(request),
@@ -651,6 +654,55 @@ async def messages_save(request: Request):
     except (ValueError, KeyError) as exc:
         return _settings(request, error=str(exc))
     return _settings(request, message="Message settings saved")
+
+
+@router.post("/settings/memories", response_class=HTMLResponse)
+async def memory_add(request: Request):
+    form = await request.form()
+    fields = dict(form)
+    try:
+        rule = memory_rule_from_form(form)
+        expiry = date.fromisoformat(fields["valid_until"]) if fields.get("valid_until") else None
+        save_memory(request.app.state.settings.db_path, request.app.state.settings.default_user_id,
+                    fields.get("text", ""), category=fields.get("category", "other"), rule=rule,
+                    valid_until=expiry)
+    except (ValueError, json.JSONDecodeError) as exc:
+        return _settings(request, error=str(exc))
+    return _settings(request, message="Memory saved")
+
+
+@router.post("/settings/memories/{memory_id}/edit", response_class=HTMLResponse)
+async def memory_edit(request: Request, memory_id: int):
+    form = await request.form()
+    fields = dict(form)
+    try:
+        rule = memory_rule_from_form(form)
+        expiry = date.fromisoformat(fields["valid_until"]) if fields.get("valid_until") else None
+        edit_memory(request.app.state.settings.db_path, request.app.state.settings.default_user_id, memory_id,
+                    text=fields.get("text", ""), category=fields.get("category", "other"), rule=rule,
+                    valid_until=expiry)
+    except (ValueError, json.JSONDecodeError) as exc:
+        return _settings(request, error=str(exc))
+    return _settings(request, message="Memory updated")
+
+
+@router.post("/settings/memories/{memory_id}/{action}", response_class=HTMLResponse)
+def memory_action(request: Request, memory_id: int, action: str):
+    try:
+        database = request.app.state.settings.db_path
+        user_id = request.app.state.settings.default_user_id
+        if action == "delete":
+            delete_memory(database, user_id, memory_id)
+        elif action in {"active", "inactive"}:
+            set_memory_status(database, user_id, memory_id, action)
+        elif action in {"keep", "discard"}:
+            resolve_suggestion(database, user_id, memory_id, action)
+        else:
+            raise ValueError("Unknown memory action")
+    except ValueError as exc:
+        return _settings(request, error=str(exc))
+    return _settings(request, message="Memory suggestion updated" if action in {"keep", "discard"}
+                     else "Memory updated")
 
 
 @router.post("/settings/profile", response_class=HTMLResponse)

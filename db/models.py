@@ -58,6 +58,7 @@ class User(Base):
     coach_llm_calls: Mapped[list[CoachLLMCall]] = relationship(back_populates="user")
     dashboard_widgets: Mapped[list[DashboardWidget]] = relationship(back_populates="user")
     timeline_notes: Mapped[list[TimelineNote]] = relationship(back_populates="user")
+    coach_memories: Mapped[list[CoachMemory]] = relationship(back_populates="user")
 
 
 class TimelineNote(Base):
@@ -336,6 +337,53 @@ class CoachChatTurn(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
 
     user: Mapped[User] = relationship(back_populates="coach_chat_turns")
+
+
+class CoachMemory(Base):
+    """Athlete-approved, user-scoped coaching context and structured rules."""
+
+    __tablename__ = "coach_memories"
+    __table_args__ = (
+        CheckConstraint("category IN ('goal','schedule','preference','body','equipment','coaching_style','other')",
+                        name="ck_coach_memories_category"),
+        CheckConstraint("status IN ('active','suggested','inactive')", name="ck_coach_memories_status"),
+        CheckConstraint("source IN ('athlete','coach_suggestion','migrated')", name="ck_coach_memories_source"),
+        CheckConstraint("length(text) <= 200", name="ck_coach_memories_text_length"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False)
+    category: Mapped[str] = mapped_column(String(24), nullable=False, default="other")
+    text: Mapped[str] = mapped_column(String(200), nullable=False)
+    rule_json: Mapped[str | None] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="active")
+    source: Mapped[str] = mapped_column(String(24), nullable=False, default="athlete")
+    valid_from: Mapped[date] = mapped_column(Date, nullable=False)
+    valid_until: Mapped[date | None] = mapped_column(Date)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime)
+    suggestion_action: Mapped[str | None] = mapped_column(String(16))
+    target_memory_id: Mapped[int | None] = mapped_column(ForeignKey("coach_memories.id", ondelete="SET NULL"))
+    suggestion_reason: Mapped[str | None] = mapped_column(String(200))
+    user: Mapped[User] = relationship(back_populates="coach_memories")
+    history: Mapped[list[CoachMemoryHistory]] = relationship(
+        back_populates="memory", cascade="all, delete-orphan")
+
+
+class CoachMemoryHistory(Base):
+    """Audit trail for every change to a coach memory."""
+
+    __tablename__ = "coach_memory_history"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    memory_id: Mapped[int] = mapped_column(
+        ForeignKey("coach_memories.id", ondelete="CASCADE"), index=True, nullable=False)
+    previous_text: Mapped[str] = mapped_column(String(200), nullable=False)
+    previous_rule_json: Mapped[str | None] = mapped_column(Text)
+    previous_status: Mapped[str] = mapped_column(String(16), nullable=False)
+    changed_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
+    change_reason: Mapped[str] = mapped_column(String(200), nullable=False)
+    memory: Mapped[CoachMemory] = relationship(back_populates="history")
 
 
 class CoachLLMCall(Base):

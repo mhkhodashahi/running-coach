@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -21,8 +22,10 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from analytics.performance import goal_time_minutes
+from coach.workouts import TEMPLATES as WORKOUT_TEMPLATES
 from config import BASE_DIR, Settings, _parse_hr_zones, get_settings
 from db import repository
+from services.coach_memory_service import list_memories, validate_rule
 from services.goal_service import GoalService
 from services.hr_zones import heart_rate_zone_bounds
 from services.import_service import GarminImportService, ImportSummary
@@ -87,7 +90,11 @@ def settings_context(settings: Settings, sync_state: dict[str, str]) -> dict:
             "usage": usage, "call_limit": settings.coach_daily_call_limit,
             "sync": sync_label, "messages": preferences(settings.db_path, settings.default_user_id),
             "worker_runs": worker_history(settings.db_path, settings.default_user_id, 8),
-            "worker_running": worker_running(settings.db_path)}
+            "worker_running": worker_running(settings.db_path),
+            "memory_workout_types": sorted(WORKOUT_TEMPLATES)}
+    context["coach_memories"] = list_memories(settings.db_path, settings.default_user_id)
+    context["pending_memories"] = [item for item in context["coach_memories"]
+                                   if item["status"] == "suggested"]
     backup = latest_backup(settings.backup_dir)
     backup_day = BACKUP_NAME.fullmatch(backup.name).group(2) if backup else None
     with sqlite3.connect(settings.db_path.resolve().as_uri() + "?mode=ro", uri=True) as db:
@@ -106,12 +113,48 @@ def settings_context(settings: Settings, sync_state: dict[str, str]) -> dict:
 
 
 def save_messages(settings: Settings, fields: dict[str, str]) -> None:
-    toggles = ("morning_enabled", "morning_llm", "day_llm", "weekly_llm")
+    toggles = ("morning_enabled", "morning_llm", "day_llm", "weekly_llm", "suggest_memories_llm")
     values = {key: int(fields.get(key) == "on") for key in toggles}
     for key in ("morning_latest", "day_review_time", "weekly_time", "quiet_start", "quiet_end"):
         values[key] = fields[key]
     values["weekly_weekday"] = int(fields["weekly_weekday"])
     save_preferences(settings.db_path, settings.default_user_id, values)
+
+
+def memory_rule_from_form(form) -> dict | None:
+    """Build only explicitly selected structured rule fields; never parse memory prose."""
+    kind = str(form.get("rule_type", "")).strip()
+    if not kind:
+        raw = str(form.get("rule_json", "")).strip()
+        return validate_rule(str(form.get("category", "other")), json.loads(raw) if raw else None)
+    if kind == "none":
+        return None
+    if kind == "unavailable":
+        days = [int(value) for value in form.getlist("weekdays")]
+        if not days:
+            raise ValueError("Choose at least one unavailable weekday")
+        window = {key: str(form.get(f"time_{key}", "")).strip()
+                  for key in ("start", "end") if str(form.get(f"time_{key}", "")).strip()}
+        return validate_rule("schedule", {"unavailable": {"weekdays": days,
+                                **({"time_window": window} if window else {})}})
+    if kind == "avoid":
+        choices = [str(value) for value in form.getlist("avoid_types")]
+        if not choices:
+            raise ValueError("Choose at least one workout type to avoid")
+        return validate_rule(str(form.get("category", "preference")), {"avoid": choices})
+    if kind == "body":
+        area = str(form.get("body_area", "")).strip()
+        if not area:
+            raise ValueError("Describe the body area for this rule")
+        body: dict = {"area": area, "easy_running_only": form.get("easy_running_only") == "on"}
+        avoided = [str(value) for value in form.getlist("body_avoid")]
+        if avoided:
+            body["avoid"] = avoided
+        return validate_rule("body", {"body": body})
+    if kind == "preferred_time":
+        value = str(form.get("preferred_time", ""))
+        return validate_rule("preference", {"preferred_time": value})
+    raise ValueError("Choose a supported structured memory rule")
 
 
 def save_profile(settings: Settings, fields: dict[str, str]) -> None:

@@ -19,7 +19,7 @@ from db.repository import get_or_create_default_goal, get_or_create_default_user
 from scripts.backup_db import backup_database
 
 SCHEMA = Path(__file__).parents[1] / "db/migrations/baseline.sql"
-HEAD = "0017_detailed_workouts"
+HEAD = "0018_coach_memories"
 PLAN_TABLES = ("fixed_commitments", "plan_sessions", "plan_versions", "plan_snapshots",
                "coach_proposals", "proposal_changes")
 
@@ -40,6 +40,7 @@ def snapshot(database):
             "dashboard_widgets",
             "timeline_notes",
             "morning_briefs",
+            "coach_memories", "coach_memory_history", "coach_memory_extraction_state",
         }]
         counts = {table: connection.execute(f'SELECT count(*) FROM "{table}"').fetchone()[0] for table in old_tables}
         payloads = {}
@@ -120,7 +121,7 @@ def test_fresh_upgrade_and_default_user(tmp_path):
     database = tmp_path / "fresh.db"
     assert upgrade_database(database) is None
     with closing(sqlite3.connect(database)) as connection:
-        assert len(tables(connection)) == 35
+        assert len(tables(connection)) == 38
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (HEAD,)
         for table in ("plan_sessions", "proposal_changes"):
             columns = {row[1]: row for row in connection.execute(f"PRAGMA table_info({table})")}
@@ -153,7 +154,8 @@ def test_fresh_upgrade_and_default_user(tmp_path):
             "attempts", "error", "message_text"}
         assert {row[1] for row in connection.execute("PRAGMA table_info(notification_settings)")} == {
             "user_id", "morning_enabled", "morning_latest", "day_review_time", "weekly_weekday",
-            "weekly_time", "quiet_start", "quiet_end", "morning_llm", "day_llm", "weekly_llm", "paused"}
+            "weekly_time", "quiet_start", "quiet_end", "morning_llm", "day_llm", "weekly_llm",
+            "suggest_memories_llm", "paused"}
         assert "version_before" in {row[1] for row in connection.execute("PRAGMA table_info(plan_snapshots)")}
         assert "linked_activity_id" in {row[1] for row in connection.execute("PRAGMA table_info(plan_sessions)")}
         assert "group_id" in {row[1] for row in connection.execute("PRAGMA table_info(proposal_changes)")}
@@ -195,6 +197,36 @@ def test_0017_upgrade_and_downgrade_on_disposable_database(tmp_path):
     with closing(sqlite3.connect(database)) as connection:
         for table in ("plan_sessions", "proposal_changes"):
             assert "workout_json" in {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
+
+
+def test_0018_memory_migration_up_down_preserves_legacy_storage(tmp_path):
+    database = tmp_path / "db" / "memory-migration.db"
+    database.parent.mkdir()
+    upgrade_database(database)
+    with closing(sqlite3.connect(database)) as connection:
+        connection.execute("INSERT INTO users(id,marathon_goal_time) VALUES(1,'03:59:59')")
+        connection.commit()
+    legacy = tmp_path / "data" / "couch_running_memory.md"
+    legacy.parent.mkdir()
+    legacy.write_text("## Persistent cues\n- Prefer morning sessions.\n- Keep Thursday free.\n")
+    # Bring the disposable database back one revision, then verify the migration copies rows only.
+    engine = create_engine(f"sqlite:///{database}")
+    try:
+        config = migration_config()
+        with engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.downgrade(config, "0017_detailed_workouts")
+    finally:
+        engine.dispose()
+    upgrade_database(database)
+    with closing(sqlite3.connect(database)) as connection:
+        assert connection.execute("SELECT category,text,status,source FROM coach_memories ORDER BY id").fetchall() == [
+            ("other", "Prefer morning sessions.", "active", "migrated"),
+            ("other", "Keep Thursday free.", "active", "migrated"),
+        ]
+        assert connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+        assert connection.execute("SELECT suggest_memories_llm FROM notification_settings").fetchall() == []
+    assert legacy.read_text() == "## Persistent cues\n- Prefer morning sessions.\n- Keep Thursday free.\n"
 
 
 def test_existing_upgrade_preserves_data_and_body_tables(legacy_copy):
@@ -365,7 +397,7 @@ def test_missing_tables_are_created_without_adding_body_tables(tmp_path):
         connection.execute("CREATE TABLE users(id INTEGER PRIMARY KEY, age INTEGER, gender VARCHAR(20), weight FLOAT, height FLOAT, max_hr INTEGER)")
     upgrade_database(database)
     with closing(sqlite3.connect(database)) as connection:
-        assert len(tables(connection)) == 33
+        assert len(tables(connection)) == 36
         assert "prediction_snapshots" in tables(connection)
         assert "garmin_sync_status" in tables(connection)
 

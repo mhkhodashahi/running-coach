@@ -1,5 +1,18 @@
 {% extends 'base.html' %}
 {% from 'components/v2_icons.html' import icon %}
+{% macro memory_rule_editor(memory=None) %}
+<details class="settings-memory-rule"><summary>Structured rule</summary>
+  <label>Rule kind<select name="rule_type"><option value="">Use advanced JSON below</option><option value="none">No rule</option><option value="unavailable">Unavailable weekdays</option><option value="avoid">Avoid workout types</option><option value="body">Body / easy-running limit</option><option value="preferred_time">Preferred time</option></select></label>
+  <fieldset><legend>Unavailable weekdays</legend>{% for day,label in [(0,'Mon'),(1,'Tue'),(2,'Wed'),(3,'Thu'),(4,'Fri'),(5,'Sat'),(6,'Sun')] %}<label><input type="checkbox" name="weekdays" value="{{ day }}" {% if memory and memory.rule and memory.rule.unavailable and day in memory.rule.unavailable.weekdays %}checked{% endif %}> {{ label }}</label>{% endfor %}</fieldset>
+  <label>Unavailable before<input type="time" name="time_end"></label>
+  <fieldset><legend>Avoid workout types</legend>{% for workout_type in memory_workout_types %}<label><input type="checkbox" name="avoid_types" value="{{ workout_type }}" {% if memory and memory.rule and workout_type in memory.rule.get('avoid', []) %}checked{% endif %}> {{ workout_type|replace('_',' ')|title }}</label>{% endfor %}</fieldset>
+  <label>Body area<input name="body_area" maxlength="80" value="{{ memory.rule.body.area if memory and memory.rule and memory.rule.body else '' }}"></label>
+  <fieldset><legend>Body-related workouts to avoid</legend>{% for workout_type in memory_workout_types %}<label><input type="checkbox" name="body_avoid" value="{{ workout_type }}" {% if memory and memory.rule and memory.rule.body and workout_type in memory.rule.body.get('avoid', []) %}checked{% endif %}> {{ workout_type|replace('_',' ')|title }}</label>{% endfor %}</fieldset>
+  <label><input type="checkbox" name="easy_running_only" {% if memory and memory.rule and memory.rule.body and memory.rule.body.easy_running_only %}checked{% endif %}> Easy running only</label>
+  <label>Preferred time<select name="preferred_time"><option value="">Choose</option>{% for value in ['morning','midday','evening'] %}<option value="{{ value }}" {% if memory and memory.rule and memory.rule.preferred_time == value %}selected{% endif %}>{{ value|title }}</option>{% endfor %}</select></label>
+  <label>Advanced rule JSON<textarea name="rule_json" rows="2">{{ memory.rule_json if memory else '' }}</textarea></label>
+</details>
+{% endmacro %}
 {% block title %}Me{% endblock %}
 {% block content %}
 <div class="v2-me-head"><span class="eyebrow">ACCOUNT AND DATA</span><h1 class="num">Me</h1></div>
@@ -49,11 +62,54 @@
         <label><input type="checkbox" name="morning_llm" {% if messages.morning_llm %}checked{% endif %}> Use AI in morning call</label>
         <label><input type="checkbox" name="day_llm" {% if messages.day_llm %}checked{% endif %}> Use AI in day review</label>
         <label><input type="checkbox" name="weekly_llm" {% if messages.weekly_llm %}checked{% endif %}> Use AI in weekly review</label>
+        <label><input type="checkbox" name="suggest_memories_llm" {% if messages.suggest_memories_llm %}checked{% endif %}> Suggest memories from chats (uses AI)</label>
         <div class="settings-actions"><button class="button button-secondary" type="submit">Save messages</button></div>
       </form>
       <p>Worker {{ 'running' if worker_running else 'not running' }}. {{ 'Scheduled messages paused' if messages.paused else 'Scheduled messages active' }}.</p>
       <p id="backup-status" class="v2-backup-status"><span class="st">{{ icon('check') if 'OK' in last_backup else icon('clock') }} Last backup {{ last_backup }}</span><small class="cap">{{ backup_folder }}</small></p>
       <h3>Recent worker jobs</h3><ul>{% for row in worker_runs %}<li>{{ row.run_date }} · {{ row.job }} · {{ row.status }}{% if row.error %} · {{ row.error }}{% endif %}</li>{% else %}<li>No worker jobs yet.</li>{% endfor %}</ul>
+    </section>
+    <section id="coach-memory" class="settings-section"><h2>Coach memory</h2>
+      <p class="cap">Athlete-provided facts and preferences. Text is treated as data, not instructions.</p>
+      {% if pending_memories %}<h3>Pending suggestions</h3>{% for memory in pending_memories %}
+        <article class="settings-memory"><p><strong>The coach wants to remember:</strong> {{ memory.text }}</p>
+          {% if memory.suggestion_reason %}<p>{{ memory.suggestion_reason }}</p>{% endif %}
+          {% if memory.target_memory_id %}<p>Current: {{ memory.previous_text or 'No longer active' }}<br>Suggested: {{ memory.text }}</p>{% endif %}
+          <form method="post" action="/settings/memories/{{ memory.id }}/keep"><button class="btn" type="submit">Keep</button></form>
+          <details><summary>Edit</summary><form method="post" action="/settings/memories/{{ memory.id }}/edit" class="settings-form">
+            <label>Category<select name="category">{% for category in ['goal','schedule','preference','body','equipment','coaching_style','other'] %}<option value="{{ category }}" {% if memory.category == category %}selected{% endif %}>{{ category|replace('_',' ')|title }}</option>{% endfor %}</select></label>
+            <label class="settings-wide">Memory<input name="text" maxlength="200" required value="{{ memory.text }}"></label>
+            {{ memory_rule_editor(memory) }}
+            <label>End date<input type="date" name="valid_until" value="{{ memory.valid_until or '' }}"></label>
+            <div class="settings-actions"><button class="button button-secondary" type="submit">Save edit</button></div>
+          </form></details>
+          <form method="post" action="/settings/memories/{{ memory.id }}/discard"><button class="btn" type="submit">Discard</button></form>
+        </article>{% endfor %}{% endif %}
+      {% for category in ['goal','schedule','preference','body','equipment','coaching_style','other'] %}
+        {% set matching = coach_memories|selectattr('category','equalto',category)|rejectattr('status','equalto','suggested')|list %}
+        {% if matching %}<h3>{{ category|replace('_',' ')|title }}</h3>{% for memory in matching %}
+          <article id="coach-memory-{{ memory.id }}" class="settings-memory"><p>{{ memory.text }}</p>
+            {% if memory.rule_display %}<p class="cap">{{ memory.rule_display }}</p>{% endif %}
+            <p class="cap">{{ memory.source|replace('_',' ')|title }} · {{ memory.effective_status|title }}{% if memory.valid_until %} · Ends {{ memory.valid_until }}{% endif %}{% if memory.last_used_at %} · Last used {{ memory.last_used_at }}{% endif %}</p>
+            <details><summary>Edit</summary><form method="post" action="/settings/memories/{{ memory.id }}/edit" class="settings-form">
+              <label>Category<select name="category">{% for value in ['goal','schedule','preference','body','equipment','coaching_style','other'] %}<option value="{{ value }}" {% if memory.category == value %}selected{% endif %}>{{ value|replace('_',' ')|title }}</option>{% endfor %}</select></label>
+              <label class="settings-wide">Memory<input name="text" maxlength="200" required value="{{ memory.text }}"></label>
+              {{ memory_rule_editor(memory) }}
+              <label>End date<input type="date" name="valid_until" value="{{ memory.valid_until or '' }}"></label>
+              <div class="settings-actions"><button class="button button-secondary" type="submit">Save changes</button></div>
+            </form></details>
+            <form method="post" action="/settings/memories/{{ memory.id }}/{{ 'inactive' if memory.effective_status == 'active' else 'active' }}"><button class="btn" type="submit">{{ 'Deactivate' if memory.effective_status == 'active' else 'Reactivate' }}</button></form>
+            <form method="post" action="/settings/memories/{{ memory.id }}/delete" onsubmit="return confirm('Delete this memory and its history?')"><button class="btn" type="submit">Delete</button></form>
+          </article>{% endfor %}{% endif %}
+      {% endfor %}
+      {% if not coach_memories %}<p>No coach memories yet. Examples: “I prefer morning runs”, “Keep Thursdays free”, or “Avoid hills until my soreness settles”.</p>{% endif %}
+      <details><summary>Add memory</summary><form method="post" action="/settings/memories" class="settings-form">
+        <label>Category<select name="category">{% for category in ['goal','schedule','preference','body','equipment','coaching_style','other'] %}<option value="{{ category }}">{{ category|replace('_',' ')|title }}</option>{% endfor %}</select></label>
+        <label class="settings-wide">Memory<input name="text" maxlength="200" required></label>
+        {{ memory_rule_editor() }}
+        <label>End date<input type="date" name="valid_until"></label>
+        <div class="settings-actions"><button class="button button-secondary" type="submit">Add memory</button></div>
+      </form></details>
     </section>
     <section id="appearance" class="settings-section"><h2>Appearance</h2><p class="cap">Theme</p><form action="/theme" method="post"><button class="btn" type="submit" name="theme" value="{% if request.cookies.get('theme') == 'day' %}night{% else %}day{% endif %}">Switch to {{ 'night' if request.cookies.get('theme') == 'day' else 'day' }} theme</button></form></section>
     <section id="about" class="settings-section"><h2>About</h2><dl class="settings-facts"><div><dt>Version</dt><dd>{{ me.version }}</dd></div><div><dt>Licence</dt><dd>AGPL-3.0</dd></div></dl><a href="{{ me.source_url }}" rel="noopener noreferrer">Source code</a></section>
