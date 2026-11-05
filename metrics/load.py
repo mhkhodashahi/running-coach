@@ -6,7 +6,7 @@ from datetime import date, datetime, time, timedelta
 from math import exp, isfinite
 from zoneinfo import ZoneInfo
 
-from metrics.baselines import maximum_hr, resting_hr_for_session, valid
+from metrics.baselines import is_valid_measurement, maximum_hr, resting_hr_for_session
 from metrics.effort import TEAM_SPORTS, Calibration, calibrate, combined_load, scaled_session_load, sport_multipliers
 from metrics.models import Activity, HealthDay, LoadRatio, Profile, Session, SportLoad, metric
 from metrics.models import Zone as ZoneResult
@@ -34,7 +34,7 @@ def hr_intervals(activity: Activity, as_of: date, timezone: str) -> tuple[tuple[
     result = []
     for index, (point, instant) in enumerate(points):
         elapsed = point.elapsed_seconds
-        if not valid(point.heart_rate, as_of):
+        if not is_valid_measurement(point.heart_rate):
             continue
         if index + 1 < len(points):
             following, next_instant = points[index + 1]
@@ -44,13 +44,13 @@ def hr_intervals(activity: Activity, as_of: date, timezone: str) -> tuple[tuple[
                 seconds = following.elapsed_seconds - elapsed
             else:
                 continue
-        elif elapsed is not None and valid(activity.duration, as_of):
+        elif elapsed is not None and is_valid_measurement(activity.duration):
             seconds = activity.duration * 60 - elapsed
         else:
             continue
         if instant is not None:
             seconds = min(seconds, cutoff - instant)
-        if elapsed is not None and valid(activity.duration, as_of):
+        if elapsed is not None and is_valid_measurement(activity.duration):
             if elapsed < 0 or elapsed >= activity.duration * 60:
                 continue
             seconds = min(seconds, activity.duration * 60 - elapsed)
@@ -87,7 +87,7 @@ def session_metrics(activity: Activity, profile: Profile, health: tuple[HealthDa
             parts = [banister_trimp(seconds / 60, hr, resting.value, maximum.value, session_day) for seconds, hr in intervals]
             if all(part is not None for part in parts):
                 load = sum(parts)
-        elif valid(activity.avg_hr, as_of) and valid(activity.duration, as_of):
+        elif is_valid_measurement(activity.avg_hr) and is_valid_measurement(activity.duration):
             load = banister_trimp(activity.duration, activity.avg_hr, resting.value, maximum.value, session_day)
     sport = sport_category(activity.type, as_of)
     load, effort_method = scaled_session_load(sport, load, activity.rpe, activity.duration,

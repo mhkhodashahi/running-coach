@@ -3,22 +3,20 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 from collections import defaultdict
 from datetime import date, datetime, timedelta
-from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import create_engine
-from sqlalchemy.orm import Session
-
-from coach.agent import CoachAgent, _user_lock
+from coach.agent import CoachAgent
 from coach.planning import propose_opinion_recommendations
+from coach.runtime import user_job_lock
 from coach.tools import CoachTools
 from config import Settings
 from db.models import User
+from db.repositories.activity import ActivityRepository
+from db.session import session_scope
 from llm.factory import get_llm_client
 from metrics import get_daily_snapshot
 from metrics.sports import RECOMMENDABLE_SPORTS, sport_category
@@ -72,13 +70,6 @@ def evidence_source_label(source: str) -> str:
     return "Training data"
 
 
-def _db(database: Path) -> sqlite3.Connection:
-    connection = sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True)
-    connection.row_factory = sqlite3.Row
-    connection.execute("PRAGMA query_only=ON")
-    return connection
-
-
 def _local_day(settings: Settings) -> date:
     return datetime.now(ZoneInfo(settings.local_timezone)).date()
 
@@ -108,11 +99,11 @@ def _week_start(day: date) -> date:
     return day - timedelta(days=day.weekday())
 
 
-def _sport(row: sqlite3.Row) -> str:
+def _sport(row: dict[str, Any]) -> str:
     return sport_category(row["type"], date.fromisoformat(row["date"]))
 
 
-def _display_sport(row: sqlite3.Row) -> str:
+def _display_sport(row: dict[str, Any]) -> str:
     category = _sport(row)
     return category.title() if category != "other" else row["type"].replace("_", " ").title()
 
@@ -124,16 +115,9 @@ def list_context(settings: Settings, *, sport: str | None = None, start: date | 
         raise ValueError("Unknown sport filter")
     if page < 1 or page > 10000 or (start and end and start > end):
         raise ValueError("Invalid activity range or page")
-    with _db(settings.db_path) as connection:
-        rows = connection.execute(
-            "SELECT a.*,e.rpe, i.id AS opinion_id FROM activities a "
-            "LEFT JOIN activity_efforts e ON e.activity_id=a.id "
-            "LEFT JOIN activity_coaching_insights i ON i.activity_id=a.id AND i.user_id=a.user_id "
-            "WHERE a.user_id=? AND (? IS NULL OR a.date>=?) AND (? IS NULL OR a.date<=?) "
-            "ORDER BY a.date DESC,a.id DESC",
-            (settings.default_user_id, start.isoformat() if start else None, start.isoformat() if start else None,
-             end.isoformat() if end else None, end.isoformat() if end else None)).fetchall()
-    def visible(row: sqlite3.Row) -> bool:
+    with session_scope(settings.db_url) as session:
+        rows = ActivityRepository(session).list_rows(settings.default_user_id, start, end)
+    def visible(row: dict[str, Any]) -> bool:
         category = _sport(row)
         walking = row["type"].strip().lower() == "walking"
         if category in ("excluded", "mobility") or (walking and not show_walks and sport != "walking"):
@@ -146,7 +130,7 @@ def list_context(settings: Settings, *, sport: str | None = None, start: date | 
     weeks: dict[date, list[dict[str, Any]]] = defaultdict(list)
     snapshot_cache: dict[date, dict[int, Any]] = {}
 
-    def session_for(row: sqlite3.Row) -> Any:
+    def session_for(row: dict[str, Any]) -> Any:
         day = date.fromisoformat(row["date"])
         if day not in snapshot_cache:
             snapshot = get_daily_snapshot(day, database=settings.db_path, user_id=settings.default_user_id,
@@ -172,7 +156,7 @@ def list_context(settings: Settings, *, sport: str | None = None, start: date | 
             "rpe": row["rpe"], "opinion": row["opinion_id"] is not None,
             **row_view,
         })
-    all_weeks: dict[date, list[sqlite3.Row]] = defaultdict(list)
+    all_weeks: dict[date, list[dict[str, Any]]] = defaultdict(list)
     for row in filtered:
         all_weeks[_week_start(date.fromisoformat(row["date"]))].append(row)
     groups = []
@@ -195,20 +179,7 @@ def list_context(settings: Settings, *, sport: str | None = None, start: date | 
             "sync": sync}
 
 
-def _first_time(connection: sqlite3.Connection, activity_id: int, day: date) -> str | None:
-    row = connection.execute("SELECT MIN(start_time) FROM activity_laps WHERE activity_id=?", (activity_id,)).fetchone()
-    raw = row[0] if row else None
-    if raw is None:
-        row = connection.execute("SELECT MIN(timestamp) FROM activity_track_points WHERE activity_id=?",
-                                 (activity_id,)).fetchone()
-        raw = row[0] if row else None
-    if raw is None:
-        return None
-    stamp = datetime.fromisoformat(raw)
-    return stamp.strftime("%H:%M") if stamp.date() == day else None
-
-
-def _stats(row: sqlite3.Row, session: Any,
+def _stats(row: dict[str, Any], session: Any,
            cadence: tuple[float | None, float | None],
            effort_label: str | None = None) -> list[tuple[str, str | None]]:
     sport = _sport(row)
@@ -250,11 +221,9 @@ def _similar(settings: Settings, activity_id: int) -> list[dict[str, Any]]:
     except ValueError:
         return []
     items = []
-    with _db(settings.db_path) as connection:
-        details = {row["id"]: row for row in connection.execute(
-            "SELECT id,duration,date FROM activities WHERE user_id=? AND id IN (" +
-            ",".join("?" for _ in result["sessions"]) + ")",
-            (settings.default_user_id, *(item["activity_id"] for item in result["sessions"]))).fetchall()} if result["sessions"] else {}
+    with session_scope(settings.db_url) as session:
+        details = ActivityRepository(session).session_summaries(
+            settings.default_user_id, [item["activity_id"] for item in result["sessions"]])
     for row in result["sessions"][:5]:
         facts = {fact["id"].removeprefix(f"ACT_{row['activity_id']}_"): fact["display"]
                  for fact in row["facts"]}
@@ -278,37 +247,20 @@ def _similar(settings: Settings, activity_id: int) -> list[dict[str, Any]]:
 
 
 def detail_context(settings: Settings, activity_id: int, *, from_page: str = "activities") -> dict[str, Any]:
-    with _db(settings.db_path) as connection:
-        row = connection.execute("SELECT a.*,e.rpe FROM activities a LEFT JOIN activity_efforts e "
-                                 "ON e.activity_id=a.id WHERE a.id=? AND a.user_id=?",
-                                 (activity_id, settings.default_user_id)).fetchone()
-        if row is None:
-            raise ValueError("Activity not found")
-        day = date.fromisoformat(row["date"])
-        laps = [dict(item) for item in connection.execute(
-            "SELECT lap_index,lap_type,distance,duration,pace,avg_hr,avg_cadence FROM activity_laps "
-            "WHERE activity_id=? ORDER BY lap_index", (activity_id,))]
-        exercise_sets = ([dict(item) for item in connection.execute(
-            "SELECT set_index,set_type,duration_seconds,repetition_count,weight_grams,exercises_json "
-            "FROM activity_exercise_sets WHERE activity_id=? ORDER BY set_index", (activity_id,))]
-            if _sport(row) == "gym" else [])
-        points = [dict(item) for item in connection.execute(
-            "SELECT elapsed_seconds,heart_rate FROM activity_track_points WHERE activity_id=? "
-            "AND heart_rate IS NOT NULL ORDER BY point_index", (activity_id,))]
-        cadence = connection.execute("SELECT MIN(avg_cadence),MAX(avg_cadence) FROM activity_laps "
-                                     "WHERE activity_id=? AND distance>=0.9", (activity_id,)).fetchone()
-        user = connection.execute("SELECT max_hr,age FROM users WHERE id=?", (settings.default_user_id,)).fetchone()
-        opinion_row = connection.execute("SELECT * FROM activity_coaching_insights WHERE activity_id=? AND user_id=?",
-                                         (activity_id, settings.default_user_id)).fetchone()
-        calls = connection.execute("SELECT COUNT(*) FROM coach_llm_calls WHERE user_id=? AND local_day=?",
-                                   (settings.default_user_id, _local_day(settings).isoformat())).fetchone()[0]
-        prev_row = connection.execute("SELECT id FROM activities WHERE user_id=? AND "
-                                      "(date<? OR (date=? AND id<?)) ORDER BY date DESC,id DESC LIMIT 1",
-                                      (settings.default_user_id, row["date"], row["date"], activity_id)).fetchone()
-        next_row = connection.execute("SELECT id FROM activities WHERE user_id=? AND "
-                                      "(date>? OR (date=? AND id>?)) ORDER BY date,id LIMIT 1",
-                                      (settings.default_user_id, row["date"], row["date"], activity_id)).fetchone()
-        clock = _first_time(connection, activity_id, day)
+    with session_scope(settings.db_url) as session:
+        detail = ActivityRepository(session).detail(settings.default_user_id, activity_id, _local_day(settings))
+    if detail is None:
+        raise ValueError("Activity not found")
+    row = detail.activity
+    day = date.fromisoformat(row["date"])
+    laps = detail.laps
+    exercise_sets = detail.exercise_sets if _sport(row) == "gym" else []
+    points = detail.heart_rate_points
+    cadence = detail.cadence_range
+    user = detail.athlete
+    opinion_row = detail.opinion
+    calls = detail.calls_today
+    clock = detail.first_time
     session = _session_snapshot(settings, day, activity_id)
     raw_opinion = load_opinion(dict(opinion_row)).model_dump() if opinion_row else None
     opinion = display_opinion(raw_opinion, json.loads(opinion_row["payload_json"]) if opinion_row else None,
@@ -318,7 +270,7 @@ def detail_context(settings: Settings, activity_id: int, *, from_page: str = "ac
                           if zone["name"].startswith(("Below Z1", "Z1", "Z2")))
                       if zones else None)
     effort_label = effort_vs_hr(row["rpe"], low_zone_share)
-    max_hr = user[0] or (220 - user[1] if user and user[1] else None) if user else None
+    max_hr = user["max_hr"] or (220 - user["age"] if user and user["age"] else None) if user else None
     bounds = (settings.hr_zones or tuple((f"Z{index}", round(low * max_hr), round(high * max_hr))
                                       for index, (low, high) in enumerate(
                                           ((.5, .6), (.6, .7), (.7, .8), (.8, .9), (.9, 1)), 1))
@@ -352,7 +304,7 @@ def detail_context(settings: Settings, activity_id: int, *, from_page: str = "ac
                          "category": _sport(row), "planned_intent": row["planned_intent"], "rpe": row["rpe"],
                          "rateable": row["type"].strip().lower() != "walking" and
                          _sport(row) not in ("excluded", "mobility")},
-            "prev_id": prev_row[0] if prev_row else None, "next_id": next_row[0] if next_row else None,
+            "prev_id": detail.previous_id, "next_id": detail.next_id,
             "stats": _stats(row, session, cadence, effort_label), "opinion": opinion,
             "opinion_meta": dict(opinion_row) if opinion_row else None,
             "review_provider": {"openai": "OpenAI", "chatgpt": "OpenAI", "ollama": "Ollama",
@@ -376,10 +328,8 @@ def detail_context(settings: Settings, activity_id: int, *, from_page: str = "ac
 def set_planned_intent(settings: Settings, activity_id: int, intent: str | None) -> None:
     if intent not in (None, *INTENTS):
         raise ValueError("Invalid planned intent")
-    with sqlite3.connect(settings.db_path) as connection:
-        changed = connection.execute("UPDATE activities SET planned_intent=? WHERE id=? AND user_id=?",
-                                     (intent, activity_id, settings.default_user_id)).rowcount
-        if changed != 1:
+    with session_scope(settings.db_url) as session:
+        if not ActivityRepository(session).set_planned_intent(settings.default_user_id, activity_id, intent):
             raise ValueError("Activity not found")
 
 
@@ -399,28 +349,20 @@ def generate_opinion(settings: Settings, activity_id: int, *, regenerate: bool, 
         raise PermissionError("Remote coaching is disabled until athlete-data sharing is approved in .env")
     client = llm or get_llm_client(settings.llm_provider, settings.openai_api_key, settings.openai_model,
                                    settings.ollama_base_url, settings.ollama_model)
-    engine = create_engine(settings.db_url)
-    try:
-        with _user_lock(settings.db_path, settings.default_user_id):
-            with Session(engine) as session:
-                user = session.get(User, settings.default_user_id)
-                if user is None:
-                    raise ValueError("Athlete not found")
-                ActivityCoachingService(settings, _CountedLLM(client, settings)).generate(
-                    session, user=user, activity_id=activity_id, regenerate=regenerate)
-                session.commit()
-    finally:
-        engine.dispose()
+    with user_job_lock(settings.db_path, settings.default_user_id):
+        with session_scope(settings.db_url) as session:
+            user = session.get(User, settings.default_user_id)
+            if user is None:
+                raise ValueError("Athlete not found")
+            ActivityCoachingService(settings, _CountedLLM(client, settings)).generate(
+                session, user=user, activity_id=activity_id, regenerate=regenerate)
 
 
 def add_recommendation(settings: Settings, activity_id: int, index: int) -> list[dict[str, Any]]:
     if index < 0:
         raise ValueError("Invalid recommendation")
-    with _db(settings.db_path) as connection:
-        activity = connection.execute("SELECT date FROM activities WHERE id=? AND user_id=?",
-                                      (activity_id, settings.default_user_id)).fetchone()
-        row = connection.execute("SELECT * FROM activity_coaching_insights WHERE activity_id=? AND user_id=?",
-                                 (activity_id, settings.default_user_id)).fetchone()
+    with session_scope(settings.db_url) as session:
+        activity, row = ActivityRepository(session).opinion_source(settings.default_user_id, activity_id)
     if activity is None or row is None:
         raise ValueError("Opinion not found")
     opinion = load_opinion(dict(row))
@@ -439,19 +381,13 @@ def add_recommendation(settings: Settings, activity_id: int, index: int) -> list
 
 
 def rate_session(settings: Settings, activity_id: int, rpe: int) -> None:
-    engine = create_engine(settings.db_url)
-    try:
-        with Session(engine) as session:
-            rate_activity(session, activity_id, settings.default_user_id, rpe, "web")
-            session.commit()
-    finally:
-        engine.dispose()
+    with session_scope(settings.db_url) as session:
+        rate_activity(session, activity_id, settings.default_user_id, rpe, "web")
 
 
 def ask_activity(settings: Settings, activity_id: int, question: str, llm: Any = None):
-    with _db(settings.db_path) as connection:
-        exists = connection.execute("SELECT 1 FROM activities WHERE id=? AND user_id=?",
-                                    (activity_id, settings.default_user_id)).fetchone()
-    if exists is None:
+    with session_scope(settings.db_url) as session:
+        exists = ActivityRepository(session).exists(settings.default_user_id, activity_id)
+    if not exists:
         raise ValueError("Activity not found")
     return TrainingChatService(settings, llm_client=llm).answer(question, settings.default_user_id, activity_id)

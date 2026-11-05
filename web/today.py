@@ -2,17 +2,14 @@
 
 from __future__ import annotations
 
-import sqlite3
 from datetime import date, datetime, timedelta
-from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import create_engine
-from sqlalchemy.orm import Session
-
 from coach.planning import propose_week
 from config import Settings
+from db.repositories.today_view import TodayViewRepository
+from db.session import session_scope
 from metrics import get_daily_snapshot
 from metrics.sports import RECOMMENDABLE_SPORTS, sport_category
 from services.coach_opinion import load_opinion
@@ -47,17 +44,10 @@ from web.view_models.today import (
 )
 
 
-def _read_only(path: Path) -> sqlite3.Connection:
-    connection = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
-    connection.row_factory = sqlite3.Row
-    return connection
-
-
 def sync_label(settings: Settings, day: date) -> str:
-    with _read_only(settings.db_path) as connection:
-        row = connection.execute("SELECT last_synced_at FROM garmin_sync_status WHERE user_id=?",
-                                 (settings.default_user_id,)).fetchone()
-    return sync_time(row[0] if row else None, day, settings.local_timezone)
+    with session_scope(f"sqlite:///file:{settings.db_path.resolve()}?mode=ro&uri=true") as session:
+        last_sync = TodayViewRepository(session).sync_time(settings.default_user_id)
+    return sync_time(last_sync, day, settings.local_timezone)
 
 
 def today_context(settings: Settings, *, day: date, llm: Any = None) -> dict[str, Any]:
@@ -71,26 +61,14 @@ def today_context(settings: Settings, *, day: date, llm: Any = None) -> dict[str
     sync = sync_label(settings, day)
     morning = brief_card(read_brief(settings.db_path, user_id, day), sync)
     timeline_notes = read_notes(settings.db_path, user_id, day - timedelta(days=14), day)
-    with _read_only(settings.db_path) as connection:
-        health = connection.execute("SELECT body_battery FROM health_metrics WHERE user_id=? AND date=?",
-                                    (user_id, decision.based_on)).fetchone()
-        body_history = connection.execute(
-            "SELECT body_battery FROM health_metrics WHERE user_id=? AND date>=? AND date<? "
-            "AND body_battery IS NOT NULL", (user_id, (date.fromisoformat(decision.based_on) - timedelta(days=7)).isoformat(),
-                                             decision.based_on)).fetchall()
-        trend_rows = connection.execute(
-            "SELECT resting_hr,hrv,sleep_duration,body_battery FROM health_metrics WHERE user_id=? "
-            "AND date<=? ORDER BY date DESC LIMIT 7", (user_id, decision.based_on)).fetchall()
-        rows = connection.execute(
-            "SELECT id,date,type,distance,duration,avg_hr FROM activities WHERE user_id=? AND date<? "
-            "ORDER BY date DESC,id DESC", (user_id, (day + timedelta(days=1)).isoformat())).fetchall()
-        latest_rows = connection.execute(
-            "SELECT a.id,a.date,a.type,a.duration,"
-            "(SELECT MIN(p.timestamp) FROM activity_track_points p WHERE p.activity_id=a.id) AS started_at,"
-            "i.payload_json,i.schema_version FROM activities a "
-            "LEFT JOIN activity_coaching_insights i ON i.activity_id=a.id AND i.user_id=a.user_id "
-            "WHERE a.user_id=? AND a.date>=? AND a.date<=? ORDER BY a.date DESC,a.id DESC LIMIT 20",
-            (user_id, (day - timedelta(days=2)).isoformat(), day.isoformat())).fetchall()
+    with session_scope(f"sqlite:///file:{settings.db_path.resolve()}?mode=ro&uri=true") as session:
+        source = TodayViewRepository(session).health_context(
+            user_id, date.fromisoformat(decision.based_on), day + timedelta(days=1), day)
+    health = source["body_battery"]
+    body_history = source["body_history"]
+    trend_rows = source["trend_rows"]
+    rows = source["activities"]
+    latest_rows = source["recent_sessions"]
     recent = []
     for row in latest_rows:
         item = dict(row)
@@ -136,16 +114,13 @@ def today_context(settings: Settings, *, day: date, llm: Any = None) -> dict[str
     plan_sessions = [{**item, "date_label": short_date(item["date"]),
                       "duration_label": display_duration(item["duration_min"])} for item in plan["sessions"]]
     recommendations = decision.sports
-    body_baseline = (sum(row[0] for row in body_history) / len(body_history)) if len(body_history) >= 4 else None
-    engine = create_engine(settings.db_url)
-    try:
-        with Session(engine) as session:
-            pending = unrated_activities(session, user_id, limit=1,
-                                         now=datetime.now(ZoneInfo(settings.local_timezone)),
-                                         timezone=settings.local_timezone)
-            unrated = pending[0] if pending else None
-    finally:
-        engine.dispose()
+    body_values = [row["body_battery"] for row in body_history]
+    body_baseline = (sum(body_values) / len(body_values)) if len(body_values) >= 4 else None
+    with session_scope(settings.db_url) as session:
+        pending = unrated_activities(session, user_id, limit=1,
+                                     now=datetime.now(ZoneInfo(settings.local_timezone)),
+                                     timezone=settings.local_timezone)
+        unrated = pending[0] if pending else None
     week_start = day - timedelta(days=day.weekday())
     week_activities = [{"id": row["id"], "date": row["date"][:10],
                         "sport": sport_category(row["type"], day)} for row in rows
@@ -177,22 +152,22 @@ def today_context(settings: Settings, *, day: date, llm: Any = None) -> dict[str
                 {"label": "Resting HR", "value": metric(current.get("resting_hr"), "bpm"),
                  "baseline": metric(baselines.get(("resting_hr", 7)), "bpm"),
                  "delta": delta(current.get("resting_hr"), baselines.get(("resting_hr", 7)), "bpm"),
-                 "sparkline": sparkline([row[0] for row in reversed(trend_rows)], "Resting HR", "heart",
+                 "sparkline": sparkline([row["resting_hr"] for row in reversed(trend_rows)], "Resting HR", "heart",
                                         baselines.get(("resting_hr", 7)))},
                 {"label": "HRV", "value": metric(current.get("hrv"), "ms"),
                  "baseline": metric(baselines.get(("hrv", 28)), "ms"),
                  "delta": delta(current.get("hrv"), baselines.get(("hrv", 28)), "ms"),
-                 "sparkline": sparkline([row[1] for row in reversed(trend_rows)], "HRV", "sleep",
+                 "sparkline": sparkline([row["hrv"] for row in reversed(trend_rows)], "HRV", "sleep",
                                         baselines.get(("hrv", 28)))},
                 {"label": "Sleep", "value": sleep_hours(current.get("sleep_duration")),
                  "baseline": sleep_hours(baselines.get(("sleep_duration", 28))),
                  "delta": delta(current.get("sleep_duration"), baselines.get(("sleep_duration", 28)), "sleep"),
-                 "sparkline": sparkline([row[2] for row in reversed(trend_rows)], "Sleep", "sleep",
+                 "sparkline": sparkline([row["sleep_duration"] for row in reversed(trend_rows)], "Sleep", "sleep",
                                         baselines.get(("sleep_duration", 28)))},
-                {"label": "Body Battery", "value": metric(health[0] if health else None),
+                {"label": "Body Battery", "value": metric(health),
                  "baseline": metric(body_baseline),
-                 "delta": delta(health[0] if health else None, body_baseline, ""),
-                 "sparkline": sparkline([row[3] for row in reversed(trend_rows)], "Body Battery", "muted",
+                 "delta": delta(health, body_baseline, ""),
+                 "sparkline": sparkline([row["body_battery"] for row in reversed(trend_rows)], "Body Battery", "muted",
                                         body_baseline)},
             ], "load_chart": load_bars(bars, snapshot.load.chronic.value / 7
                                        if snapshot.load.chronic.value is not None else None, sync,
@@ -227,13 +202,8 @@ def choose_intensity(settings: Settings, day: date, choice: str | None) -> None:
 
 
 def save_rating(settings: Settings, activity_id: int, rpe: int) -> None:
-    engine = create_engine(settings.db_url)
-    try:
-        with Session(engine) as session:
-            rate_activity(session, activity_id, settings.default_user_id, rpe, "web")
-            session.commit()
-    finally:
-        engine.dispose()
+    with session_scope(settings.db_url) as session:
+        rate_activity(session, activity_id, settings.default_user_id, rpe, "web")
 
 
 def create_week_proposal(settings: Settings, day: date, llm: Any = None) -> dict[str, Any]:

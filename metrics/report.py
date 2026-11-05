@@ -2,29 +2,29 @@
 
 import argparse
 import json
-import sqlite3
-from contextlib import closing
 from dataclasses import asdict
 from datetime import date, timedelta
 from math import isfinite
 from pathlib import Path
 
+import pandas as pd
+
+from db.repositories.metrics import MetricsRepository
+from db.session import session_scope
 from metrics.reader import get_daily_snapshot, local_day
 
 
 def compare_legacy(database: Path, user_id: int, as_of: date, timezone: str, sleep_goal_hours: float) -> list[dict]:
-    import pandas as pd
-
     from analytics.performance import readiness_score, training_load_series
 
-    with closing(sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True)) as connection:
-        connection.execute("PRAGMA query_only=ON")
-        connection.execute("BEGIN")
-        activities = pd.read_sql_query("SELECT date,type,distance,duration,avg_hr,aerobic_effect,anaerobic_effect FROM activities WHERE user_id=?", connection, params=(user_id,))
-        health = pd.read_sql_query("SELECT date,resting_hr,hrv,sleep_duration,sleep_score,body_battery,recovery_time FROM health_metrics WHERE user_id=?", connection, params=(user_id,))
-        profile = connection.execute("SELECT max_hr FROM users WHERE id=?", (user_id,)).fetchone()
-    if profile is None:
+    url = f"sqlite:///file:{database.resolve()}?mode=ro&uri=true"
+    with session_scope(url) as session:
+        rows = MetricsRepository(session).legacy_comparison_rows(user_id)
+    max_hr = rows["max_hr"]
+    if max_hr is None:
         raise ValueError(f"User {user_id} does not exist")
+    activities = pd.DataFrame(rows["activities"])
+    health = pd.DataFrame(rows["health"])
     for frame in (activities, health):
         frame["date"] = pd.to_datetime([local_day(value, timezone, as_of) for value in frame["date"]])
         for column in frame.columns.difference(["date", "type"]):
@@ -37,7 +37,7 @@ def compare_legacy(database: Path, user_id: int, as_of: date, timezone: str, sle
         old_load = training_load_series(runs)
         old_acute = float(old_load[old_load.date >= pd.Timestamp(day - timedelta(days=6))].training_load.sum())
         new = get_daily_snapshot(day, database=database, user_id=user_id, timezone=timezone, sleep_goal_hours=sleep_goal_hours)
-        old_readiness = readiness_score(runs, recovery, profile[0])["score"]
+        old_readiness = readiness_score(runs, recovery, max_hr)["score"]
         components = {component.name: component.score.value for component in new.readiness.components}
         rows.append({"date": day.isoformat(), "old_readiness": old_readiness if isfinite(old_readiness) else None,
                      "new_readiness": new.readiness.score.value, "old_7d_load_arbitrary_units": old_acute,

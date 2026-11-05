@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-import sqlite3
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
+
+from db.repositories.openai_usage import OpenAIUsageRepository
+from db.session import session_scope
 
 
 def _field(value: Any, name: str, default: Any = None) -> Any:
@@ -36,20 +38,19 @@ def record_openai_call(
                  + Decimal(cached_tokens) * (cached_input_rate or Decimal(0))
                  + Decimal(output_tokens) * output_rate) / Decimal(1_000_000))
 
-    with sqlite3.connect(db_path) as connection:
-        connection.execute(
-            """INSERT INTO openai_api_calls (
-                response_id, request_kind, model, status, input_tokens, cached_input_tokens,
-                output_tokens, total_tokens, estimated_cost_usd, input_rate_usd_per_1m,
-                cached_input_rate_usd_per_1m, output_rate_usd_per_1m, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                _field(response, "id"), request_kind, _field(response, "model") or requested_model,
-                "completed" if response is not None else "failed", input_tokens, cached_tokens,
-                output_tokens, total_tokens, str(cost) if cost is not None else None,
-                str(input_rate) if input_rate is not None else None,
-                str(cached_input_rate) if cached_input_rate is not None else None,
-                str(output_rate) if output_rate is not None else None,
-                datetime.now(UTC).isoformat(),
-            ),
+    with session_scope(f"sqlite:///{db_path.resolve()}") as session:
+        OpenAIUsageRepository(session).record_call(
+            response_id=_field(response, "id"),
+            request_kind=request_kind,
+            model=_field(response, "model") or requested_model,
+            status="completed" if response is not None else "failed",
+            input_tokens=input_tokens,
+            cached_input_tokens=cached_tokens,
+            output_tokens=output_tokens,
+            total_tokens=total_tokens,
+            estimated_cost_usd=str(cost) if cost is not None else None,
+            input_rate_usd_per_1m=str(input_rate) if input_rate is not None else None,
+            cached_input_rate_usd_per_1m=str(cached_input_rate) if cached_input_rate is not None else None,
+            output_rate_usd_per_1m=str(output_rate) if output_rate is not None else None,
+            created_at=datetime.now(UTC).replace(tzinfo=None),
         )

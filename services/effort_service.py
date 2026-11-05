@@ -5,10 +5,10 @@ from __future__ import annotations
 from datetime import UTC, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
-from db.models import Activity, ActivityEffort, ActivityEffortPrompt
+from db.models import Activity, ActivityEffort
+from db.repositories.efforts import EffortRepository
 from metrics.sports import sport_category
 
 REMINDER_DELAY = timedelta(hours=12)
@@ -22,15 +22,15 @@ def rate_activity(session: Session, activity_id: int, user_id: int, rpe: int, so
         raise ValueError("RPE must be an integer from 0 to 10")
     if source not in ("web", "telegram"):
         raise ValueError("Unknown rating source")
-    activity = session.scalar(select(Activity).where(Activity.id == activity_id, Activity.user_id == user_id))
+    repository = EffortRepository(session)
+    activity = repository.activity(activity_id, user_id)
     if activity is None:
         raise ValueError("Activity not found")
     if sport_category(activity.type, activity.date) in ("excluded", "mobility") or activity.type.strip().lower() == "walking":
         raise ValueError("This activity is not rateable")
-    effort = session.get(ActivityEffort, activity_id)
+    effort = repository.rating(activity_id)
     if effort is None:
-        effort = ActivityEffort(activity_id=activity_id)
-        session.add(effort)
+        effort = repository.add_rating(activity_id)
     effort.rpe = rpe
     effort.rated_at = (now or datetime.now(UTC)).replace(tzinfo=None)
     effort.source = source
@@ -39,11 +39,8 @@ def rate_activity(session: Session, activity_id: int, user_id: int, rpe: int, so
     return effort
 
 
-def _activity_time(session: Session, activity: Activity, timezone: str) -> datetime:
-    stamp = session.execute(text(
-        "SELECT MIN(start_time) FROM activity_laps WHERE activity_id=:id"), {"id": activity.id}).scalar()
-    stamp = stamp or session.execute(text(
-        "SELECT MIN(timestamp) FROM activity_track_points WHERE activity_id=:id"), {"id": activity.id}).scalar()
+def _activity_time(repository: EffortRepository, activity: Activity, timezone: str) -> datetime:
+    stamp = repository.activity_time(activity)
     zone = ZoneInfo(timezone)
     if stamp:
         parsed = datetime.fromisoformat(stamp)
@@ -58,12 +55,9 @@ def unrated_activities(session: Session, user_id: int, limit: int = 5, *,
     local_now = now or datetime.now(UTC)
     local_now = local_now.replace(tzinfo=zone) if local_now.tzinfo is None else local_now.astimezone(zone)
     cutoff_date = (local_now.astimezone(UTC) - RATING_PROMPT_WINDOW).astimezone(zone).date()
-    rows = session.scalars(select(Activity).outerjoin(ActivityEffort, Activity.id == ActivityEffort.activity_id)
-                           .where(Activity.user_id == user_id, ActivityEffort.activity_id.is_(None),
-                                  Activity.date >= cutoff_date,
-                                  Activity.date <= local_now.date())
-                           .order_by(Activity.date.desc(), Activity.id.desc())).all()
-    eligible = [(row, _activity_time(session, row, timezone)) for row in rows
+    repository = EffortRepository(session)
+    rows = repository.unrated_between(user_id, cutoff_date, local_now.date())
+    eligible = [(row, _activity_time(repository, row, timezone)) for row in rows
                 if sport_category(row.type, row.date) not in ("excluded", "mobility")
                 and row.type.strip().lower() != "walking"]
     eligible = [(row, started) for row, started in eligible
@@ -77,11 +71,12 @@ def prompt_candidates(session: Session, user_id: int, now: datetime,
     eligible = unrated_activities(session, user_id, limit=100, now=now, timezone=timezone)
     now = now.replace(tzinfo=None)
     result = []
-    pending_ids = set(session.scalars(select(ActivityEffortPrompt.activity_id)).all())
+    repository = EffortRepository(session)
+    pending_ids = repository.prompt_ids()
     for activity in eligible:
         if activity.id not in pending_ids:
             continue
-        prompt = session.get(ActivityEffortPrompt, activity.id)
+        prompt = repository.prompt(activity.id)
         if prompt.sent_at is None:
             result.append((activity, False))
         elif prompt.reminded_at is None and now - prompt.sent_at >= REMINDER_DELAY:
@@ -91,7 +86,7 @@ def prompt_candidates(session: Session, user_id: int, now: datetime,
 
 def mark_prompt_sent(session: Session, activity_id: int, reminder: bool, now: datetime) -> None:
     now = now.replace(tzinfo=None)
-    prompt = session.get(ActivityEffortPrompt, activity_id)
+    prompt = EffortRepository(session).prompt(activity_id)
     if reminder:
         if prompt is None or prompt.reminded_at is not None or now - prompt.sent_at < REMINDER_DELAY:
             raise ValueError("Reminder is not due")
@@ -104,13 +99,14 @@ def mark_prompt_sent(session: Session, activity_id: int, reminder: bool, now: da
 
 def queue_new_activities(session: Session, activity_ids: set[int]) -> None:
     for activity_id in activity_ids:
-        activity = session.get(Activity, activity_id)
+        repository = EffortRepository(session)
+        activity = repository.activity_by_id(activity_id)
         if activity is None or sport_category(activity.type, activity.date) in ("excluded", "mobility"):
             continue
         if activity.type.strip().lower() == "walking":
             continue
-        if session.get(ActivityEffortPrompt, activity_id) is None:
-            session.add(ActivityEffortPrompt(activity_id=activity_id))
+        if repository.prompt(activity_id) is None:
+            repository.add_prompt(activity_id)
 
 
 def dispatch_effort_prompts(settings: object, user_id: int, telegram: object) -> int:
@@ -123,12 +119,7 @@ def dispatch_effort_prompts(settings: object, user_id: int, telegram: object) ->
     with session_scope() as session:
         for activity, reminder in prompt_candidates(session, user_id, datetime.now(UTC),
                                                     settings.local_timezone):
-            first = session.execute(text(
-                "SELECT MIN(start_time) FROM activity_laps WHERE activity_id=:id"),
-                {"id": activity.id}).scalar()
-            first = first or session.execute(text(
-                "SELECT MIN(timestamp) FROM activity_track_points WHERE activity_id=:id"),
-                {"id": activity.id}).scalar()
+            first = EffortRepository(session).activity_time(activity)
             clock = " time unavailable"
             if first:
                 stamp = datetime.fromisoformat(first)

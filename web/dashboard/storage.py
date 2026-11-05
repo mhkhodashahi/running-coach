@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from db.repositories.dashboard_widgets import DashboardWidgetRepository
+from db.session import session_scope
 
 CHART_IDS = (
     "planned_vs_done", "intensity_share", "best_efforts", "pace_vs_hr_easy",
@@ -70,45 +72,24 @@ def defaults() -> list[Widget]:
 
 
 def read_widgets(database: Path, user_id: int) -> list[Widget]:
-    with sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True) as connection:
-        rows = connection.execute("SELECT id,chart_id,config_json FROM dashboard_widgets "
-                                  "WHERE user_id=? ORDER BY position", (user_id,)).fetchall()
-    if rows and rows[0][1] == "__empty__":
+    url = f"sqlite:///file:{database.resolve()}?mode=ro&uri=true"
+    with session_scope(url) as session:
+        rows = DashboardWidgetRepository(session).list(user_id)
+    if rows and rows[0]["chart_id"] == "__empty__":
         return []
-    return ([Widget.model_validate({"id": row[0], "chart_id": row[1], "options": json.loads(row[2])})
+    return ([Widget.model_validate({"id": row["id"], "chart_id": row["chart_id"],
+                                    "options": json.loads(row["config_json"])})
              for row in rows] if rows else defaults())
 
 
 def save_widgets(database: Path, user_id: int, widgets: list[Widget]) -> list[Widget]:
     if len(widgets) > MAX_WIDGETS:
         raise ValueError(f"At most {MAX_WIDGETS} charts are allowed")
-    now = datetime.now(UTC).replace(tzinfo=None).isoformat()
-    with sqlite3.connect(database) as connection:
-        connection.execute("BEGIN IMMEDIATE")
-        old = {row[0]: row[1] for row in connection.execute(
-            "SELECT id,created_at FROM dashboard_widgets WHERE user_id=?", (user_id,))}
-        next_id = connection.execute("SELECT COALESCE(MAX(id),0)+1 FROM dashboard_widgets").fetchone()[0]
-        connection.execute("DELETE FROM dashboard_widgets WHERE user_id=?", (user_id,))
-        saved = []
-        if not widgets:
-            connection.execute("INSERT INTO dashboard_widgets "
-                               "(user_id,position,chart_id,config_json,created_at,updated_at) "
-                               "VALUES(?,0,'__empty__','{}',?,?)", (user_id, now, now))
-        for position, widget in enumerate(widgets):
-            payload = json.dumps(widget.options.model_dump(mode="json"), separators=(",", ":"))
-            created = old.get(widget.id, now)
-            if widget.id in old:
-                connection.execute("INSERT INTO dashboard_widgets "
-                                   "(id,user_id,position,chart_id,config_json,created_at,updated_at) "
-                                   "VALUES(?,?,?,?,?,?,?)",
-                                   (widget.id, user_id, position, widget.chart_id, payload, created, now))
-                saved.append(widget)
-            else:
-                assigned_id = next_id
-                next_id += 1
-                cursor = connection.execute("INSERT INTO dashboard_widgets "
-                                            "(id,user_id,position,chart_id,config_json,created_at,updated_at) "
-                                            "VALUES(?,?,?,?,?,?,?)",
-                                            (assigned_id, user_id, position, widget.chart_id, payload, now, now))
-                saved.append(widget.model_copy(update={"id": cursor.lastrowid}))
-    return saved
+    now = datetime.now(UTC).replace(tzinfo=None)
+    data = [{"id": widget.id, "chart_id": widget.chart_id,
+             "config_json": json.dumps(widget.options.model_dump(mode="json"), separators=(",", ":"))}
+            for widget in widgets]
+    with session_scope(f"sqlite:///{database.resolve()}") as session:
+        saved = DashboardWidgetRepository(session).replace(user_id, data, now)
+    return [Widget.model_validate({"id": item["id"], "chart_id": item["chart_id"],
+                                   "options": json.loads(item["config_json"])}) for item in saved]

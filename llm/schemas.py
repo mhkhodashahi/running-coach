@@ -307,3 +307,26 @@ class ActiveIntelligenceResponseSchema(BaseModel):
     insights: list[ActiveIntelligenceInsightSchema] = Field(default_factory=list)
     next_check_in: str = Field(default="")
     limitations: list[str] = Field(default_factory=list)
+
+
+STRUCTURED_RESPONSE_SCHEMAS = frozenset({
+    CoachOpinionV2,
+    CoachOpinionV21,
+    OpinionDraftV22,
+    OpinionDraftV23,
+    OpinionDraftV26,
+    OpinionDraftV3,
+    MorningBriefDraft,
+})
+
+
+def supports_structured_response(schema: type[BaseModel] | None) -> bool:
+    """Whether provider adapters should send a JSON schema for this contract."""
+    return schema in STRUCTURED_RESPONSE_SCHEMAS
+
+
+def openai_schema(schema: type[BaseModel]) -> type[BaseModel]:
+    """Return provider-compatible schema variant where strict mode needs one."""
+    if schema is CoachOpinionV2:
+        return OpenAICoachOpinionV2
+    return schema

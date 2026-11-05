@@ -17,8 +17,8 @@ from coach.agent import (
     _model_visible,
     _trend_fallback,
     _unsupported_answer_numbers,
-    _user_lock,
 )
+from coach.runtime import user_job_lock
 from config import get_settings
 from db.migration_runner import upgrade_database
 
@@ -220,7 +220,7 @@ def test_daily_limit_counts_retries_and_user_lock_blocks_concurrency(agent_db):
         coach.answer("Why so hard?")
     with sqlite3.connect(agent_db) as connection:
         assert connection.execute("SELECT count(*) FROM coach_llm_calls").fetchone() == (1,)
-    with _user_lock(agent_db, 1), pytest.raises(RuntimeError, match="already running"):
+    with user_job_lock(agent_db, 1), pytest.raises(RuntimeError, match="already running"):
         agent(agent_db, ScriptedModel()).answer("Another question")
 
 

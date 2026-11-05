@@ -6,7 +6,6 @@ import hashlib
 import json
 import math
 import re
-import sqlite3
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, date, datetime, time, timedelta
@@ -17,7 +16,7 @@ from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from coach.agent import CoachAgent, _read_version, _user_lock
+from coach.agent import CoachAgent
 from coach.decision import (
     RECENT_RECOVERY_WINDOW,
     SPORT_WINDOW,
@@ -34,7 +33,10 @@ from coach.decision import (
     team_options,
 )
 from coach.guardrails import GuardrailContext, guardrail_errors
+from coach.runtime import require_current_database, user_job_lock
 from config import Settings, get_settings
+from db.repositories.decisions import DailyDecisionRepository
+from db.session import session_scope
 from llm.base import NullLLMClient
 from llm.factory import get_llm_client
 from metrics import get_daily_snapshot
@@ -92,34 +94,19 @@ class DailyDecision:
     weekly_limit_reason: str | None = None
 
 
-def _read_only(database: Path) -> sqlite3.Connection:
-    connection = sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True)
-    connection.row_factory = sqlite3.Row
-    connection.execute("PRAGMA query_only=ON")
-    return connection
-
-
 def _fact(fact_id: str, metric: str, display: str, source: str) -> dict[str, str]:
     return {"id": fact_id, "metric": metric, "display": display, "source": source}
 
 
-def _session_time(connection: sqlite3.Connection, activity_id: int, day: date, timezone: str) -> datetime:
-    row = connection.execute("SELECT MIN(timestamp) FROM activity_track_points WHERE activity_id=?", (activity_id,)).fetchone()
-    if row and row[0]:
-        stamp = datetime.fromisoformat(row[0])
+def _session_time(first_point: str | None, day: date, timezone: str) -> datetime:
+    if first_point:
+        stamp = datetime.fromisoformat(first_point)
         return stamp.replace(tzinfo=ZoneInfo(timezone)) if stamp.tzinfo is None else stamp.astimezone(ZoneInfo(timezone))
     return datetime.combine(day, time.min, ZoneInfo(timezone))
 
 
-def _recent_sessions(connection: sqlite3.Connection, user_id: int, requested: date, timezone: str,
+def _recent_sessions(rows: list[dict[str, Any]], requested: date, timezone: str,
                      snapshot: Any) -> tuple[PriorSession, ...]:
-    rows = connection.execute(
-        "SELECT a.id,a.date,a.type,a.planned_intent,i.payload_json,e.rpe FROM activities a "
-        "LEFT JOIN activity_coaching_insights i ON i.activity_id=a.id "
-        "LEFT JOIN activity_efforts e ON e.activity_id=a.id "
-        "WHERE a.user_id=? AND a.date>=? AND a.date<=? ORDER BY a.date,a.id",
-        (user_id, (requested - timedelta(days=7)).isoformat(), requested.isoformat()),
-    ).fetchall()
     by_id = {item.activity_id: item for item in snapshot.sessions}
     sessions = []
     for row in rows:
@@ -141,7 +128,7 @@ def _recent_sessions(connection: sqlite3.Connection, user_id: int, requested: da
                 detected = "race"
             elif z34 >= 60:
                 detected = "tempo"
-        sessions.append(PriorSession(_session_time(connection, row["id"], date.fromisoformat(row["date"]), timezone),
+        sessions.append(PriorSession(_session_time(row["first_point"], date.fromisoformat(row["date"]), timezone),
                                      sport, detected, z4_share, row["rpe"]))
     return tuple(sessions)
 
@@ -156,10 +143,9 @@ def _weekly_budget(database: Path, user_id: int, requested: date, snapshot: Any,
     model = load_model(database, user_id, start, settings)
     if model.cap is None:
         return None, None, None, model
-    with _read_only(database) as connection:
-        types = {row["id"]: row["type"] for row in connection.execute(
-            "SELECT id,type FROM activities WHERE user_id=? AND date>=? AND date<=?",
-            (user_id, start.isoformat(), requested.isoformat()))}
+    url = f"sqlite:///file:{database.resolve()}?mode=ro&uri=true"
+    with session_scope(url) as session:
+        types = DailyDecisionRepository(session).week_activity_types(user_id, start, requested)
     actual = [item.load.value for item in snapshot.sessions if start.isoformat() <= item.day <= requested.isoformat()
               and item.activity_id in types and types[item.activity_id].strip().lower() != "walking"
               and item.sport not in ("excluded", "mobility")]
@@ -176,46 +162,37 @@ def build_daily_decision(requested: date, database: Path, user_id: int, timezone
                          sleep_goal_hours: float, hr_zones: tuple[tuple[str, int, int | None], ...] = (),
                          settings: Settings | None = None) -> DailyDecision:
     """Read the DB but never write it; all rankings and intensity come from code."""
-    with _read_only(database) as connection:
-        rows = connection.execute("SELECT date,sleep_duration,hrv FROM health_metrics "
-                                  "WHERE user_id=? AND date<=? ORDER BY date DESC", (user_id, requested.isoformat()))
-        health = tuple((date.fromisoformat(row[0]), row[1], row[2]) for row in rows)
-        based_on, provisional = provisional_day(requested, health)
-        sync = connection.execute("SELECT last_synced_at FROM garmin_sync_status WHERE user_id=?", (user_id,)).fetchone()
-        sync_display = "never synced"
-        if sync and sync[0]:
-            stamp = datetime.fromisoformat(sync[0])
-            sync_display = (stamp.replace(tzinfo=UTC) if stamp.tzinfo is None else stamp).astimezone(
-                ZoneInfo(timezone)).strftime("%Y-%m-%d %H:%M %Z")
-        snapshot = get_daily_snapshot(based_on, database=database, user_id=user_id,
-                                      timezone=timezone, sleep_goal_hours=sleep_goal_hours, hr_zones=hr_zones)
-        # The date-only activity fallback is midnight; no later activity can influence an earlier decision.
-        session_snapshot = (snapshot if based_on == requested else
-                            get_daily_snapshot(requested, database=database, user_id=user_id,
-                                               timezone=timezone, sleep_goal_hours=sleep_goal_hours,
-                                               hr_zones=hr_zones))
-        sessions = _recent_sessions(connection, user_id, requested, timezone, session_snapshot)
-        user = connection.execute("SELECT max_hr,age FROM users WHERE id=?", (user_id,)).fetchone()
-        fixed_teams = connection.execute(
-            "SELECT f.sport FROM fixed_commitments f WHERE f.user_id=? AND f.weekday=? AND f.active=1 "
-            "AND NOT EXISTS (SELECT 1 FROM plan_sessions p WHERE p.user_id=f.user_id "
-            "AND p.fixed_commitment_id=f.id AND p.date=? AND p.status='skipped')",
-            (user_id, requested.weekday(), requested.isoformat())).fetchall()
-        planned_teams = connection.execute("SELECT sport FROM plan_sessions WHERE user_id=? AND date=? "
-                                           "AND sport IN ('football','volleyball') AND status='planned'",
-                                           (user_id, requested.isoformat())).fetchall()
-        active_goal = connection.execute(
-            "SELECT goal_type,target_distance_km FROM goals WHERE user_id=? AND is_active=1 LIMIT 1",
-            (user_id,)).fetchone()
-        running_goal = bool(active_goal and active_goal[0] in
-                            ('running_pb', 'marathon_pb', '5k_pb', '10k_pb', 'half_marathon_pb'))
-        memory_rows = connection.execute(
-            "SELECT id,text,rule_json FROM coach_memories WHERE user_id=? AND status='active' "
-            "AND valid_from<=? AND (valid_until IS NULL OR valid_until>=?) ORDER BY created_at DESC LIMIT 30",
-            (user_id, requested.isoformat(), requested.isoformat())).fetchall()
-        memory_rules = [(row[0], row[1], json.loads(row[2])) for row in memory_rows if row[2]]
+    url = f"sqlite:///file:{database.resolve()}?mode=ro&uri=true"
+    with session_scope(url) as session:
+        context = DailyDecisionRepository(session).inputs(user_id, requested)
+    health = tuple((date.fromisoformat(row["date"]), row["sleep_duration"], row["hrv"])
+                   for row in context["health"])
+    based_on, provisional = provisional_day(requested, health)
+    sync = context["last_synced_at"]
+    sync_display = "never synced"
+    if sync:
+        stamp = datetime.fromisoformat(sync)
+        sync_display = (stamp.replace(tzinfo=UTC) if stamp.tzinfo is None else stamp).astimezone(
+            ZoneInfo(timezone)).strftime("%Y-%m-%d %H:%M %Z")
+    snapshot = get_daily_snapshot(based_on, database=database, user_id=user_id,
+                                  timezone=timezone, sleep_goal_hours=sleep_goal_hours, hr_zones=hr_zones)
+    # The date-only activity fallback is midnight; no later activity can influence an earlier decision.
+    session_snapshot = (snapshot if based_on == requested else
+                        get_daily_snapshot(requested, database=database, user_id=user_id,
+                                           timezone=timezone, sleep_goal_hours=sleep_goal_hours,
+                                           hr_zones=hr_zones))
+    sessions = _recent_sessions(context["recent_activities"], requested, timezone, session_snapshot)
+    user = context["profile"]
+    fixed_teams = context["fixed_teams"]
+    planned_teams = context["planned_teams"]
+    active_goal = context["active_goal"]
+    running_goal = bool(active_goal and active_goal["goal_type"] in
+                        ('running_pb', 'marathon_pb', '5k_pb', '10k_pb', 'half_marathon_pb'))
+    memory_rows = context["memories"]
+    memory_rules = [(row["id"], row["text"], json.loads(row["rule_json"]))
+                    for row in memory_rows if row["rule_json"]]
     now = datetime.combine(requested + timedelta(days=1), time.min, ZoneInfo(timezone))
-    scheduled_teams = tuple(dict.fromkeys(row[0] for row in (*fixed_teams, *planned_teams)))
+    scheduled_teams = tuple(dict.fromkeys(row["sport"] for row in (*fixed_teams, *planned_teams)))
     recent = tuple(item for item in sessions if item.when < now)
     readiness = snapshot.readiness.score.value
     load_ratio = snapshot.load.ratio.value
@@ -223,7 +200,7 @@ def build_daily_decision(requested: date, database: Path, user_id: int, timezone
     intensity = decide_intensity(illness, readiness, load_ratio, recent, now)
     if health and any(sleep is not None and hrv is not None for _, sleep, hrv in health):
         intensity = cap_stale_intensity(intensity, requested, based_on)
-    max_hr = user[0] or (220 - user[1] if user and user[1] else None) if user else None
+    max_hr = user["max_hr"] or (220 - user["age"] if user and user["age"] else None) if user else None
     z2_cap = None
     if hr_zones:
         z2_cap = hr_zones[1][2] if len(hr_zones) >= 2 else None
@@ -334,7 +311,8 @@ def build_daily_decision(requested: date, database: Path, user_id: int, timezone
                            f"health_metrics.{field} - {days}-day baseline"))
     if active_goal:
         facts.append(_fact("ACTIVE_GOAL", "Active goal",
-                           f"{active_goal[1]:g} km {active_goal[0].replace('_', ' ')}",
+                           f"{active_goal['target_distance_km']:g} km "
+                           f"{active_goal['goal_type'].replace('_', ' ')}",
                            "goals.goal_type,target_distance_km"))
     for sport in RECOMMENDABLE_SPORTS:
         count = sum(now - SPORT_WINDOW <= item.when < now and item.sport == sport for item in recent)
@@ -520,18 +498,17 @@ def get_or_create_daily_decision(day: date, *, settings: Settings | None = None,
                                  on_explanation_error: Callable[[int, str], None] | None = None) -> DailyDecision:
     """Recompute on changed inputs; store immutable coach choice and separate athlete override."""
     settings = settings or get_settings()
-    _read_version(settings.db_path)
+    require_current_database(settings.db_path)
     user_id = user_id or settings.default_user_id
-    with _user_lock(settings.db_path, user_id):
+    with user_job_lock(settings.db_path, user_id):
         candidate = build_daily_decision(day, settings.db_path, user_id, settings.local_timezone,
                                          settings.sleep_goal_hours, settings.hr_zones, settings)
         fingerprint = hashlib.sha256(json.dumps({"candidate": asdict(candidate),
                                                  "prompt_version": PROMPT_VERSION}, sort_keys=True).encode()).hexdigest()
-        with sqlite3.connect(settings.db_path) as connection:
-            old = connection.execute("SELECT payload_json FROM coaching_decisions WHERE user_id=? AND "
-                                     "decision_type='daily_v2' AND decision_date=? ORDER BY id DESC LIMIT 1",
-                                     (user_id, day.isoformat())).fetchone()
-        previous = json.loads(old[0]) if old else {}
+        url = f"sqlite:///{settings.db_path.resolve()}"
+        with session_scope(url) as session:
+            old = DailyDecisionRepository(session).latest(user_id, day)
+        previous = json.loads(old["payload_json"]) if old else {}
         if previous.get("input_hash") == fingerprint:
             cached = with_fallback(DailyDecision(**previous["decision"]))
             from coach.planning import propose_daily_conflict
@@ -551,13 +528,12 @@ def get_or_create_daily_decision(day: date, *, settings: Settings | None = None,
         decision = replace(decision, athlete_choice=previous.get("athlete_choice"))
         payload = {"decision": asdict(decision), "athlete_choice": decision.athlete_choice,
                    "input_hash": fingerprint, "prompt_version": PROMPT_VERSION}
-        with sqlite3.connect(settings.db_path) as connection:
-            connection.execute("INSERT INTO coaching_decisions "
-                               "(user_id,goal_id,decision_type,decision_date,summary,risk_level,payload_json,created_at) "
-                               "VALUES(?,NULL,'daily_v2',?,?,?,?,?)",
-                               (user_id, day.isoformat(), decision.headline,
-                                "high" if decision.intensity == "rest" else "moderate" if decision.intensity == "easy" else "low",
-                                json.dumps(payload), datetime.now(UTC).replace(tzinfo=None).isoformat()))
+        with session_scope(url) as session:
+            DailyDecisionRepository(session).save(
+                user_id, day, decision.headline,
+                "high" if decision.intensity == "rest" else "moderate" if decision.intensity == "easy" else "low",
+                json.dumps(payload), datetime.now(UTC).replace(tzinfo=None),
+            )
         from coach.planning import propose_daily_conflict
 
         propose_daily_conflict(day, decision.intensity, list(decision.facts), settings=settings, user_id=user_id)
@@ -570,16 +546,9 @@ def set_athlete_choice(day: date, choice: str | None, *, settings: Settings | No
         raise ValueError("Athlete choice must be rest, easy, hard or none")
     settings = settings or get_settings()
     user_id = user_id or settings.default_user_id
-    with sqlite3.connect(settings.db_path) as connection:
-        connection.execute("BEGIN IMMEDIATE")
-        row = connection.execute("SELECT id,payload_json FROM coaching_decisions WHERE user_id=? AND "
-                                 "decision_type='daily_v2' AND decision_date=? ORDER BY id DESC LIMIT 1",
-                                 (user_id, day.isoformat())).fetchone()
-        if row is None:
-            raise ValueError("Daily decision has not been generated")
-        payload = json.loads(row[1])
-        payload["athlete_choice"] = choice
-        payload["decision"]["athlete_choice"] = choice
-        connection.execute("UPDATE coaching_decisions SET payload_json=? WHERE id=?",
-                           (json.dumps(payload), row[0]))
-    return DailyDecision(**payload["decision"])
+    url = f"sqlite:///{settings.db_path.resolve()}"
+    with session_scope(url) as session:
+        decision = DailyDecisionRepository(session).save_athlete_choice(user_id, day, choice)
+    if decision is None:
+        raise ValueError("Daily decision has not been generated")
+    return DailyDecision(**decision)

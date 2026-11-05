@@ -1,11 +1,11 @@
-"""Read-only SQLite boundary; never imports setup, sessions, migrations or LLMs."""
+"""Translate repository rows into immutable metric inputs and snapshots."""
 
-import sqlite3
-from contextlib import closing
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from db.repositories.metrics import MetricsRepository
+from db.session import session_scope
 from metrics.models import Activity, DailySnapshot, HealthDay, Inputs, Profile, TrackPoint
 from metrics.snapshot import build_daily_snapshot
 
@@ -21,38 +21,45 @@ def local_day(value: str, timezone: str, as_of: date) -> date:
 def read_inputs(database: Path, user_id: int, as_of: date, timezone: str,
                 point_lookback_days: int | None = 28) -> Inputs:
     zone = ZoneInfo(timezone)
-    with closing(sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True)) as connection:
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA query_only=ON")
-        connection.execute("BEGIN")
-        has_efforts = connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='activity_efforts'").fetchone() is not None
-        efforts = ({row[0]: row[1] for row in connection.execute(
-            "SELECT e.activity_id,e.rpe FROM activity_efforts e JOIN activities a ON a.id=e.activity_id "
-            "WHERE a.user_id=? AND a.date<=?", (user_id, as_of.isoformat()))} if has_efforts else {})
-        row = connection.execute("SELECT id, max_hr, age FROM users WHERE id=?", (user_id,)).fetchone()
+    url = f"sqlite:///file:{database.resolve()}?mode=ro&uri=true"
+    with session_scope(url) as session:
+        repository = MetricsRepository(session)
+        row = repository.profile(user_id)
         if row is None:
             raise ValueError(f"User {user_id} does not exist")
-        profile = Profile(row["id"], row["max_hr"], row["age"])
-        health = tuple(HealthDay(local_day(r["date"], timezone, as_of), r["resting_hr"], r["hrv"], r["sleep_duration"])
-                       for r in connection.execute("SELECT date, resting_hr, hrv, sleep_duration FROM health_metrics WHERE user_id=? ORDER BY date", (user_id,))
-                       if local_day(r["date"], timezone, as_of) <= as_of)
-        activities = []
-        for row in connection.execute("SELECT id, date, type, duration, avg_hr FROM activities WHERE user_id=? ORDER BY date,id", (user_id,)).fetchall():
-            day = local_day(row["date"], timezone, as_of)
-            if day > as_of:
-                continue
-            points = []
-            if (point_lookback_days is None or day >= as_of - timedelta(days=point_lookback_days - 1)
-                    or row["id"] in efforts):
-                for point in connection.execute("SELECT point_index, elapsed_seconds, heart_rate, timestamp FROM activity_track_points WHERE activity_id=? ORDER BY point_index", (row["id"],)):
-                    stamp = datetime.fromisoformat(point["timestamp"]) if point["timestamp"] else None
-                    if stamp is not None:
-                        stamp = stamp.replace(tzinfo=zone) if stamp.tzinfo is None else stamp.astimezone(zone)
-                        if stamp.date() > as_of:
-                            continue
-                    points.append(TrackPoint(point["point_index"], point["elapsed_seconds"], point["heart_rate"], stamp))
-            activities.append(Activity(row["id"], day, row["type"], row["duration"], row["avg_hr"],
-                                       tuple(points), efforts.get(row["id"])))
+        raw_health = repository.health_rows(user_id)
+        raw_activities = repository.activity_rows(user_id)
+        all_efforts = repository.effort_ratings(user_id)
+        dated_activities = [(row, local_day(row["date"], timezone, as_of)) for row in raw_activities]
+        included = [(row, day) for row, day in dated_activities if day <= as_of]
+        included_ids = {row["id"] for row, _ in included}
+        efforts = {identifier: rating for identifier, rating in all_efforts.items()
+                   if identifier in included_ids}
+        point_ids = [row["id"] for row, day in included if
+                     point_lookback_days is None
+                     or day >= as_of - timedelta(days=point_lookback_days - 1)
+                     or row["id"] in efforts]
+        raw_points = repository.track_points(point_ids)
+    profile = Profile(row["id"], row["max_hr"], row["age"])
+    health = tuple(
+        HealthDay(local_day(item["date"], timezone, as_of), item["resting_hr"], item["hrv"],
+                  item["sleep_duration"])
+        for item in raw_health
+        if local_day(item["date"], timezone, as_of) <= as_of
+    )
+    activities = []
+    for item, day in included:
+        points = []
+        for point in raw_points.get(item["id"], []):
+            stamp = datetime.fromisoformat(point["timestamp"]) if point["timestamp"] else None
+            if stamp is not None:
+                stamp = stamp.replace(tzinfo=zone) if stamp.tzinfo is None else stamp.astimezone(zone)
+                if stamp.date() > as_of:
+                    continue
+            points.append(TrackPoint(point["point_index"], point["elapsed_seconds"],
+                                     point["heart_rate"], stamp))
+        activities.append(Activity(item["id"], day, item["type"], item["duration"], item["avg_hr"],
+                                   tuple(points), efforts.get(item["id"])))
     return Inputs(profile, health, tuple(activities))
 
 

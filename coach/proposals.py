@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import re
-import sqlite3
 import warnings
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -15,6 +14,8 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from db.repositories.plan import PlanRepository
+from db.session import session_scope
 from metrics.sports import sport_category
 from services.number_verifier import verify_numbers
 
@@ -35,35 +36,25 @@ def monday(day: date) -> date:
 
 
 @contextmanager
-def _db(database: Path) -> Iterator[sqlite3.Connection]:
-    connection = sqlite3.connect(database, timeout=30)
-    connection.row_factory = sqlite3.Row
-    connection.execute("PRAGMA foreign_keys=ON")
-    try:
-        with connection:
-            yield connection
-    finally:
-        connection.close()
+def _repository(database: Path, *, immediate: bool = False) -> Iterator[PlanRepository]:
+    with session_scope(f"sqlite:///{database.resolve()}") as session:
+        repository = PlanRepository(session)
+        if immediate:
+            session.connection().exec_driver_sql("BEGIN IMMEDIATE")
+        yield repository
 
 
-def _version(connection: sqlite3.Connection, user_id: int) -> int:
-    row = connection.execute("SELECT version FROM plan_versions WHERE user_id=?", (user_id,)).fetchone()
-    return row[0] if row else 0
+def _version(repository: PlanRepository, user_id: int) -> int:
+    return repository.version(user_id)
 
 
-def _bump(connection: sqlite3.Connection, user_id: int) -> int:
-    connection.execute("INSERT INTO plan_versions(user_id,version) VALUES(?,1) "
-                       "ON CONFLICT(user_id) DO UPDATE SET version=version+1", (user_id,))
-    return _version(connection, user_id)
+def _bump(repository: PlanRepository, user_id: int) -> int:
+    return repository.bump_version(user_id)
 
 
-def _rows(connection: sqlite3.Connection, user_id: int, start: date) -> list[dict[str, Any]]:
-    end = start + timedelta(days=7)
-    sessions = [dict(row) for row in connection.execute(
-        "SELECT * FROM plan_sessions WHERE user_id=? AND date>=? AND date<? ORDER BY date,id",
-        (user_id, start.isoformat(), end.isoformat()))]
-    for row in connection.execute("SELECT * FROM plan_mobility_sessions WHERE user_id=? AND date>=? AND date<? "
-                                  "ORDER BY date,id", (user_id, start.isoformat(), end.isoformat())):
+def _rows(repository: PlanRepository, user_id: int, start: date) -> list[dict[str, Any]]:
+    sessions = repository.week_sessions(user_id, start)
+    for row in repository.week_mobility_sessions(user_id, start):
         item = dict(row)
         item["id"] = -item["id"]
         item["linked_activity_id"] = None
@@ -72,11 +63,11 @@ def _rows(connection: sqlite3.Connection, user_id: int, start: date) -> list[dic
     return sorted(sessions, key=lambda item: (item["date"], item["id"]))
 
 
-def _virtual_fixed(connection: sqlite3.Connection, user_id: int, start: date,
+def _virtual_fixed(repository: PlanRepository, user_id: int, start: date,
                    existing: list[dict[str, Any]]) -> list[dict[str, Any]]:
     materialized = {row["fixed_commitment_id"] for row in existing}
     result = []
-    for row in connection.execute("SELECT * FROM fixed_commitments WHERE user_id=? AND active=1", (user_id,)):
+    for row in repository.fixed_commitments(user_id, active_only=True):
         if row["id"] in materialized:
             continue
         result.append({"id": None, "user_id": user_id,
@@ -89,7 +80,7 @@ def _virtual_fixed(connection: sqlite3.Connection, user_id: int, start: date,
     return result
 
 
-def _virtual_protected(connection: sqlite3.Connection, user_id: int, start: date,
+def _virtual_protected(repository: PlanRepository, user_id: int, start: date,
                        existing: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Project recurring athlete habits to stable non-team days, one per day."""
     team_days = {item["date"] for item in existing if item.get("origin") == "fixed" and
@@ -97,8 +88,7 @@ def _virtual_protected(connection: sqlite3.Connection, user_id: int, start: date
     order = (0, 2, 4, 6, 1, 3, 5)
     available = [start + timedelta(days=offset) for offset in order]
     available.sort(key=lambda day: day.isoformat() in team_days)
-    habits = connection.execute("SELECT * FROM protected_habits WHERE user_id=? AND active=1 ORDER BY id",
-                                (user_id,)).fetchall()
+    habits = repository.protected_habits(user_id, active_only=True)
     if sum(row["per_week"] for row in habits) > 7:
         raise ValueError("More than seven protected sessions cannot fit in one week")
     result = []
@@ -133,30 +123,26 @@ def match_completed_sessions(sessions: list[dict[str, Any]],
 
 def get_week(database: Path, user_id: int, start: date) -> dict[str, Any]:
     start = monday(start)
-    with _db(database) as connection:
-        sessions = _rows(connection, user_id, start)
-        sessions.extend(_virtual_fixed(connection, user_id, start, sessions))
-        sessions.extend(_virtual_protected(connection, user_id, start, sessions))
+    with _repository(database) as repository:
+        sessions = _rows(repository, user_id, start)
+        sessions.extend(_virtual_fixed(repository, user_id, start, sessions))
+        sessions.extend(_virtual_protected(repository, user_id, start, sessions))
         sessions.sort(key=lambda item: (item["date"], item["id"] or 0))
-        end = start + timedelta(days=7)
         activities = [{"id": row["id"], "date": str(row["date"])[:10],
-                       "sport": sport_category(row["type"], start)} for row in connection.execute(
-            "SELECT id,date,type FROM activities WHERE user_id=? AND date>=? AND date<? ORDER BY date,id",
-            (user_id, start.isoformat(), end.isoformat()))]
+                       "sport": sport_category(row["type"], start)}
+                      for row in repository.week_activities(user_id, start)]
         sessions = match_completed_sessions(sessions, activities)
-        return {"week_start": start.isoformat(), "version": _version(connection, user_id), "sessions": sessions}
+        return {"week_start": start.isoformat(), "version": _version(repository, user_id), "sessions": sessions}
 
 
 def list_commitments(database: Path, user_id: int) -> list[dict[str, Any]]:
-    with _db(database) as connection:
-        return [dict(row) for row in connection.execute(
-            "SELECT * FROM fixed_commitments WHERE user_id=? ORDER BY weekday,start_time,id", (user_id,))]
+    with _repository(database) as repository:
+        return repository.fixed_commitments(user_id)
 
 
 def list_protected_habits(database: Path, user_id: int) -> list[dict[str, Any]]:
-    with _db(database) as connection:
-        return [dict(row) for row in connection.execute(
-            "SELECT * FROM protected_habits WHERE user_id=? ORDER BY id", (user_id,))]
+    with _repository(database) as repository:
+        return repository.protected_habits(user_id)
 
 
 def save_protected_habit(database: Path, user_id: int, *, sport: str, intent: str,
@@ -166,43 +152,37 @@ def save_protected_habit(database: Path, user_id: int, *, sport: str, intent: st
         raise ValueError("Invalid protected sport or intent")
     if not 15 <= duration_min <= 300 or not 1 <= per_week <= 7:
         raise ValueError("Protected duration must be 15-300 minutes and frequency 1-7 per week")
-    with _db(database) as connection:
-        connection.execute("BEGIN IMMEDIATE")
-        existing = connection.execute("SELECT id,per_week FROM protected_habits WHERE user_id=? AND active=1",
-                                      (user_id,)).fetchall()
+    with _repository(database, immediate=True) as repository:
+        existing = repository.protected_habit_counts(user_id)
         total = sum(row["per_week"] for row in existing if row["id"] != habit_id) + (per_week if active else 0)
         if total > 7:
             raise ValueError("Protected habits cannot exceed seven sessions per week")
         if habit_id is None:
-            cursor = connection.execute("INSERT INTO protected_habits(user_id,sport,intent,duration_min,per_week,active) "
-                                        "VALUES(?,?,?,?,?,?)",
-                                        (user_id, sport, intent, duration_min, per_week, int(active)))
-            habit_id = int(cursor.lastrowid)
+            habit_id = repository.insert_protected_habit(
+                user_id, sport, intent, duration_min, per_week, active
+            )
         else:
-            cursor = connection.execute("UPDATE protected_habits SET sport=?,intent=?,duration_min=?,per_week=?,"
-                                        "active=? WHERE id=? AND user_id=?",
-                                        (sport, intent, duration_min, per_week, int(active), habit_id, user_id))
-            if cursor.rowcount != 1:
+            if not repository.update_protected_habit(
+                    user_id, habit_id, sport, intent, duration_min, per_week, active):
                 raise ValueError("Protected habit not found")
-        _bump(connection, user_id)
+        _bump(repository, user_id)
     return habit_id
 
 
-def _materialize(connection: sqlite3.Connection, user_id: int, start: date) -> int:
-    existing = _rows(connection, user_id, start)
-    missing = _virtual_fixed(connection, user_id, start, existing)
+def _materialize(repository: PlanRepository, user_id: int, start: date) -> int:
+    existing = _rows(repository, user_id, start)
+    missing = _virtual_fixed(repository, user_id, start, existing)
     for item in missing:
-        _insert_session(connection, item)
+        _insert_session(repository, item)
     return len(missing)
 
 
 def materialize_week(database: Path, user_id: int, start: date) -> int:
     """Create dated copies of recurring commitments before drafting a week."""
-    with _db(database) as connection:
-        connection.execute("BEGIN IMMEDIATE")
-        added = _materialize(connection, user_id, monday(start))
+    with _repository(database, immediate=True) as repository:
+        added = _materialize(repository, user_id, monday(start))
         if added:
-            _bump(connection, user_id)
+            _bump(repository, user_id)
         return added
 
 
@@ -223,26 +203,10 @@ def _validate_session(item: dict[str, Any]) -> None:
         raise ValueError("Non-training mobility is not linked as a logged activity")
 
 
-def _insert_session(connection: sqlite3.Connection, item: dict[str, Any]) -> int:
+def _insert_session(repository: PlanRepository, item: dict[str, Any]) -> int:
     _validate_session(item)
     stamp = _now()
-    if item["sport"] == "mobility":
-        cursor = connection.execute(
-            "INSERT INTO plan_mobility_sessions(user_id,date,sport,intent,duration_min,hr_cap_bpm,notes,origin,"
-            "status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-            (item["user_id"], item["date"], "mobility", "recovery", item["duration_min"], None,
-             item.get("notes"), item["origin"], item.get("status", "planned"), stamp, stamp))
-        return -int(cursor.lastrowid)
-    cursor = connection.execute(
-        "INSERT INTO plan_sessions(user_id,date,sport,intent,duration_min,hr_cap_bpm,notes,origin,status,"
-        "linked_activity_id,fixed_commitment_id,workout_type,workout_json,created_at,updated_at) "
-        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        (item["user_id"], item["date"], item["sport"], item["intent"], item["duration_min"],
-         item.get("hr_cap_bpm"), item.get("notes"), item["origin"], item.get("status", "planned"),
-         item.get("linked_activity_id"), item.get("fixed_commitment_id"), item.get("workout_type"),
-         json.dumps(item["workout"]) if item.get("workout") is not None else item.get("workout_json"),
-         stamp, stamp))
-    return int(cursor.lastrowid)
+    return repository.insert_session(item, stamp)
 
 
 def save_commitment(database: Path, user_id: int, *, weekday: int, start_time: str,
@@ -252,34 +216,26 @@ def save_commitment(database: Path, user_id: int, *, weekday: int, start_time: s
         raise ValueError("Invalid fixed team commitment")
     if not 15 <= duration_min <= 300:
         raise ValueError("Invalid commitment duration")
-    with _db(database) as connection:
-        connection.execute("BEGIN IMMEDIATE")
+    with _repository(database, immediate=True) as repository:
         if commitment_id is None:
-            cursor = connection.execute(
-                "INSERT INTO fixed_commitments(user_id,weekday,start_time,sport,kind,typical_duration_min,active) "
-                "VALUES(?,?,?,?,?,?,?)", (user_id, weekday, start_time, sport, kind, duration_min, int(active)))
-            commitment_id = int(cursor.lastrowid)
+            commitment_id = repository.insert_fixed_commitment(
+                user_id, weekday, start_time, sport, kind, duration_min, active
+            )
         else:
-            old = connection.execute("SELECT active FROM fixed_commitments WHERE id=? AND user_id=?",
-                                     (commitment_id, user_id)).fetchone()
+            old = repository.fixed_commitment(user_id, commitment_id)
             if old is None:
                 raise ValueError("Commitment not found")
-            cursor = connection.execute(
-                "UPDATE fixed_commitments SET weekday=?,start_time=?,sport=?,kind=?,typical_duration_min=?,active=? "
-                "WHERE id=? AND user_id=?", (weekday, start_time, sport, kind, duration_min, int(active),
-                                              commitment_id, user_id))
-            if cursor.rowcount != 1:
+            if not repository.update_fixed_commitment(
+                    user_id, commitment_id, weekday, start_time, sport, kind, duration_min, active):
                 raise ValueError("Commitment not found")
-            existing = connection.execute("SELECT id,date,status FROM plan_sessions WHERE user_id=? "
-                                          "AND fixed_commitment_id=? AND status!='done'",
-                                          (user_id, commitment_id)).fetchall()
+            existing = repository.commitment_sessions(user_id, commitment_id)
             for planned in existing:
                 moved = monday(date.fromisoformat(planned["date"])) + timedelta(days=weekday)
                 status = "skipped" if not active else "planned" if not old["active"] else planned["status"]
-                connection.execute("UPDATE plan_sessions SET date=?,sport=?,intent=?,duration_min=?,status=?,"
-                                   "updated_at=? WHERE id=?", (moved.isoformat(), sport, kind,
-                                                                duration_min, status, _now(), planned["id"]))
-        _bump(connection, user_id)
+                repository.update_committed_session(
+                    user_id, planned["id"], moved, sport, kind, duration_min, status, _now()
+                )
+        _bump(repository, user_id)
     return commitment_id
 
 
@@ -287,38 +243,28 @@ def manual_session(database: Path, user_id: int, item: dict[str, Any], *, sessio
     """Direct athlete edit; fixed sessions and logged sessions are immutable here."""
     item = {**item, "user_id": user_id, "origin": "athlete", "status": "planned"}
     _validate_session(item)
-    with _db(database) as connection:
-        connection.execute("BEGIN IMMEDIATE")
+    with _repository(database, immediate=True) as repository:
         if session_id is None:
-            session_id = _insert_session(connection, item)
+            session_id = _insert_session(repository, item)
         else:
-            row = connection.execute("SELECT origin,status FROM plan_sessions WHERE id=? AND user_id=?",
-                                     (session_id, user_id)).fetchone()
+            row = repository.planned_session(user_id, session_id)
             if row is None or row["origin"] == "fixed" or row["status"] == "done":
                 raise ValueError("Fixed or logged sessions cannot be edited here")
-            connection.execute("UPDATE plan_sessions SET date=?,sport=?,intent=?,duration_min=?,hr_cap_bpm=?,"
-                               "notes=?,workout_type=NULL,workout_json=NULL,updated_at=? WHERE id=? AND user_id=?",
-                               (item["date"], item["sport"], item["intent"], item["duration_min"],
-                                item.get("hr_cap_bpm"), item.get("notes"), _now(), session_id, user_id))
-        _bump(connection, user_id)
+            repository.update_plan_session(user_id, session_id, item, _now(), include_workout=False)
+        _bump(repository, user_id)
     return session_id
 
 
 def skip_manual_session(database: Path, user_id: int, session_id: int) -> None:
     """Athlete removes an unlogged non-fixed session from the active plan."""
-    with _db(database) as connection:
-        connection.execute("BEGIN IMMEDIATE")
-        cursor = connection.execute("UPDATE plan_sessions SET status='skipped',updated_at=? WHERE id=? "
-                                    "AND user_id=? AND origin!='fixed' AND status='planned'",
-                                    (_now(), session_id, user_id))
-        if cursor.rowcount != 1:
+    with _repository(database, immediate=True) as repository:
+        if not repository.skip_plan_session(user_id, session_id, _now()):
             raise ValueError("Only an unlogged non-fixed session can be skipped")
-        _bump(connection, user_id)
+        _bump(repository, user_id)
 
 
-def _proposal_view(connection: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any]:
-    changes = [dict(change) for change in connection.execute(
-        "SELECT * FROM proposal_changes WHERE proposal_id=? ORDER BY id", (row["id"],))]
+def _proposal_view(repository: PlanRepository, row: dict[str, Any]) -> dict[str, Any]:
+    changes = repository.proposal_changes(row["id"])
     for change in changes:
         change["session"] = json.loads(change.pop("session_json"))
         change["fact_ids"] = json.loads(change.pop("fact_ids_json"))
@@ -327,29 +273,23 @@ def _proposal_view(connection: sqlite3.Connection, row: sqlite3.Row) -> dict[str
     result = dict(row)
     result["facts"] = json.loads(result.pop("facts_json"))
     result["changes"] = changes
-    if result["status"] == "pending" and result["base_version"] != _version(connection, result["user_id"]):
+    if result["status"] == "pending" and result["base_version"] != _version(repository, result["user_id"]):
         result["status"] = "stale"
     return result
 
 
 def get_proposal(database: Path, user_id: int, proposal_id: int) -> dict[str, Any]:
-    with _db(database) as connection:
-        row = connection.execute("SELECT * FROM coach_proposals WHERE id=? AND user_id=?",
-                                 (proposal_id, user_id)).fetchone()
+    with _repository(database) as repository:
+        row = repository.proposal(user_id, proposal_id)
         if row is None:
             raise ValueError("Proposal not found")
-        return _proposal_view(connection, row)
+        return _proposal_view(repository, row)
 
 
 def list_proposals(database: Path, user_id: int, start: date) -> list[dict[str, Any]]:
-    end = start + timedelta(days=7)
-    with _db(database) as connection:
-        rows = connection.execute("SELECT DISTINCT p.* FROM coach_proposals p JOIN proposal_changes c "
-                                  "ON c.proposal_id=p.id WHERE p.user_id=? AND "
-                                  "json_extract(c.session_json,'$.date')>=? AND "
-                                  "json_extract(c.session_json,'$.date')<? ORDER BY p.id DESC LIMIT 20",
-                                  (user_id, start.isoformat(), end.isoformat())).fetchall()
-        return [_proposal_view(connection, row) for row in rows]
+    with _repository(database) as repository:
+        rows = repository.proposals_for_week(user_id, start)
+        return [_proposal_view(repository, row) for row in rows]
 
 
 def _validate_changes(kind: str, facts: list[dict[str, str]], changes: list[dict[str, Any]]) -> None:
@@ -382,35 +322,20 @@ def _validate_changes(kind: str, facts: list[dict[str, str]], changes: list[dict
             raise ValueError("Invalid proposal group ID")
 
 
-def _insert_proposal(connection: sqlite3.Connection, user_id: int, kind: str, summary: str,
+def _insert_proposal(repository: PlanRepository, user_id: int, kind: str, summary: str,
                      facts: list[dict[str, str]], changes: list[dict[str, Any]], version: int) -> int:
-    cursor = connection.execute("INSERT INTO coach_proposals(user_id,kind,base_version,status,summary,"
-                                "facts_json,created_at) VALUES(?,?,?,'pending',?,?,?)",
-                                (user_id, kind, version, summary, json.dumps(facts), _now()))
-    proposal_id = int(cursor.lastrowid)
-    for index, change in enumerate(changes, start=1):
-        connection.execute("INSERT INTO proposal_changes(proposal_id,change_type,session_json,reason,"
-                           "fact_ids_json,decision,group_id,workout_type,workout_json) "
-                           "VALUES(?,?,?,?,?,'pending',?,?,?)",
-                           (proposal_id, change["change_type"], json.dumps(change["session"]),
-                            change["reason"], json.dumps(change["fact_ids"]),
-                            change.get("group_id") or f"change-{index}",
-                            change["session"].get("workout_type"),
-                            json.dumps(change["session"]["workout"])
-                            if change["session"].get("workout") is not None else None))
-    return proposal_id
+    return repository.insert_proposal(user_id, kind, summary, facts, changes, version, _now())
 
 
 def create_proposal(database: Path, user_id: int, kind: str, summary: str,
                     facts: list[dict[str, str]], changes: list[dict[str, Any]], *,
                     base_version: int | None = None) -> dict[str, Any]:
     _validate_changes(kind, facts, changes)
-    with _db(database) as connection:
-        connection.execute("BEGIN IMMEDIATE")
-        current = _version(connection, user_id)
+    with _repository(database, immediate=True) as repository:
+        current = _version(repository, user_id)
         if base_version is not None and base_version != current:
             raise ValueError("Plan changed while drafting; request a fresh proposal")
-        proposal_id = _insert_proposal(connection, user_id, kind, summary, facts, changes, current)
+        proposal_id = _insert_proposal(repository, user_id, kind, summary, facts, changes, current)
     result = get_proposal(database, user_id, proposal_id)
     _notify_created(database, user_id, summary)
     return result
@@ -439,19 +364,16 @@ def _public_row(row: dict[str, Any]) -> dict[str, Any]:
 def apply(database: Path, user_id: int, proposal_id: int, accepted_change_ids: list[int]) -> dict[str, Any]:
     """One transaction: stale check, snapshot, selected edits, decisions, version bump."""
     selected = set(accepted_change_ids)
-    with _db(database) as connection:
-        connection.execute("BEGIN IMMEDIATE")
-        proposal = connection.execute("SELECT * FROM coach_proposals WHERE id=? AND user_id=?",
-                                      (proposal_id, user_id)).fetchone()
+    with _repository(database, immediate=True) as repository:
+        proposal = repository.proposal(user_id, proposal_id)
         if proposal is None or proposal["status"] != "pending":
             raise ValueError("Proposal is not pending")
-        current = _version(connection, user_id)
+        current = _version(repository, user_id)
         if current != proposal["base_version"]:
-            connection.execute("UPDATE coach_proposals SET status='stale' WHERE id=?", (proposal_id,))
-            connection.commit()
+            repository.mark_stale(proposal_id)
+            repository.commit()
             raise ValueError("Proposal is stale because the plan changed. Request a fresh proposal.")
-        changes = connection.execute("SELECT * FROM proposal_changes WHERE proposal_id=? ORDER BY id",
-                                     (proposal_id,)).fetchall()
+        changes = repository.proposal_changes(proposal_id)
         ids = {row["id"] for row in changes}
         if selected - ids:
             raise ValueError("Unknown change ID")
@@ -478,9 +400,9 @@ def apply(database: Path, user_id: int, proposal_id: int, accepted_change_ids: l
                 decisions[day] = build_daily_decision(day, database, user_id, settings.local_timezone,
                                                       settings.sleep_goal_hours, settings.hr_zones).intensity
             for start, proposed in by_week.items():
-                before = _rows(connection, user_id, start)
-                before.extend(_virtual_fixed(connection, user_id, start, before))
-                before.extend(_virtual_protected(connection, user_id, start, before))
+                before = _rows(repository, user_id, start)
+                before.extend(_virtual_fixed(repository, user_id, start, before))
+                before.extend(_virtual_protected(repository, user_id, start, before))
                 candidate = apply_draft(before, proposed, allow_fixed_daily=proposal["kind"] == "change")
                 for change in proposed:
                     item = change["session"]
@@ -511,57 +433,41 @@ def apply(database: Path, user_id: int, proposal_id: int, accepted_change_ids: l
                 continue
             item = json.loads(row["session_json"])
             start = monday(date.fromisoformat(item["date"]))
-            affected.setdefault(start.isoformat(), _rows(connection, user_id, start))
+            affected.setdefault(start.isoformat(), _rows(repository, user_id, start))
             target = None
             if row["change_type"] != "add":
-                table = "plan_mobility_sessions" if int(item.get("id") or 0) < 0 else "plan_sessions"
-                target_id = -item["id"] if table == "plan_mobility_sessions" else item.get("id")
-                target = connection.execute(f"SELECT * FROM {table} WHERE id=? AND user_id=?",
-                                            (target_id, user_id)).fetchone()
+                target = repository.any_session(user_id, int(item.get("id") or 0))
                 if target is None or target["status"] == "done":
                     raise ValueError("Target session is missing or logged")
                 if row["change_type"] == "modify" and item["date"] != target["date"]:
                     raise ValueError("Moving a session requires remove and add changes")
             if row["change_type"] == "add":
-                _insert_session(connection, {**item, "user_id": user_id, "origin": "coach"})
+                _insert_session(repository, {**item, "user_id": user_id, "origin": "coach"})
             elif row["change_type"] == "modify":
                 _validate_session(item)
-                workout_columns = "" if table == "plan_mobility_sessions" else "workout_type=?,workout_json=?,"
-                values = (item["sport"], item["intent"], item["duration_min"], item.get("hr_cap_bpm"),
-                          item.get("notes"), item.get("status", target["status"]))
-                if workout_columns:
-                    values += (item.get("workout_type"), json.dumps(item["workout"])
-                               if item.get("workout") is not None else item.get("workout_json"))
-                connection.execute(f"UPDATE {table} SET sport=?,intent=?,duration_min=?,hr_cap_bpm=?,"
-                                   f"notes=?,status=?,{workout_columns}updated_at=? WHERE id=? AND user_id=?",
-                                   (*values, _now(), target_id, user_id))
+                if item["sport"] == "mobility":
+                    repository.update_mobility_session(user_id, -int(item["id"]), item, _now())
+                else:
+                    repository.update_plan_session(user_id, int(item["id"]), item, _now())
             else:
-                connection.execute(f"UPDATE {table} SET status='skipped',updated_at=? WHERE id=? AND user_id=?",
-                                   (_now(), target_id, user_id))
+                repository.change_plan_session_status(user_id, int(item["id"]), "skipped", _now())
         if selected:
-            new_version = _bump(connection, user_id)
+            new_version = _bump(repository, user_id)
             snapshot = {start: {"before": [_public_row(item) for item in before],
-                                "after": [_public_row(item) for item in _rows(connection, user_id, date.fromisoformat(start))]}
+                                "after": [_public_row(item) for item in _rows(repository, user_id, date.fromisoformat(start))]}
                         for start, before in affected.items()}
-            connection.execute("INSERT INTO plan_snapshots(user_id,version_before,version_after,snapshot_json,"
-                               "reason,created_at) VALUES(?,?,?,?,?,?)",
-                               (user_id, current, new_version, json.dumps(snapshot, sort_keys=True),
-                                f"coach proposal {proposal_id}", _now()))
-        for row in changes:
-            connection.execute("UPDATE proposal_changes SET decision=? WHERE id=?",
-                               ("accepted" if row["id"] in selected else "rejected", row["id"]))
+            repository.save_snapshot(user_id, current, new_version, json.dumps(snapshot, sort_keys=True),
+                                     f"coach proposal {proposal_id}", _now())
+        repository.proposal_changes_decisions(proposal_id, changes, selected)
         status = ("applied" if len(selected) == len(changes) else "partially_applied" if selected else "dismissed")
-        connection.execute("UPDATE coach_proposals SET status=? WHERE id=?", (status, proposal_id))
+        repository.update_proposal_status(proposal_id, status)
     return get_proposal(database, user_id, proposal_id)
 
 
 def dismiss(database: Path, user_id: int, proposal_id: int) -> None:
-    with _db(database) as connection:
-        cursor = connection.execute("UPDATE coach_proposals SET status='dismissed' "
-                                    "WHERE id=? AND user_id=? AND status='pending'", (proposal_id, user_id))
-        if cursor.rowcount != 1:
+    with _repository(database) as repository:
+        if not repository.mark_dismissed(user_id, proposal_id):
             raise ValueError("Proposal is not pending")
-        connection.execute("UPDATE proposal_changes SET decision='rejected' WHERE proposal_id=?", (proposal_id,))
 
 
 def request_revision(database: Path, user_id: int, proposal_id: int, text: str,
@@ -569,17 +475,15 @@ def request_revision(database: Path, user_id: int, proposal_id: int, text: str,
     """Store revised draft; caller supplies validated replacements from the planner."""
     if not 1 <= len(text.strip()) <= 500:
         raise ValueError("Give a short revision request")
-    with _db(database) as connection:
-        connection.execute("BEGIN IMMEDIATE")
-        old = connection.execute("SELECT * FROM coach_proposals WHERE id=? AND user_id=?",
-                                 (proposal_id, user_id)).fetchone()
-        if old is None or old["status"] != "pending" or old["base_version"] != _version(connection, user_id):
+    with _repository(database, immediate=True) as repository:
+        old = repository.proposal(user_id, proposal_id)
+        if old is None or old["status"] != "pending" or old["base_version"] != _version(repository, user_id):
             raise ValueError("Proposal is stale or no longer pending")
         facts = json.loads(old["facts_json"])
         _validate_changes(old["kind"], facts, replacement)
-        new_id = _insert_proposal(connection, user_id, old["kind"], text.strip(), facts,
+        new_id = _insert_proposal(repository, user_id, old["kind"], text.strip(), facts,
                                   replacement, old["base_version"])
-        connection.execute("UPDATE coach_proposals SET status='superseded' WHERE id=?", (proposal_id,))
+        repository.mark_superseded(proposal_id)
     result = get_proposal(database, user_id, new_id)
     _notify_created(database, user_id, text.strip())
     return result
@@ -587,15 +491,13 @@ def request_revision(database: Path, user_id: int, proposal_id: int, text: str,
 
 def undo_last(database: Path, user_id: int) -> dict[str, Any]:
     """Restore only affected plan rows when unchanged since approval."""
-    with _db(database) as connection:
-        connection.execute("BEGIN IMMEDIATE")
-        record = connection.execute("SELECT * FROM plan_snapshots WHERE user_id=? AND undone_at IS NULL "
-                                    "ORDER BY id DESC LIMIT 1", (user_id,)).fetchone()
+    with _repository(database, immediate=True) as repository:
+        record = repository.latest_snapshot(user_id)
         if record is None:
             raise ValueError("No coach changes to undo")
         snapshot = json.loads(record["snapshot_json"])
         for start, state in snapshot.items():
-            current = [_public_row(item) for item in _rows(connection, user_id, date.fromisoformat(start))]
+            current = [_public_row(item) for item in _rows(repository, user_id, date.fromisoformat(start))]
             before = {item["id"]: item for item in state["before"]}
             after = {item["id"]: item for item in state["after"]}
             current_by_id = {item["id"]: item for item in current}
@@ -608,52 +510,18 @@ def undo_last(database: Path, user_id: int) -> dict[str, Any]:
             for key in before.keys() | after.keys():
                 if before.get(key) == after.get(key):
                     continue
-                table = "plan_mobility_sessions" if key < 0 else "plan_sessions"
-                target_id = -key if key < 0 else key
                 if key not in before:
-                    connection.execute(f"DELETE FROM {table} WHERE id=? AND user_id=?", (target_id, user_id))
+                    repository.delete_session(user_id, key)
                 elif key not in after:
-                    restored = before[key]
-                    if key < 0:
-                        fields = ("user_id", "date", "sport", "intent", "duration_min", "hr_cap_bpm",
-                                  "notes", "origin", "status")
-                        connection.execute("INSERT INTO plan_mobility_sessions(id," + ",".join(fields) +
-                                           ",created_at,updated_at) VALUES(" +
-                                           ",".join("?" for _ in range(len(fields) + 3)) + ")",
-                                           (target_id, *(restored[field] for field in fields), _now(), _now()))
-                    else:
-                        columns = ",".join(SESSION_FIELDS)
-                        connection.execute(f"INSERT INTO plan_sessions({columns},created_at,updated_at) "
-                                           f"VALUES({','.join('?' for _ in SESSION_FIELDS)},?,?)",
-                                           (*(restored[field] for field in SESSION_FIELDS), _now(), _now()))
+                    repository.restore_session(user_id, before[key], _now())
                 else:
-                    restored = before[key]
-                    if key < 0:
-                        connection.execute("UPDATE plan_mobility_sessions SET duration_min=?,notes=?,status=?,"
-                                           "updated_at=? WHERE id=? AND user_id=?",
-                                           (restored["duration_min"], restored["notes"], restored["status"],
-                                            _now(), target_id, user_id))
-                    else:
-                        connection.execute("UPDATE plan_sessions SET sport=?,intent=?,duration_min=?,hr_cap_bpm=?,"
-                                           "notes=?,status=?,linked_activity_id=?,workout_type=?,workout_json=?,"
-                                           "updated_at=? WHERE id=? AND user_id=?",
-                                           (restored["sport"], restored["intent"], restored["duration_min"],
-                                            restored["hr_cap_bpm"], restored["notes"], restored["status"],
-                                            restored["linked_activity_id"], restored["workout_type"],
-                                            restored["workout_json"], _now(), target_id, user_id))
-        connection.execute("UPDATE plan_snapshots SET undone_at=? WHERE id=?", (_now(), record["id"]))
-        version = _bump(connection, user_id)
+                    repository.restore_existing_session(user_id, key, before[key], _now())
+        repository.mark_snapshot_undone(record["id"], _now())
+        version = _bump(repository, user_id)
     return {"undone_snapshot_id": record["id"], "version": version}
 
 
-def link_activity(connection: Any, user_id: int, activity_id: int, day: date, sport: str) -> bool:
-    """Use the import transaction; never change the logged activity."""
-    row = connection.execute(
-        "SELECT id FROM plan_sessions WHERE user_id=? AND date=? AND sport=? AND status='planned' "
-        "AND linked_activity_id IS NULL ORDER BY CASE origin WHEN 'fixed' THEN 0 ELSE 1 END,id LIMIT 1",
-        (user_id, day.isoformat(), sport)).fetchone()
-    if row is None:
-        return False
-    connection.execute("UPDATE plan_sessions SET status='done',linked_activity_id=?,updated_at=? WHERE id=?",
-                       (activity_id, _now(), row[0]))
-    return True
+def link_activity(repository: PlanRepository, user_id: int, activity_id: int,
+                  day: date, sport: str) -> bool:
+    """Link a newly imported activity using the caller's existing transaction."""
+    return repository.link_activity(user_id, activity_id, day, sport, _now())

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, timedelta
@@ -10,6 +9,8 @@ from statistics import mean, pstdev
 
 from coach.planning import monday, usual_week, weekly_load_reference
 from config import Settings
+from db.repositories.dashboard_data import DashboardDataRepository
+from db.session import session_scope
 from metrics.load import calibration_and_scales, session_metrics
 from metrics.reader import read_inputs
 from metrics.snapshot import build_daily_snapshot
@@ -74,24 +75,15 @@ def load_source(settings: Settings, day: date) -> DashboardSource:
                      "intent": None}
             sessions.append(entry)
             by_id[activity.id] = entry
-    with sqlite3.connect(settings.db_path.resolve().as_uri() + "?mode=ro", uri=True) as connection:
-        connection.row_factory = sqlite3.Row
-        activities = tuple(dict(row) for row in connection.execute(
-            "SELECT id,date,type,distance,duration,pace,avg_hr,planned_intent FROM activities "
-            "WHERE user_id=? AND date<=? ORDER BY date,id", (settings.default_user_id, day.isoformat())))
-        plans = tuple(dict(row) for row in connection.execute(
-            "SELECT id,date,sport,intent,duration_min,status,linked_activity_id FROM plan_sessions "
-            "WHERE user_id=? AND date<=?", (settings.default_user_id, day.isoformat())))
-        health = tuple(dict(row) for row in connection.execute(
-            "SELECT date,sleep_duration,resting_hr,hrv FROM health_metrics "
-            "WHERE user_id=? AND date<=? ORDER BY date", (settings.default_user_id, day.isoformat())))
-        points = {row["id"]: tuple((float(p[0]), float(p[1])) for p in connection.execute(
-            "SELECT distance_km,elapsed_seconds FROM activity_track_points WHERE activity_id=? "
-            "AND distance_km IS NOT NULL AND elapsed_seconds IS NOT NULL ORDER BY point_index", (row["id"],)))
-            for row in activities if sport_category(row["type"], day) == "running"}
-        laps = {row["id"]: tuple(dict(lap) for lap in connection.execute(
-            "SELECT distance,duration,pace FROM activity_laps WHERE activity_id=? ORDER BY lap_index", (row["id"],)))
-            for row in activities if sport_category(row["type"], day) == "running"}
+    url = f"sqlite:///file:{settings.db_path.resolve()}?mode=ro&uri=true"
+    with session_scope(url) as session:
+        source = DashboardDataRepository(session).source_rows(settings.default_user_id, day)
+    activities = tuple(source["activities"])
+    plans = tuple(source["plans"])
+    health = tuple(source["health"])
+    points = {identifier: tuple((float(row["distance_km"]), float(row["elapsed_seconds"])) for row in rows)
+              for identifier, rows in source["points"].items()}
+    laps = {identifier: tuple(rows) for identifier, rows in source["laps"].items()}
     for row in activities:
         entry = by_id.get(row["id"])
         if not entry:

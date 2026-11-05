@@ -9,7 +9,7 @@ from metrics.models import Baseline, HealthDay, Metric, Profile, metric
 FIELDS = {"resting_hr": "bpm", "hrv": "ms", "sleep_duration": "hours"}
 
 
-def valid(value: float | None, as_of: date) -> bool:
+def is_valid_measurement(value: float | None) -> bool:
     return value is not None and isfinite(value) and value > 0
 
 
@@ -20,7 +20,7 @@ def health_baseline(health: tuple[HealthDay, ...], field: str, days: int, as_of:
     daily: dict[date, list[float]] = {}
     for row in health:
         value = getattr(row, field)
-        usable = valid(value, as_of) or (field == "sleep_duration" and value == 0)
+        usable = is_valid_measurement(value) or (field == "sleep_duration" and value == 0)
         if start <= row.day <= end and usable:
             daily.setdefault(row.day, []).append(value)
     values = [mean(items) for items in daily.values()]
@@ -31,7 +31,8 @@ def health_baseline(health: tuple[HealthDay, ...], field: str, days: int, as_of:
 
 def current_health(health: tuple[HealthDay, ...], field: str, as_of: date) -> Metric:
     values = [getattr(row, field) for row in health if row.day == as_of and (
-        valid(getattr(row, field), as_of) or (field == "sleep_duration" and getattr(row, field) == 0))]
+        is_valid_measurement(getattr(row, field)) or
+        (field == "sleep_duration" and getattr(row, field) == 0))]
     return metric(mean(values) if values else None, FIELDS[field], (f"health_metrics.{field}", "health_metrics.date"),
                   as_of, as_of, int(bool(values)), "assessment_day_only")
 
@@ -41,7 +42,7 @@ def recent_hrv(health: tuple[HealthDay, ...], as_of: date) -> Metric:
     start = as_of - timedelta(days=2)
     daily: dict[date, list[float]] = {}
     for row in health:
-        if start <= row.day <= as_of and valid(row.hrv, as_of):
+        if start <= row.day <= as_of and is_valid_measurement(row.hrv):
             daily.setdefault(row.day, []).append(row.hrv)
     values = [mean(items) for items in daily.values()]
     return metric(mean(values) if len(values) >= 2 else None, "ms",
@@ -53,7 +54,7 @@ def resting_hr_for_session(health: tuple[HealthDay, ...], as_of: date) -> Metric
     baseline = health_baseline(health, "resting_hr", 7, as_of).mean
     if baseline.value is not None:
         return baseline
-    rows = [row for row in health if row.day <= as_of and valid(row.resting_hr, as_of)]
+    rows = [row for row in health if row.day <= as_of and is_valid_measurement(row.resting_hr)]
     latest = max((row.day for row in rows), default=as_of)
     values = [row.resting_hr for row in rows if row.day == latest]
     return metric(mean(values) if values else None, "bpm", ("health_metrics.resting_hr", "health_metrics.date"),
@@ -61,7 +62,7 @@ def resting_hr_for_session(health: tuple[HealthDay, ...], as_of: date) -> Metric
 
 
 def maximum_hr(profile: Profile, as_of: date) -> Metric:
-    value = profile.max_hr if valid(profile.max_hr, as_of) else None
+    value = profile.max_hr if is_valid_measurement(profile.max_hr) else None
     method = "users.max_hr_current_profile"
     if value is None and profile.age is not None and 0 < profile.age < 120:
         value, method = 220 - profile.age, "220_minus_age_current_profile"

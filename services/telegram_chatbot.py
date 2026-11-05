@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-import sqlite3
 import time
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
+
+from sqlalchemy.exc import SQLAlchemyError
 
 from coach.proposals import apply, dismiss, get_proposal, list_proposals, monday
 from config import Settings, get_settings
@@ -213,5 +214,5 @@ class TelegramTrainingChatBot:
                                  f"{len(pending)} pending. Review it in the app.")
                 return "\n".join(lines)[:3900]
             return "Plan changes need individual approval in the app. Use /plan to review."
-        except (ValueError, sqlite3.Error) as exc:
+        except (ValueError, SQLAlchemyError) as exc:
             return str(exc)

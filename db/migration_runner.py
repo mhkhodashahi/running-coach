@@ -21,6 +21,20 @@ def migration_config() -> Config:
     return config
 
 
+def database_is_current(database: Path) -> bool:
+    """Check the Alembic revision without mutating or initializing the database."""
+    database = database.expanduser().resolve()
+    if not database.is_file():
+        return False
+    engine = create_engine(URL.create("sqlite", database=str(database)))
+    try:
+        with engine.connect() as connection:
+            current = MigrationContext.configure(connection).get_current_revision()
+        return current == ScriptDirectory.from_config(migration_config()).get_current_head()
+    finally:
+        engine.dispose()
+
+
 def upgrade_database(database: Path, backup_dir: Path | None = None) -> Path | None:
     """Upgrade to head; return the pre-upgrade backup, or None for fresh/no-op runs."""
     database = database.expanduser().resolve()

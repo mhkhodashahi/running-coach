@@ -11,20 +11,24 @@ from pydantic import BaseModel
 
 def extract_json(text: str) -> dict[str, Any]:
     """Parse the first JSON object found in a text response."""
-
     stripped = text.strip()
     if not stripped:
         return {}
     if stripped.startswith("```"):
-        stripped = stripped.split("\n", 1)[1].rsplit("```", 1)[0].strip()
-    start = stripped.find("{")
-    end = stripped.rfind("}")
-    if start == -1 or end == -1 or end <= start:
-        return {}
-    try:
-        return json.loads(stripped[start : end + 1])
-    except json.JSONDecodeError:
-        return {}
+        lines = stripped.splitlines()
+        if len(lines) < 3 or not lines[-1].strip().startswith("```"):
+            return {}
+        stripped = "\n".join(lines[1:-1]).strip()
+    decoder = json.JSONDecoder()
+    for index, character in enumerate(stripped):
+        if character != "{":
+            continue
+        try:
+            payload, _ = decoder.raw_decode(stripped[index:])
+        except json.JSONDecodeError:
+            continue
+        return payload if isinstance(payload, dict) else {}
+    return {}
 
 
 class LLMClient(ABC):
@@ -39,6 +43,11 @@ class LLMClient(ABC):
     ) -> dict[str, Any]:
         """Return a JSON-like dictionary from the model."""
 
+    @abstractmethod
+    def coach_step(self, system_prompt: str, messages: list[dict[str, Any]],
+                   tool_specs: list[dict[str, Any]]) -> dict[str, Any]:
+        """Run one chat step, returning either tool calls or a final reply."""
+
 
 class NullLLMClient(LLMClient):
     """Fallback client when no external model is configured."""
@@ -50,3 +59,7 @@ class NullLLMClient(LLMClient):
         response_schema: type[BaseModel] | None = None,
     ) -> dict[str, Any]:
         return {}
+
+    def coach_step(self, system_prompt: str, messages: list[dict[str, Any]],
+                   tool_specs: list[dict[str, Any]]) -> dict[str, Any]:
+        return {"reply": {}}

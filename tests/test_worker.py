@@ -384,7 +384,7 @@ def test_auto_opinion_is_metered_and_attempted_once(worker_db, monkeypatch):
 
 def test_code_only_weekly_plan_never_constructs_remote_client(worker_db, monkeypatch):
     settings = replace(_settings(worker_db), llm_provider="openai", allow_remote_llm=False)
-    monkeypatch.setattr(planning, "_read_version", lambda *_args: None)
+    monkeypatch.setattr(planning, "require_current_database", lambda *_args: None)
     monkeypatch.setattr(planning, "materialize_week", lambda *_args: None)
     monkeypatch.setattr(planning, "_context", lambda *_args: (
         {"sessions": [], "version": 0}, [], planning.LoadModel(None, {}, {}), {}, False,

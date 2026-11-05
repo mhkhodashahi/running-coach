@@ -9,14 +9,8 @@ from pydantic import BaseModel
 from config import get_settings
 from llm.base import LLMClient, extract_json
 from llm.schemas import (
-    CoachOpinionV2,
-    CoachOpinionV21,
-    MorningBriefDraft,
-    OpenAICoachOpinionV2,
-    OpinionDraftV3,
-    OpinionDraftV22,
-    OpinionDraftV23,
-    OpinionDraftV26,
+    openai_schema,
+    supports_structured_response,
 )
 from llm.usage import record_openai_call
 
@@ -64,7 +58,7 @@ class OpenAIClient(LLMClient):
             )
         if response_schema is not None:
             try:
-                output_schema = OpenAICoachOpinionV2 if response_schema is CoachOpinionV2 else response_schema
+                output_schema = openai_schema(response_schema)
                 response = self._request("structured", lambda: self.client.responses.parse(
                     model=self.model, instructions=system_prompt, input=user_prompt,
                     text_format=output_schema, store=False,
@@ -73,8 +67,7 @@ class OpenAIClient(LLMClient):
                     raise ValueError("Structured model response was empty")
                 return response.output_parsed.model_dump()
             except Exception:
-                if response_schema in (CoachOpinionV2, CoachOpinionV21, OpinionDraftV22, OpinionDraftV23,
-                                       OpinionDraftV26, OpinionDraftV3, MorningBriefDraft):
+                if supports_structured_response(response_schema):
                     raise
 
         response = self._request("json", lambda: self.client.responses.create(

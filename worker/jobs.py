@@ -2,19 +2,17 @@
 
 from __future__ import annotations
 
-import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from time import sleep
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import create_engine
-from sqlalchemy.orm import Session
-
 from coach.planning import load_model, propose_week
 from coach.proposals import SUPPRESS_PROPOSAL_NOTICE, get_week, list_proposals, monday
 from config import Settings
+from db.repositories.worker_state import WorkerJobReadRepository
+from db.session import session_scope
 from metrics import get_daily_snapshot
 from metrics.sports import sport_category
 from services.daily_decision_service import get_or_create_daily_decision
@@ -49,10 +47,8 @@ class JobResult:
 
 
 def health_ready(settings: Settings, day: date) -> bool:
-    with sqlite3.connect(settings.db_path) as db:
-        row = db.execute("SELECT sleep_duration,hrv FROM health_metrics WHERE user_id=? AND date=?",
-                         (settings.default_user_id, day.isoformat())).fetchone()
-    return bool(row and row[0] is not None and row[1] is not None)
+    with session_scope(settings.db_url) as session:
+        return WorkerJobReadRepository(session).health_ready(settings.default_user_id, day)
 
 
 def _planned(settings: Settings, day: date) -> list[dict]:
@@ -75,17 +71,13 @@ def _plan_labels(items: list[dict]) -> list[str]:
 
 def _unrated(settings: Settings, now: datetime, *, day: date | None = None,
              limit: int = 1) -> list[tuple[int, str]]:
-    engine = create_engine(settings.db_url)
-    try:
-        with Session(engine) as session:
-            rows = unrated_activities(session, settings.default_user_id, limit=50, now=now,
-                                      timezone=settings.local_timezone)
-            if day is not None:
-                rows = [row for row in rows if row.date == day]
-            return [(row.id, f"{sport_category(row.type, row.date)} on "
-                     f"{row.date:%a} {row.date.day} {row.date:%b}") for row in rows[:limit]]
-    finally:
-        engine.dispose()
+    with session_scope(settings.db_url) as session:
+        rows = unrated_activities(session, settings.default_user_id, limit=50, now=now,
+                                  timezone=settings.local_timezone)
+        if day is not None:
+            rows = [row for row in rows if row.date == day]
+        return [(row.id, f"{sport_category(row.type, row.date)} on "
+                 f"{row.date:%a} {row.date.day} {row.date:%b}") for row in rows[:limit]]
 
 
 def morning_payload(settings: Settings, day: date, *, use_llm: bool,
@@ -108,15 +100,13 @@ def _no_llm():
 def day_review_payload(settings: Settings, day: date, *, use_llm: bool = False,
                        now: datetime | None = None) -> OutboundMessage:
     planned = _planned(settings, day)
-    with sqlite3.connect(settings.db_path) as db:
-        actual = db.execute("SELECT a.id,a.type,a.duration,e.rpe FROM activities a "
-                            "LEFT JOIN activity_efforts e ON e.activity_id=a.id "
-                            "WHERE a.user_id=? AND a.date=?", (settings.default_user_id, day.isoformat())).fetchall()
-    actual = [row for row in actual if sport_category(row[1], day) not in ("excluded", "mobility")
-              and row[1].strip().lower() != "walking"]
+    with session_scope(settings.db_url) as session:
+        actual = WorkerJobReadRepository(session).day_activities(settings.default_user_id, day)
+    actual = [row for row in actual if sport_category(row["type"], day) not in ("excluded", "mobility")
+              and row["type"].strip().lower() != "walking"]
     completed = [item for item in planned if item["status"] == "done"]
     skipped = [item for item in planned if item["status"] in ("skipped", "planned")]
-    extras = [item for item in actual if not any(plan.get("linked_activity_id") == item[0] for plan in completed)]
+    extras = [item for item in actual if not any(plan.get("linked_activity_id") == item["id"] for plan in completed)]
     tomorrow = day + timedelta(days=1)
     next_plan = _planned(settings, tomorrow)
     decision = _decision(settings, tomorrow, use_llm)
@@ -126,7 +116,7 @@ def day_review_payload(settings: Settings, day: date, *, use_llm: bool = False,
         # get_or_create_daily_decision already creates the conflict proposal; never apply it.
         pass
     labels = [f"{item['sport'].title()} {item['intent']} (planned)" for item in completed]
-    labels.extend(f"{sport_category(row[1], day).title()} {round(row[2])} min (extra)"
+    labels.extend(f"{sport_category(row['type'], day).title()} {round(row['duration'])} min (extra)"
                   for row in extras)
     return day_review(day, labels, _plan_labels(skipped),
                       _unrated(settings, now or datetime.now(ZoneInfo(settings.local_timezone)), day=day, limit=2),
@@ -166,10 +156,9 @@ def weekly_payload(settings: Settings, day: date, *, use_llm: bool) -> OutboundM
                                   timezone=settings.local_timezone, sleep_goal_hours=settings.sleep_goal_hours,
                                   hr_zones=settings.hr_zones)
     week_start = monday(day)
-    with sqlite3.connect(settings.db_path) as db:
-        raw_types = {identifier: raw for identifier, raw in db.execute(
-            "SELECT id,type FROM activities WHERE user_id=? AND date>=? AND date<=?",
-            (settings.default_user_id, week_start.isoformat(), day.isoformat()))}
+    with session_scope(settings.db_url) as session:
+        raw_types = WorkerJobReadRepository(session).activity_types(
+            settings.default_user_id, week_start, day)
     sport_load: dict[str, float] = {}
     for item in snapshot.sessions:
         if item.day < week_start.isoformat() or item.load.value is None:
@@ -187,10 +176,8 @@ def weekly_payload(settings: Settings, day: date, *, use_llm: bool) -> OutboundM
         if sport in ("excluded", "mobility") or raw.strip().lower() == "walking":
             continue
         mix[sport] = mix.get(sport, 0) + 1
-    with sqlite3.connect(settings.db_path) as db:
-        latest_health = db.execute("SELECT MAX(date) FROM health_metrics WHERE user_id=? AND date<=? "
-                                   "AND hrv IS NOT NULL AND resting_hr IS NOT NULL",
-                                   (settings.default_user_id, day.isoformat())).fetchone()[0]
+    with session_scope(settings.db_url) as session:
+        latest_health = WorkerJobReadRepository(session).latest_health_day(settings.default_user_id, day)
     health_snapshot = (get_daily_snapshot(date.fromisoformat(latest_health), database=settings.db_path,
                                           user_id=settings.default_user_id, timezone=settings.local_timezone,
                                           sleep_goal_hours=settings.sleep_goal_hours, hr_zones=settings.hr_zones)
@@ -215,17 +202,10 @@ def weekly_message(settings: Settings, day: date, *, use_llm: bool) -> str:
 
 
 def sync(settings: Settings) -> None:
-    from sqlalchemy import create_engine
-    from sqlalchemy.orm import Session
-
-    engine = create_engine(settings.db_url)
-    try:
-        with Session(engine) as session, session.begin():
-            GarminImportService().sync_garmin(session, settings.default_user_id,
-                                              days=settings.garmin_sync_days,
-                                              health_days=settings.garmin_health_sync_days)
-    finally:
-        engine.dispose()
+    with session_scope(settings.db_url) as session:
+        GarminImportService().sync_garmin(session, settings.default_user_id,
+                                          days=settings.garmin_sync_days,
+                                          health_days=settings.garmin_health_sync_days)
 
 
 def generate_pending_opinions(settings: Settings, day: date, now: datetime) -> int:
@@ -251,12 +231,9 @@ def generate_pending_opinions(settings: Settings, day: date, now: datetime) -> i
             agent._count_request()
             return client.generate_json(system_prompt, user_prompt, response_schema)
 
-    with sqlite3.connect(settings.db_path) as db:
-        candidates = [(row[0], date.fromisoformat(row[1])) for row in db.execute(
-            "SELECT a.id,a.date FROM activities a LEFT JOIN activity_coaching_insights i ON i.activity_id=a.id "
-            "WHERE a.user_id=? AND a.date>=? AND a.date<=? AND lower(a.type) LIKE '%running%' "
-            "AND i.id IS NULL ORDER BY a.id",
-            (settings.default_user_id, (day - timedelta(days=7)).isoformat(), day.isoformat()))]
+    with session_scope(settings.db_url) as session:
+        candidates = WorkerJobReadRepository(session).pending_running_opinions(
+            settings.default_user_id, day - timedelta(days=7), day)
     count = 0
     for activity_id, activity_day in candidates:
         job = f"opinion-{activity_id}"
@@ -314,18 +291,17 @@ def _late_morning_update(settings: Settings, telegram: TelegramService, day: dat
                          now: datetime, *, use_llm: bool) -> JobResult | None:
     if not health_ready(settings, day):
         return None
-    with sqlite3.connect(settings.db_path) as db:
-        if db.execute("SELECT 1 FROM job_runs WHERE user_id=? AND job='morning_update' AND run_date=?",
-                      (settings.default_user_id, day.isoformat())).fetchone():
+    with session_scope(settings.db_url) as session:
+        repository = WorkerJobReadRepository(session)
+        if repository.has_job(settings.default_user_id, "morning_update", day):
             return None
-        previous = db.execute("SELECT status,message_text FROM job_runs WHERE user_id=? AND job='morning' "
-                              "AND run_date=?", (settings.default_user_id, day.isoformat())).fetchone()
-    if not previous or previous[0] != "sent" or not any(
-        marker in (previous[1] or "") for marker in ("Provisional:", "waiting for your data")
+        previous = repository.job_message(settings.default_user_id, "morning", day)
+    if not previous or previous["status"] != "sent" or not any(
+        marker in (previous["message_text"] or "") for marker in ("Provisional:", "waiting for your data")
     ):
         return None
     decision = _decision(settings, day, use_llm)
-    old_intensity = "rest" if "Rest today" in previous[1] else "easy"
+    old_intensity = "rest" if "Rest today" in previous["message_text"] else "easy"
     if decision.intensity == old_intensity:
         if claim(settings.db_path, settings.default_user_id, "morning_update", day, now):
             finish(settings.db_path, settings.default_user_id, "morning_update", day, now)
@@ -362,10 +338,9 @@ def tick(settings: Settings, now: datetime, telegram: TelegramService,
             else:
                 finish(settings.db_path, settings.default_user_id, slot, day, local)
     if clock >= MORNING_START:
-        with sqlite3.connect(settings.db_path) as db:
-            synced_today = db.execute("SELECT 1 FROM job_runs WHERE user_id=? AND run_date=? "
-                                      "AND job LIKE 'sync-%' AND status='done' LIMIT 1",
-                                      (settings.default_user_id, day.isoformat())).fetchone()
+        with session_scope(settings.db_url) as session:
+            synced_today = WorkerJobReadRepository(session).has_completed_sync_today(
+                settings.default_user_id, day)
         if synced_today and claim(settings.db_path, settings.default_user_id, "daily_backup", day, local):
             try:
                 daily_backup(settings.db_path, settings.backup_dir, day, settings.base_dir)

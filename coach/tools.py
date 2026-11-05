@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import math
-import sqlite3
 import statistics
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -17,11 +16,13 @@ from zoneinfo import ZoneInfo
 
 from coach.plan import monday
 from config import get_settings
+from db.repositories.coach import CoachRepository
+from db.session import session_scope
 from metrics import get_daily_snapshot
 from metrics.sports import sport_category
-from services.activity_coaching_service import _opinion_metrics_snapshot
 from services.coach_facts import Fact, build_facts
 from services.coach_opinion import load_opinion
+from services.coach_snapshot import activity_opinion_snapshot
 from services.fact_display import (
     heart_rate,
     heart_rate_difference,
@@ -44,17 +45,6 @@ MAX_OUTPUT_CHARS = 16000
 MAX_NOTE_FACTS = 12
 TOOL_NAMES = ("get_daily_snapshot", "get_trends", "get_activity", "compare_sessions", "list_activities",
               "get_opinion", "plan_week", "get_goals", "get_recent_efforts")
-
-
-@contextmanager
-def _readonly(database: Path) -> Iterator[sqlite3.Connection]:
-    connection = sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True)
-    connection.row_factory = sqlite3.Row
-    try:
-        connection.execute("PRAGMA query_only=ON")
-        yield connection
-    finally:
-        connection.close()
 
 
 def _fact(fact_id: str, metric: str, display: str, source: str) -> Fact:
@@ -114,6 +104,11 @@ class CoachTools:
         self.sleep_goal_hours = sleep_goal_hours
         self.hr_zones = hr_zones
 
+    @contextmanager
+    def _repository(self) -> Iterator[CoachRepository]:
+        with session_scope(f"sqlite:///{self.database.resolve()}") as session:
+            yield CoachRepository(session)
+
     def _snapshot(self, day: date):
         return get_daily_snapshot(day, database=self.database, user_id=self.user_id,
                                   timezone=self.timezone, sleep_goal_hours=self.sleep_goal_hours,
@@ -127,14 +122,9 @@ class CoachTools:
                 for item in notes[-MAX_NOTE_FACTS:]]
 
     def get_daily_snapshot(self, day: date) -> dict[str, Any]:
-        with _readonly(self.database) as connection:
-            latest_health = connection.execute(
-                "SELECT MAX(date) FROM health_metrics WHERE user_id=? AND date<=?",
-                (self.user_id, day.isoformat()),
-            ).fetchone()[0]
-            sync_row = connection.execute(
-                "SELECT last_synced_at FROM garmin_sync_status WHERE user_id=?", (self.user_id,),
-            ).fetchone()
+        with self._repository() as repository:
+            metadata = repository.health_metadata(self.user_id, day)
+        latest_health = metadata["latest_health_date"]
         today = datetime.now(ZoneInfo(self.timezone)).date()
         stale_today = day == today and latest_health != day.isoformat()
         metrics_day = date.fromisoformat(latest_health) if stale_today and latest_health else day
@@ -143,8 +133,8 @@ class CoachTools:
         facts.append(_fact("HEALTH_DATA_DATE", "Latest health date", short_date(latest_health) if latest_health else "No data",
                            "health_metrics.date"))
         sync_display = "never synced"
-        if sync_row:
-            synced_at = datetime.fromisoformat(sync_row[0]).replace(tzinfo=UTC)
+        if metadata["last_synced_at"]:
+            synced_at = datetime.fromisoformat(metadata["last_synced_at"]).replace(tzinfo=UTC)
             sync_display = synced_at.astimezone(ZoneInfo(self.timezone)).strftime("%H:%M")
         facts.append(_fact("LAST_SYNC_TIME", "Last Garmin sync", sync_display,
                            "garmin_sync_status.last_synced_at"))
@@ -217,12 +207,10 @@ class CoachTools:
             raise ValueError("Choose 7, 28 or 90 days")
         today = datetime.now(ZoneInfo(self.timezone)).date()
         start = today - timedelta(days=range_days - 1)
-        with _readonly(self.database) as connection:
-            endpoints = connection.execute(
-                "SELECT MIN(date),MAX(date) FROM health_metrics WHERE user_id=? AND date BETWEEN ? AND ?",
-                (self.user_id, start.isoformat(), today.isoformat())).fetchone()
-        latest_day = date.fromisoformat(endpoints[1]) if endpoints[1] else None
-        first_day = date.fromisoformat(endpoints[0]) if endpoints[0] else None
+        with self._repository() as repository:
+            first_date, latest_date = repository.health_date_range(self.user_id, start, today)
+        latest_day = date.fromisoformat(latest_date) if latest_date else None
+        first_day = date.fromisoformat(first_date) if first_date else None
         if latest_day is None:
             return {"range_days": range_days, "facts": [], "latest_health_date": None}
         latest = self._snapshot(latest_day)
@@ -241,36 +229,15 @@ class CoachTools:
         return _bounded({"range_days": range_days, "facts": facts[:MAX_FACTS],
                          "latest_health_date": latest_day.isoformat()})
 
-    def _activity(self, connection: sqlite3.Connection, activity_id: int) -> sqlite3.Row:
-        row = connection.execute("SELECT id, user_id, date, type, distance, duration, pace, avg_hr, max_hr, "
-                                 "aerobic_effect, anaerobic_effect, planned_intent, activity_name, notes "
-                                 "FROM activities WHERE id=? AND user_id=?", (activity_id, self.user_id)).fetchone()
-        if row is None:
-            raise ValueError("Activity not found for this user")
-        return row
-
-    def _start(self, connection: sqlite3.Connection, activity_id: int) -> tuple[float, float] | None:
-        row = connection.execute("SELECT latitude, longitude FROM activity_track_points "
-                                 "WHERE activity_id=? AND latitude IS NOT NULL AND longitude IS NOT NULL "
-                                 "ORDER BY point_index LIMIT 1", (activity_id,)).fetchone()
-        return (row[0], row[1]) if row else None
-
     def get_activity(self, activity_id: int) -> dict[str, Any]:
-        with _readonly(self.database) as connection:
-            activity = self._activity(connection, activity_id)
-            laps = [dict(row) for row in connection.execute(
-                "SELECT lap_index, distance, duration, pace, avg_hr, max_hr, avg_cadence "
-                "FROM activity_laps WHERE activity_id=? ORDER BY lap_index LIMIT ?", (activity_id, MAX_LAPS))]
-            points = [dict(row) for row in connection.execute(
-                "SELECT elapsed_seconds, distance_km, pace, heart_rate, cadence "
-                "FROM activity_track_points WHERE activity_id=? ORDER BY point_index", (activity_id,))]
-            recent_paces = [row[0] for row in connection.execute(
-                "SELECT pace FROM activities WHERE user_id=? AND date<=? AND date>=? AND id!=? "
-                "AND pace IS NOT NULL AND lower(type) LIKE '%run%' ORDER BY date DESC LIMIT 20",
-                (self.user_id, activity["date"], (date.fromisoformat(activity["date"]) - timedelta(days=60)).isoformat(),
-                 activity_id))]
-            effort_row = connection.execute("SELECT rpe FROM activity_efforts WHERE activity_id=?",
-                                            (activity_id,)).fetchone()
+        with self._repository() as repository:
+            context_rows = repository.activity_context(self.user_id, activity_id, lap_limit=MAX_LAPS)
+        if context_rows is None:
+            raise ValueError("Activity not found for this user")
+        activity = context_rows["activity"]
+        laps = context_rows["laps"]
+        points = context_rows["points"]
+        recent_paces = context_rows["recent_paces"]
         day = date.fromisoformat(activity["date"])
         snapshot = self._snapshot(day)
         buckets: dict[int, list[dict[str, Any]]] = {}
@@ -313,8 +280,8 @@ class CoachTools:
                                 "second_half": {"avg_pace": half(points[middle:])["pace"],
                                                     "avg_hr": half(points[middle:])["heart_rate"],
                                                     "avg_cadence": half(points[middle:])["cadence"]}},
-            "metrics_snapshot": _opinion_metrics_snapshot(snapshot, activity_id),
-            "effort_rpe": effort_row[0] if effort_row else None,
+            "metrics_snapshot": activity_opinion_snapshot(snapshot, activity_id),
+            "effort_rpe": context_rows["effort_rpe"],
             "effort_low_zone_share": next((sum(zone.percent.value or 0 for zone in item.zones
                                               if zone.name.startswith(("Z1", "Z2")))
                                            for item in snapshot.sessions if item.activity_id == activity_id), None),
@@ -341,24 +308,27 @@ class CoachTools:
                                           "notes": _safe_text(activity["notes"])}})
 
     def compare_sessions(self, activity_id: int) -> dict[str, Any]:
-        with _readonly(self.database) as connection:
-            target = self._activity(connection, activity_id)
+        with self._repository() as repository:
+            target_bundle = repository.activity_context(self.user_id, activity_id, lap_limit=1)
+            if target_bundle is None:
+                raise ValueError("Activity not found for this user")
+            target = target_bundle["activity"]
             day = date.fromisoformat(target["date"])
             lower = day - timedelta(days=120)
             category = sport_category(target["type"], day)
             duration_based = category in ("volleyball", "football", "gym")
             measure = "duration" if duration_based else "distance"
             anchor = target[measure]
-            rows = connection.execute(
-                f"SELECT id, date, type, distance, duration, pace, avg_hr FROM activities "
-                f"WHERE user_id=? AND date>=? AND date<? AND {measure} BETWEEN ? AND ? "
-                "ORDER BY date DESC, id DESC",
-                (self.user_id, lower.isoformat(), day.isoformat(), anchor * (.8 if duration_based else .85),
-                 anchor * (1.2 if duration_based else 1.15))).fetchall()
-            start = self._start(connection, activity_id)
+            rows = repository.comparison_candidates(
+                self.user_id, lower, day, measure,
+                anchor * (.8 if duration_based else .85),
+                anchor * (1.2 if duration_based else 1.15),
+            )
+            start = repository.activity_start(self.user_id, activity_id)
             selected = [(row["id"], row["date"], row["pace"], row["duration"], row["avg_hr"],
-                         start is not None and (candidate := self._start(connection, row["id"])) is not None
-                         and _distance_metres(start, candidate) <= 300)
+                         start is not None and
+                         (candidate := repository.activity_start(self.user_id, row["id"])) is not None and
+                         _distance_metres(start, candidate) <= 300)
                         for row in rows if sport_category(row["type"], date.fromisoformat(row["date"])) == category][:5]
         target_activity = self.get_activity(activity_id)
         target_daily = self.get_daily_snapshot(day)
@@ -430,10 +400,8 @@ class CoachTools:
             raise ValueError("Activity date range must be ordered and at most one year")
         if sport is not None and sport not in {"running", "volleyball", "football", "gym", "other", "excluded"}:
             raise ValueError("Unknown sport category")
-        with _readonly(self.database) as connection:
-            rows = connection.execute("SELECT id, date, type, distance, duration, pace, avg_hr FROM activities "
-                                      "WHERE user_id=? AND date>=? AND date<=? ORDER BY date DESC, id DESC",
-                                      (self.user_id, start_date.isoformat(), end_date.isoformat())).fetchall()
+        with self._repository() as repository:
+            rows = repository.activity_rows(self.user_id, start_date, end_date)
         items = []
         for row in rows:
             category = sport_category(row["type"], date.fromisoformat(row["date"]))
@@ -455,11 +423,10 @@ class CoachTools:
                          "activities": items})
 
     def get_opinion(self, activity_id: int) -> dict[str, Any]:
-        with _readonly(self.database) as connection:
-            self._activity(connection, activity_id)
-            row = connection.execute("SELECT payload_json, schema_version, prompt_version, model_provider, "
-                                     "model_name, created_at FROM activity_coaching_insights "
-                                     "WHERE activity_id=? AND user_id=?", (activity_id, self.user_id)).fetchone()
+        with self._repository() as repository:
+            if not repository.activity_exists(self.user_id, activity_id):
+                raise ValueError("Activity not found for this user")
+            row = repository.opinion(self.user_id, activity_id)
         if row is None:
             return {"activity_id": activity_id, "opinion": None, "facts": []}
         opinion = load_opinion(dict(row)).model_dump()
@@ -476,22 +443,17 @@ class CoachTools:
     def plan_week(self, start_date: date) -> dict[str, Any]:
         if start_date != monday(start_date):
             raise ValueError("Week must start on Monday")
-        with _readonly(self.database) as connection:
-            version = connection.execute("SELECT version FROM plan_versions WHERE user_id=?",
-                                         (self.user_id,)).fetchone()
-            sessions = [dict(row) for row in connection.execute(
-                "SELECT date,sport,intent,duration_min,origin,fixed_commitment_id FROM plan_sessions "
-                "WHERE user_id=? AND date>=? AND date<? ORDER BY date,id LIMIT 30",
-                (self.user_id, start_date.isoformat(), (start_date + timedelta(days=7)).isoformat()))]
-            existing = {item["fixed_commitment_id"] for item in sessions}
-            for row in connection.execute("SELECT id,weekday,sport,kind,typical_duration_min FROM fixed_commitments "
-                                          "WHERE user_id=? AND active=1", (self.user_id,)):
-                if row["id"] not in existing:
-                    sessions.append({"date": (start_date + timedelta(days=row["weekday"])).isoformat(),
-                                     "sport": row["sport"], "intent": row["kind"],
-                                     "duration_min": row["typical_duration_min"], "origin": "fixed"})
+        with self._repository() as repository:
+            plan = repository.week_plan(self.user_id, start_date)
+        sessions = plan["sessions"]
+        existing = {item["fixed_commitment_id"] for item in sessions}
+        for row in plan["commitments"]:
+            if row["id"] not in existing:
+                sessions.append({"date": (start_date + timedelta(days=row["weekday"])).isoformat(),
+                                 "sport": row["sport"], "intent": row["kind"],
+                                 "duration_min": row["typical_duration_min"], "origin": "fixed"})
         facts = [_fact("PLAN_WEEK_START", "Plan week start", short_date(start_date), "plan_sessions.date"),
-                 _fact("PLAN_VERSION", "Plan version", str(version[0] if version else 0),
+                 _fact("PLAN_VERSION", "Plan version", str(plan["version"]),
                        "plan_versions.version")]
         items = []
         for index, session in enumerate(sorted(sessions, key=lambda item: item["date"])[:30]):
@@ -506,12 +468,8 @@ class CoachTools:
 
     def get_goals(self) -> dict[str, Any]:
         """Expose only the current athlete's goal fields, never profile or private notes."""
-        with _readonly(self.database) as connection:
-            rows = connection.execute(
-                "SELECT id, goal_type, target_distance_km, target_time_minutes, target_date, "
-                "priority, status, is_active FROM goals WHERE user_id=? "
-                "ORDER BY is_active DESC, target_date, id LIMIT 10", (self.user_id,),
-            ).fetchall()
+        with self._repository() as repository:
+            rows = repository.goals(self.user_id)
         goals: list[dict[str, Any]] = []
         facts: list[Fact] = []
         for row in rows:
@@ -532,12 +490,8 @@ class CoachTools:
 
     def get_recent_efforts(self) -> dict[str, Any]:
         """Return bounded ratings for this athlete's latest rated sessions."""
-        with _readonly(self.database) as connection:
-            rows = connection.execute(
-                "SELECT a.id, a.date, a.type, e.rpe FROM activity_efforts e "
-                "JOIN activities a ON a.id=e.activity_id WHERE a.user_id=? "
-                "ORDER BY a.date DESC, a.id DESC LIMIT 20", (self.user_id,),
-            ).fetchall()
+        with self._repository() as repository:
+            rows = repository.recent_efforts(self.user_id)
         efforts: list[dict[str, Any]] = []
         facts: list[Fact] = []
         for row in rows:

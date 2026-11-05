@@ -4,33 +4,25 @@ from __future__ import annotations
 
 import fcntl
 import re
-import sqlite3
-from collections.abc import Iterator
-from contextlib import contextmanager
 from datetime import UTC, date, datetime
 from pathlib import Path
+
+from db.repositories.worker_state import WorkerStateRepository
+from db.session import session_scope
 
 DEFAULTS = {"morning_enabled": 1, "morning_latest": "10:00", "day_review_time": "17:00",
             "weekly_weekday": 6, "weekly_time": "18:00", "quiet_start": "22:00", "quiet_end": "05:30",
             "morning_llm": 0, "day_llm": 0, "weekly_llm": 0, "suggest_memories_llm": 0, "paused": 0}
 
 
-@contextmanager
-def connection(database: Path) -> Iterator[sqlite3.Connection]:
-    db = sqlite3.connect(database, timeout=30)
-    db.row_factory = sqlite3.Row
-    db.execute("PRAGMA foreign_keys=ON")
-    try:
-        with db:
-            yield db
-    finally:
-        db.close()
+def _database_url(database: Path) -> str:
+    return f"sqlite:///{database.resolve()}"
 
 
 def preferences(database: Path, user_id: int) -> dict:
-    with connection(database) as db:
-        row = db.execute("SELECT * FROM notification_settings WHERE user_id=?", (user_id,)).fetchone()
-        return dict(row) if row else {"user_id": user_id, **DEFAULTS}
+    with session_scope(_database_url(database)) as session:
+        values = WorkerStateRepository(session).preferences(user_id)
+    return values if values is not None else {"user_id": user_id, **DEFAULTS}
 
 
 def save_preferences(database: Path, user_id: int, values: dict) -> None:
@@ -48,38 +40,27 @@ def save_preferences(database: Path, user_id: int, values: dict) -> None:
         if merged[field] not in (0, 1, False, True):
             raise ValueError(f"Invalid {field} value")
     fields = list(DEFAULTS)
-    with connection(database) as db:
-        db.execute("INSERT INTO notification_settings(user_id," + ",".join(fields) + ") VALUES(" +
-                   ",".join("?" for _ in range(len(fields) + 1)) + ") ON CONFLICT(user_id) DO UPDATE SET " +
-                   ",".join(f"{field}=excluded.{field}" for field in fields),
-                   (user_id, *(merged[field] for field in fields)))
+    with session_scope(_database_url(database)) as session:
+        WorkerStateRepository(session).save_preferences(user_id, fields, merged)
 
 
 def claim(database: Path, user_id: int, job: str, day: date, now: datetime) -> bool:
     """Claim before external delivery: uncertain sends are never repeated."""
-    with connection(database) as db:
-        cursor = db.execute("INSERT OR IGNORE INTO job_runs(user_id,job,run_date,status,started_at,attempts) "
-                            "VALUES(?,?,?,?,?,1)", (user_id, job, day.isoformat(), "sending",
-                                              now.astimezone(UTC).isoformat()))
-        return cursor.rowcount == 1
+    with session_scope(_database_url(database)) as session:
+        return WorkerStateRepository(session).claim(user_id, job, day, now.astimezone(UTC))
 
 
 def finish(database: Path, user_id: int, job: str, day: date, now: datetime,
            *, message: str | None = None, error: str | None = None) -> None:
     status = ("failed" if job.startswith("sync-") or job == "daily_backup" else "uncertain") if error else (
         "sent" if message is not None else "done")
-    with connection(database) as db:
-        db.execute("UPDATE job_runs SET status=?,finished_at=?,error=?,message_text=? "
-                   "WHERE user_id=? AND job=? AND run_date=?",
-                   (status, now.astimezone(UTC).isoformat(), error,
-                    message, user_id, job, day.isoformat()))
+    with session_scope(_database_url(database)) as session:
+        WorkerStateRepository(session).finish(user_id, job, day, now.astimezone(UTC), status, message, error)
 
 
 def history(database: Path, user_id: int, limit: int = 30) -> list[dict]:
-    with connection(database) as db:
-        return [dict(row) for row in db.execute("SELECT job,run_date,status,started_at,finished_at,error,"
-                                                "message_text FROM job_runs WHERE user_id=? "
-                                                "ORDER BY started_at DESC LIMIT ?", (user_id, limit))]
+    with session_scope(_database_url(database)) as session:
+        return WorkerStateRepository(session).history(user_id, limit)
 
 
 def in_quiet_hours(now: datetime, start: str, end: str) -> bool:

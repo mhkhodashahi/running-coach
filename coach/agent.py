@@ -2,25 +2,21 @@
 
 from __future__ import annotations
 
-import fcntl
 import json
 import re
-import sqlite3
-from collections.abc import Iterator
-from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
-from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from alembic.script import ScriptDirectory
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from coach.guardrails import GuardrailContext, enforce_guardrails, guardrail_errors, plan_change_question
+from coach.runtime import require_current_database, user_job_lock
 from coach.tools import TOOL_NAMES, CoachTools
 from config import Settings
-from db.migration_runner import migration_config
+from db.repositories.agent import AgentRepository
+from db.session import session_scope
 from services.coach_facts import Fact, unsupported_text_numbers
 
 PROMPT_VERSION = "chat-v1.4"
@@ -173,31 +169,6 @@ def _follow_ups(items: list[str], comparison: bool) -> tuple[str, ...]:
     return tuple(valid)
 
 
-def _read_version(database: Path) -> None:
-    head = ScriptDirectory.from_config(migration_config()).get_current_head()
-    if not database.is_file():
-        raise RuntimeError(f"Database needs an upgrade. Stop all jobs, then run:\npython -m scripts.upgrade_db --db {database}")
-    with sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True) as connection:
-        row = connection.execute("SELECT name FROM sqlite_master WHERE name='alembic_version'").fetchone()
-        version = connection.execute("SELECT version_num FROM alembic_version").fetchone() if row else None
-    if version != (head,):
-        raise RuntimeError(f"Database needs an upgrade. Stop all jobs, then run:\npython -m scripts.upgrade_db --db {database}")
-
-
-@contextmanager
-def _user_lock(database: Path, user_id: int) -> Iterator[None]:
-    lock_path = database.with_name(f".{database.name}.coach-{user_id}.lock")
-    with lock_path.open("a+b") as handle:
-        try:
-            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError as exc:
-            raise RuntimeError("A coach job is already running for this user. Try again shortly.") from exc
-        try:
-            yield
-        finally:
-            fcntl.flock(handle, fcntl.LOCK_UN)
-
-
 class CoachAgent:
     def __init__(self, settings: Settings, llm_client: Any, user_id: int) -> None:
         self.settings = settings
@@ -207,15 +178,13 @@ class CoachAgent:
                                settings.hr_zones)
 
     def _count_request(self) -> None:
-        day = datetime.now(ZoneInfo(self.settings.local_timezone)).date().isoformat()
-        with sqlite3.connect(self.settings.db_path) as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            count = connection.execute("SELECT COUNT(*) FROM coach_llm_calls WHERE user_id=? AND local_day=?",
-                                       (self.user_id, day)).fetchone()[0]
-            if count >= self.settings.coach_daily_call_limit:
-                raise RuntimeError("Daily coach LLM call limit reached. Try again tomorrow or raise COACH_DAILY_CALL_LIMIT.")
-            connection.execute("INSERT INTO coach_llm_calls(user_id,local_day,created_at) VALUES(?,?,?)",
-                               (self.user_id, day, datetime.now(UTC).replace(tzinfo=None).isoformat()))
+        now = datetime.now(ZoneInfo(self.settings.local_timezone))
+        with session_scope(f"sqlite:///{self.settings.db_path.resolve()}") as session:
+            allowed = AgentRepository(session).consume_call(
+                self.user_id, now.date(), self.settings.coach_daily_call_limit, now
+            )
+        if not allowed:
+            raise RuntimeError("Daily coach LLM call limit reached. Try again tomorrow or raise COACH_DAILY_CALL_LIMIT.")
 
     def _step(self, messages: list[dict[str, Any]]) -> dict[str, Any]:
         self._count_request()
@@ -285,21 +254,19 @@ class CoachAgent:
     def _save(self, question: str, result: CoachAnswer) -> None:
         provider = self.settings.llm_provider
         model = self.settings.openai_model if provider in ("openai", "chatgpt") else self.settings.ollama_model
-        with sqlite3.connect(self.settings.db_path) as connection:
-            connection.execute("INSERT INTO coach_chat_turns "
-                               "(user_id,question,answer,evidence_json,activity_ids_json,tool_calls_json,"
-                               "model_provider,model_name,prompt_version,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
-                               (self.user_id, question, result.answer,
-                                json.dumps(result.evidence), json.dumps(result.activity_ids),
-                                json.dumps(result.tool_calls), provider, model, PROMPT_VERSION,
-                                datetime.now(UTC).replace(tzinfo=None).isoformat()))
+        with session_scope(f"sqlite:///{self.settings.db_path.resolve()}") as session:
+            AgentRepository(session).save_chat_turn(
+                self.user_id, question, result.answer, json.dumps(result.evidence),
+                json.dumps(result.activity_ids), json.dumps(result.tool_calls), provider, model,
+                PROMPT_VERSION, datetime.now(UTC),
+            )
 
     def answer(self, question: str, activity_id: int | None = None, running_memory: str = "") -> CoachAnswer:
         question = question.strip()[:MAX_QUESTION_CHARS]
         if not question:
             raise ValueError("Ask a training question")
-        _read_version(self.settings.db_path)
-        with _user_lock(self.settings.db_path, self.user_id):
+        require_current_database(self.settings.db_path)
+        with user_job_lock(self.settings.db_path, self.user_id):
             return self._answer_locked(question, activity_id, running_memory)
 
     def _answer_locked(self, question: str, activity_id: int | None, running_memory: str) -> CoachAnswer:

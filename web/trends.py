@@ -4,18 +4,19 @@ from __future__ import annotations
 
 import json
 import re
-import sqlite3
 from datetime import UTC, date, datetime, timedelta
-from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from coach.agent import CoachAgent, _user_lock
+from coach.agent import CoachAgent
 from coach.guardrails import diagnosis_sentences
 from coach.planning import load_model
 from coach.proposals import monday
+from coach.runtime import user_job_lock
 from config import Settings
+from db.repositories.trends_view import TrendsViewRepository
+from db.session import session_scope
 from llm.factory import get_llm_client
 from metrics import get_daily_snapshot
 from services.coach_facts import Fact, unsupported_text_numbers
@@ -40,12 +41,6 @@ class TrendReply(BaseModel):
     headline: str = Field(min_length=1, max_length=140)
     explanation: str = Field(min_length=1, max_length=500)
     evidence_ids: list[str] = Field(min_length=2, max_length=8)
-
-
-def _db(path: Path) -> sqlite3.Connection:
-    connection = sqlite3.connect(path)
-    connection.row_factory = sqlite3.Row
-    return connection
 
 
 def validate_trend_reply(reply: TrendReply, facts: list[Fact]) -> tuple[str, ...]:
@@ -92,19 +87,15 @@ def cached_trend_summary(settings: Settings, day: date, days: int, facts: list[F
     if days not in RANGES:
         raise ValueError("Choose 7, 28 or 90 days")
     kind = f"trend_v2_{days}"
-    with _db(settings.db_path) as connection:
-        row = connection.execute("SELECT payload_json FROM coaching_decisions WHERE user_id=? "
-                                 "AND decision_date=? AND decision_type=? ORDER BY id DESC LIMIT 1",
-                                 (settings.default_user_id, day.isoformat(), kind)).fetchone()
-        if row:
-            return json.loads(row[0])
-    with _user_lock(settings.db_path, settings.default_user_id):
-        with _db(settings.db_path) as connection:
-            row = connection.execute("SELECT payload_json FROM coaching_decisions WHERE user_id=? "
-                                     "AND decision_date=? AND decision_type=? ORDER BY id DESC LIMIT 1",
-                                     (settings.default_user_id, day.isoformat(), kind)).fetchone()
-            if row:
-                return json.loads(row[0])
+    with session_scope(settings.db_url) as session:
+        cached = TrendsViewRepository(session).cached_summary(settings.default_user_id, day, kind)
+    if cached:
+        return json.loads(cached)
+    with user_job_lock(settings.db_path, settings.default_user_id):
+        with session_scope(settings.db_url) as session:
+            cached = TrendsViewRepository(session).cached_summary(settings.default_user_id, day, kind)
+        if cached:
+            return json.loads(cached)
         result = _fallback(facts)
         if facts and (llm is not None or settings.llm_provider != "none"):
             if settings.llm_provider in ("openai", "chatgpt") and not (
@@ -135,11 +126,10 @@ def cached_trend_summary(settings: Settings, day: date, days: int, facts: list[F
                             prompt += "\nValidation errors: " + "; ".join(errors)
                 except (RuntimeError, ValueError, TypeError):
                     result["notice"] = "Coach summary unavailable; showing the code summary."
-        with _db(settings.db_path) as connection:
-            connection.execute("INSERT INTO coaching_decisions(user_id,decision_type,decision_date,summary,"
-                               "risk_level,payload_json,created_at) VALUES(?,?,?,?,?,?,?)",
-                               (settings.default_user_id, kind, day.isoformat(), result["headline"], "moderate",
-                                json.dumps(result), datetime.now(UTC).replace(tzinfo=None).isoformat()))
+        with session_scope(settings.db_url) as session:
+            TrendsViewRepository(session).save_summary(
+                settings.default_user_id, day, kind, result["headline"], json.dumps(result),
+                datetime.now(UTC).replace(tzinfo=None))
         return result
 
 
@@ -232,26 +222,21 @@ def insights_context(settings: Settings, day: date, days: int) -> dict[str, Any]
 
     data = trends_context(settings, day, days, include_summary=False)
     start = day - timedelta(days=days - 1)
-    with sqlite3.connect(settings.db_path.resolve().as_uri() + "?mode=ro", uri=True) as connection:
-        goal = connection.execute("SELECT goal_type,target_distance_km FROM goals WHERE user_id=? AND is_active=1 "
-                                  "ORDER BY id DESC LIMIT 1", (settings.default_user_id,)).fetchone()
-        runs = connection.execute("SELECT date,type,distance,duration FROM activities WHERE user_id=? "
-                                  "AND date BETWEEN ? AND ?", (settings.default_user_id,
-                                  start.isoformat(), day.isoformat())).fetchall()
-        earlier_start = start - timedelta(days=days)
-        previous_rows = connection.execute(
-            "SELECT date,resting_hr,hrv,sleep_duration FROM health_metrics WHERE user_id=? "
-            "AND date BETWEEN ? AND ?", (settings.default_user_id, earlier_start.isoformat(),
-                                          (start - timedelta(days=1)).isoformat())).fetchall()
-    by_day = {row[0]: row for row in previous_rows}
-    data["previous"] = {key: [(stamp, by_day[stamp][index] if stamp in by_day else None)
+    with session_scope(f"sqlite:///file:{settings.db_path.resolve()}?mode=ro&uri=true") as session:
+        source = TrendsViewRepository(session).insight_inputs(settings.default_user_id, start, day)
+    goal = source["goal"]
+    runs = source["runs"]
+    earlier_start = start - timedelta(days=days)
+    by_day = {row["date"]: row for row in source["previous_health"]}
+    data["previous"] = {key: [(stamp, by_day[stamp][field] if stamp in by_day else None)
                               for stamp in ((earlier_start + timedelta(days=offset)).isoformat()
                                             for offset in range(days))]
-                        for key, index in (("rhr", 1), ("hrv", 2), ("sleep", 3))}
+                        for key, field in (("rhr", "resting_hr"), ("hrv", "hrv"),
+                                           ("sleep", "sleep_duration"))}
     from metrics.sports import sport_category
 
-    running = [(row[2], row[3]) for row in runs
-               if sport_category(row[1], date.fromisoformat(row[0])) == "running"]
+    running = [(row["distance"], row["duration"]) for row in runs
+               if sport_category(row["type"], date.fromisoformat(row["date"])) == "running"]
     notes = read_notes(settings.db_path, settings.default_user_id, start, day)
     data["as_of"] = day.isoformat()
     return build_insights_view(data, goal, running, settings.sleep_goal_hours, notes)

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
@@ -11,6 +10,9 @@ from coach.guardrails import plan_change_question
 from coach.planning import propose_requested_change
 from coach.proposals import monday
 from config import Settings
+from db.repositories.agent import AgentRepository
+from db.repositories.coach import CoachRepository
+from db.session import session_scope
 from metrics.sports import RECOMMENDABLE_SPORTS, sport_category
 from services.coach_memory_service import list_memories, save_memory
 from services.training_chat_service import TrainingChatReply, TrainingChatService
@@ -25,49 +27,38 @@ COACH_DATA_LIST = ("Activities", "Laps", "Samples", "Health metrics", "Metrics s
                    "Running memory", "Active coach memories")
 
 
-def _db(settings: Settings) -> sqlite3.Connection:
-    connection = sqlite3.connect(settings.db_path.resolve().as_uri() + "?mode=ro", uri=True)
-    connection.row_factory = sqlite3.Row
-    return connection
-
-
 def coach_context(settings: Settings, day: date, *, reply: TrainingChatReply | None = None,
                   question: str | None = None, attached_id: int | None = None,
                   context: str = "today") -> dict[str, Any]:
     """Read one user's thread, recent sessions, plan and today's call count."""
-    with _db(settings) as connection:
-        rows = connection.execute("SELECT id,date,type,activity_name,duration FROM activities WHERE user_id=? "
-                                  "AND date<=? ORDER BY date DESC,id DESC LIMIT 120",
-                                  (settings.default_user_id, day.isoformat())).fetchall()
-        recent = [{"id": row["id"], "date": short_date(row["date"]),
-                   "sport": sport_category(row["type"], day),
-                   "label": row["activity_name"] or row["type"].replace("_", " ").title()}
-                  for row in rows if sport_category(row["type"], day) in RECOMMENDABLE_SPORTS][:20]
-        attached = next((item for item in recent if item["id"] == attached_id), None)
-        if attached_id is not None and attached is None:
-            owner = connection.execute("SELECT id,date,type,activity_name FROM activities WHERE id=? AND user_id=?",
-                                       (attached_id, settings.default_user_id)).fetchone()
-            if owner is None:
-                raise ValueError("Attached session not found")
-            attached = {"id": owner["id"], "date": short_date(owner["date"]),
-                        "sport": sport_category(owner["type"], day),
-                        "label": owner["activity_name"] or owner["type"].replace("_", " ").title()}
-        calls = connection.execute("SELECT COUNT(*) FROM coach_llm_calls WHERE user_id=? AND local_day=?",
-                                   (settings.default_user_id, day.isoformat())).fetchone()[0]
+    user_id = settings.default_user_id
+    with session_scope(settings.db_url) as session:
+        repository = CoachRepository(session)
+        rows = repository.recent_activity_cards(user_id, day)
+        calls = AgentRepository(session).call_count(user_id, day)
+        owner = repository.activity_card(user_id, attached_id) if attached_id is not None else None
+    recent = [{"id": row["id"], "date": short_date(row["date"]),
+               "sport": sport_category(row["type"], day),
+               "label": row["activity_name"] or row["type"].replace("_", " ").title()}
+              for row in rows if sport_category(row["type"], day) in RECOMMENDABLE_SPORTS][:20]
+    attached = next((item for item in recent if item["id"] == attached_id), None)
+    if attached_id is not None and attached is None:
+        if owner is None:
+            raise ValueError("Attached session not found")
+        attached = {"id": owner["id"], "date": short_date(owner["date"]),
+                    "sport": sport_category(owner["type"], day),
+                    "label": owner["activity_name"] or owner["type"].replace("_", " ").title()}
     plan = plan_context(settings, day)
     indexed = {item["date"]: item for week in plan["weeks"] for item in week["days"]}
     days = [indexed[(day + timedelta(days=offset)).isoformat()] for offset in range(7)]
     thread = TrainingChatService(settings).history(settings.default_user_id)
     referenced = {activity_id for turn in thread for activity_id in turn["activity_ids"]}
     if referenced:
-        with _db(settings) as connection:
-            placeholders = ",".join("?" for _ in referenced)
-            cards = {row["id"]: {"id": row["id"], "label": row["activity_name"] or
-                      row["type"].replace("_", " ").title(), "date": short_date(row["date"]),
-                      "sport": sport_category(row["type"], day)}
-                     for row in connection.execute(
-                         f"SELECT id,date,type,activity_name FROM activities WHERE user_id=? AND id IN ({placeholders})",
-                         (settings.default_user_id, *referenced))}
+        with session_scope(settings.db_url) as session:
+            card_rows = CoachRepository(session).activity_cards(user_id, list(referenced))
+        cards = {identifier: {"id": identifier, "label": row["activity_name"] or
+                  row["type"].replace("_", " ").title(), "date": short_date(row["date"]),
+                  "sport": sport_category(row["type"], day)} for identifier, row in card_rows.items()}
         for turn in thread:
             turn["cards"] = [cards[activity_id] for activity_id in turn["activity_ids"] if activity_id in cards]
     follow_ups = reply.follow_ups if reply else ("How has my recovery changed?",
@@ -102,19 +93,13 @@ def ask_coach(settings: Settings, day: date, question: str, activity_id: int | N
             raise ValueError("Add the memory text after Remember:")
         memory_id = save_memory(settings.db_path, settings.default_user_id, remembered)
         text = "I saved that as an active memory."
-        with sqlite3.connect(settings.db_path) as connection:
-            connection.execute("INSERT INTO coach_chat_turns(user_id,question,answer,evidence_json,activity_ids_json,"
-                               "tool_calls_json,model_provider,model_name,prompt_version,created_at) "
-                               "VALUES(?,?,?,?,?,?,?,?,?,?)",
-                               (settings.default_user_id, question, text, "[]", "[]",
-                                json.dumps([{"name": "save_coach_memory", "arguments": {"memory_id": memory_id}}]),
-                                "code", "none",
-                                "remember-v1", datetime.now(UTC).replace(tzinfo=None).isoformat()))
+        _save_chat_turn(settings, question, text, (),
+                        ({"name": "save_coach_memory", "arguments": {"memory_id": memory_id}},),
+                        "code", "none", "remember-v1")
         return TrainingChatReply(text, False)
     if activity_id is not None:
-        with _db(settings) as connection:
-            if connection.execute("SELECT 1 FROM activities WHERE id=? AND user_id=?",
-                                  (activity_id, settings.default_user_id)).fetchone() is None:
+        with session_scope(settings.db_url) as session:
+            if CoachRepository(session).activity_card(settings.default_user_id, activity_id) is None:
                 raise ValueError("Attached session not found")
     if not plan_change_question(question):
         return TrainingChatService(settings, llm_client=llm).answer(question, settings.default_user_id, activity_id)
@@ -122,12 +107,18 @@ def ask_coach(settings: Settings, day: date, question: str, activity_id: int | N
                                         user_id=settings.default_user_id, llm=llm, today=day)
     text = "I drafted a plan-change proposal for your review. Nothing has been applied. Review it in Plan."
     evidence = tuple(proposal["facts"][:4])
-    with sqlite3.connect(settings.db_path) as connection:
-        connection.execute("INSERT INTO coach_chat_turns(user_id,question,answer,evidence_json,activity_ids_json,"
-                           "tool_calls_json,model_provider,model_name,prompt_version,created_at) "
-                           "VALUES(?,?,?,?,?,?,?,?,?,?)",
-                           (settings.default_user_id, question, text, json.dumps(evidence), json.dumps([]),
-                            json.dumps([{"name": "propose_requested_change", "arguments": {"week": monday(day).isoformat()}}]),
-                            settings.llm_provider, settings.openai_model if settings.llm_provider == "openai" else
-                            settings.ollama_model, "chat-plan-v1", datetime.now(UTC).replace(tzinfo=None).isoformat()))
+    _save_chat_turn(settings, question, text, evidence,
+                    ({"name": "propose_requested_change", "arguments": {"week": monday(day).isoformat()}},),
+                    settings.llm_provider, settings.openai_model if settings.llm_provider == "openai" else
+                    settings.ollama_model, "chat-plan-v1")
     return TrainingChatReply(text, True, evidence, (), ("What changed in the proposal?",), ())
+
+
+def _save_chat_turn(settings: Settings, question: str, answer: str,
+                    evidence: tuple[dict[str, Any], ...] | list[dict[str, Any]],
+                    tool_calls: tuple[dict[str, Any], ...], provider: str, model: str,
+                    prompt_version: str) -> None:
+    with session_scope(settings.db_url) as session:
+        AgentRepository(session).save_chat_turn(
+            settings.default_user_id, question, answer, json.dumps(evidence), json.dumps([]),
+            json.dumps(tool_calls), provider, model, prompt_version, datetime.now(UTC))

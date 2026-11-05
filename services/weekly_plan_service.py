@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-import sqlite3
 from datetime import date
 from typing import Any
 
 from coach.proposals import get_week, monday
 from config import Settings, get_settings
+from db.repositories.plan import PlanRepository
+from db.session import session_scope
 
 
 def get_weekly_plan(start: date, *, settings: Settings | None = None,
@@ -21,16 +22,9 @@ def scheduled_team_sports(day: date, *, settings: Settings | None = None,
     """Read recurring commitments and dated team sessions without materializing them."""
     settings = settings or get_settings()
     identifier = user_id or settings.default_user_id
-    with sqlite3.connect(settings.db_path.resolve().as_uri() + "?mode=ro", uri=True) as connection:
-        fixed = connection.execute(
-            "SELECT f.sport FROM fixed_commitments f WHERE f.user_id=? AND f.weekday=? AND f.active=1 "
-            "AND NOT EXISTS (SELECT 1 FROM plan_sessions p WHERE p.user_id=f.user_id "
-            "AND p.fixed_commitment_id=f.id AND p.date=? AND p.status='skipped')",
-            (identifier, day.weekday(), day.isoformat())).fetchall()
-        planned = connection.execute("SELECT sport FROM plan_sessions WHERE user_id=? AND date=? "
-                                     "AND sport IN ('football','volleyball') AND status='planned'",
-                                     (identifier, day.isoformat())).fetchall()
-    return tuple(dict.fromkeys(row[0] for row in (*fixed, *planned)))
+    url = f"sqlite:///file:{settings.db_path.resolve()}?mode=ro&uri=true"
+    with session_scope(url) as session:
+        return PlanRepository(session).scheduled_team_sports(identifier, day)
 
 
 def todays_sessions(day: date, *, settings: Settings | None = None,

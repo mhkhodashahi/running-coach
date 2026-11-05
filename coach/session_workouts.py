@@ -3,44 +3,40 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 from datetime import date
 from pathlib import Path
 from typing import Any
 
-from coach.proposals import _bump, _db, create_proposal, get_week, monday
+from coach.proposals import create_proposal, get_week, monday
+from db.repositories.plan import PlanRepository
+from db.session import session_scope
 
 
 def read_session(database: Path, user_id: int, session_id: int) -> dict[str, Any]:
-    with sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True) as db:
-        db.row_factory = sqlite3.Row
-        row = db.execute("SELECT * FROM plan_sessions WHERE id=? AND user_id=?",
-                         (session_id, user_id)).fetchone()
+    with session_scope(f"sqlite:///{database.resolve()}") as session:
+        row = PlanRepository(session).planned_session(user_id, session_id)
     if row is None:
         raise ValueError("Planned session not found")
-    return dict(row)
+    return row
 
 
 def use_shorter_variant(database: Path, user_id: int, session_id: int) -> dict[str, Any]:
-    with _db(database) as db:
-        row = db.execute("SELECT * FROM plan_sessions WHERE id=? AND user_id=?",
-                         (session_id, user_id)).fetchone()
-        if row is None or row["status"] != "planned":
-            raise ValueError("Only a planned session can switch to its shorter version")
-        if not row["workout_json"]:
-            raise ValueError("This session has no stored workout variants")
-        workout = json.loads(row["workout_json"])
-        variant = (workout.get("variants") or {}).get("shorter")
-        if not variant:
-            raise ValueError("No shorter version is available")
-        workout["steps"] = variant["steps"]
-        workout["duration_min"] = variant["duration_min"]
-        workout["title"] = f"{workout.get('title', row['sport'].title()).rsplit(' ', 1)[0]} {variant['duration_min']} min"
-        db.execute("UPDATE plan_sessions SET duration_min=?,workout_json=?,updated_at=CURRENT_TIMESTAMP "
-                   "WHERE id=? AND user_id=?",
-                   (variant["duration_min"], json.dumps(workout), session_id, user_id))
-        _bump(db, user_id)
-    return read_session(database, user_id, session_id)
+    row = read_session(database, user_id, session_id)
+    if row["status"] != "planned":
+        raise ValueError("Only a planned session can switch to its shorter version")
+    if not row["workout_json"]:
+        raise ValueError("This session has no stored workout variants")
+    workout = json.loads(row["workout_json"])
+    variant = (workout.get("variants") or {}).get("shorter")
+    if not variant:
+        raise ValueError("No shorter version is available")
+    workout["steps"] = variant["steps"]
+    workout["duration_min"] = variant["duration_min"]
+    workout["title"] = f"{workout.get('title', row['sport'].title()).rsplit(' ', 1)[0]} {variant['duration_min']} min"
+    with session_scope(f"sqlite:///{database.resolve()}") as session:
+        return PlanRepository(session).update_workout_variant(
+            user_id, session_id, variant["duration_min"], workout
+        )
 
 
 def propose_move(database: Path, user_id: int, session_id: int, target: date) -> dict[str, Any]:

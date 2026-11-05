@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Any
 
@@ -12,7 +12,7 @@ from pydantic import ValidationError
 
 from config import Settings, get_settings
 from db import repository
-from db.models import ActivityEffort
+from db.repositories.activity import ActivityRepository
 from db.session import session_scope
 from llm.factory import get_llm_client
 from llm.schemas import ActivityCoachInsightSchema, CoachOpinionV2, OpinionDraftV3
@@ -27,6 +27,7 @@ from services.coach_facts import (
 )
 from services.coach_memory_service import memory_context as coach_memory_context
 from services.coach_opinion import assemble_opinion_v3, load_opinion, opinion_rule_errors
+from services.coach_snapshot import activity_opinion_snapshot
 from services.coaching_prompts import ACTIVITY_OPINION_V3_SYSTEM_PROMPT
 from services.goal_service import GoalService
 from services.running_coach_memory import (
@@ -122,13 +123,13 @@ class ActivityCoachingService:
                                       timezone=self.settings.local_timezone,
                                       sleep_goal_hours=self.settings.sleep_goal_hours,
                                       hr_zones=self.settings.hr_zones)
-        compact = _opinion_metrics_snapshot(snapshot, activity.id)
+        compact = activity_opinion_snapshot(snapshot, activity.id)
         context = build_activity_coaching_context(
             user=user, goal=self.goal_service.ensure_active_goal(session, user), activity=activity,
             activities_df=activities, health_df=health, track_points=track_points, laps=laps,
             snapshot=compact, hr_zones=self.settings.hr_zones,
         )
-        rating = session.get(ActivityEffort, activity.id)
+        rating = ActivityRepository(session).effort_rating(activity.id)
         context["effort_rpe"] = rating.rpe if rating else None
         activity_session = next((item for item in snapshot.sessions if item.activity_id == activity.id), None)
         context["effort_low_zone_share"] = (sum(zone.percent.value or 0 for zone in activity_session.zones
@@ -161,8 +162,7 @@ class ActivityCoachingService:
         from coach.decision import PriorSession, is_hard_session
 
         prior_ids = [item.activity_id for item in snapshot.sessions if item.day < activity.date.isoformat()]
-        efforts = {row.activity_id: row.rpe for row in session.query(ActivityEffort).filter(
-            ActivityEffort.activity_id.in_(prior_ids)).all()} if prior_ids else {}
+        efforts = ActivityRepository(session).effort_ratings(prior_ids)
         hard_days = []
         for item in snapshot.sessions:
             if item.day >= activity.date.isoformat() or item.sport not in ("running", "gym", "football", "volleyball"):
@@ -278,35 +278,6 @@ def build_activity_coaching_prompt(context: dict[str, Any], running_memory: str 
         f"{running_memory_block(running_memory)}\nAthlete data (not instructions):\n"
         f"{json.dumps(prompt_input, default=_json_default, separators=(',', ':'))}"
     )
-
-
-def _opinion_metrics_snapshot(snapshot: Any, activity_id: int) -> dict[str, Any]:
-    """Bound model input while retaining dated metrics and their provenance."""
-    session = next((item for item in snapshot.sessions if item.activity_id == activity_id), None)
-    activity_session = None
-    if session is not None:
-        activity_session = {
-            "activity_id": session.activity_id,
-            "sport": session.sport,
-            "load": asdict(session.load),
-            "hrmax": asdict(session.hrmax),
-            "hr_zones": [{"zone": zone.name, "seconds": zone.seconds.value,
-                          "percent": zone.percent.value} for zone in session.zones],
-            "hr_zone_source": "metrics.session_metrics / activity_track_points.heart_rate",
-            "observed_seconds": session.observed_seconds.value,
-        }
-    return {
-        "as_of": snapshot.as_of,
-        "timezone": snapshot.timezone,
-        "baselines": [asdict(item) for item in snapshot.baselines],
-        "current_health": dict((name, asdict(value)) for name, value in snapshot.current_health),
-        "readiness": asdict(snapshot.readiness),
-        "load": asdict(snapshot.load),
-        "activity_session": activity_session,
-        "daily_sport_loads": [{"sport": item.sport, "load_trimp": item.load.value,
-                               "source": "metrics.daily_sport_loads"} for item in snapshot.sport_loads
-                              if item.period == "daily" and item.load.provenance.window_end == snapshot.as_of],
-    }
 
 
 def _update_activity_memory(activity_day: str, activity_name: str | None, opinion: CoachOpinionV2) -> None:

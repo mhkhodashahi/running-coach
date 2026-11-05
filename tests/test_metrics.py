@@ -11,6 +11,7 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from sqlalchemy.exc import OperationalError
 
 from metrics.baselines import current_health, health_baseline, maximum_hr, recent_hrv, resting_hr_for_session
 from metrics.load import (
@@ -207,7 +208,7 @@ def test_missing_history_is_not_zero_and_fourteen_day_threshold():
 
 @pytest.mark.parametrize("ratio,expected", [(0, 50), (0.5, 50), (0.65, 75), (0.8, 100), (1.3, 100), (1.55, 50), (1.8, 0), (2, 0), (None, None)])
 def test_load_readiness_component(ratio, expected):
-    result = load_score(ratio, DAY)
+    result = load_score(ratio)
     assert result == pytest.approx(expected) if expected is not None else result is None
 
 
@@ -306,7 +307,7 @@ def test_readonly_reader_scope_missing_db_and_cli(database, tmp_path):
     assert json.loads(result.stdout)["snapshot"]["as_of"] == DAY.isoformat()
     assert database.read_bytes() == original
     missing = tmp_path / "missing.db"
-    with pytest.raises(sqlite3.OperationalError):
+    with pytest.raises(OperationalError):
         read_inputs(missing, 1, DAY, ZONE)
     assert not missing.exists()
 

@@ -11,8 +11,8 @@ from sqlalchemy import create_engine
 from coach.agent import _tool_specs
 from coach.tools import CoachTools, comparison_efficiency
 from db.models import Base
-from services.activity_coaching_service import _opinion_metrics_snapshot
 from services.coach_facts import build_facts
+from services.coach_snapshot import activity_opinion_snapshot
 
 
 @pytest.fixture
@@ -174,7 +174,7 @@ def test_activity_and_opinion_pack_share_display_values(coach_db):
     context = {
         "selected_activity": {"id": 1, "date": "2026-06-20", "distance_km": 5,
                               "duration_min": 30, "avg_hr": 140, "pace": 6},
-        "metrics_snapshot": _opinion_metrics_snapshot(snapshot, 1),
+        "metrics_snapshot": activity_opinion_snapshot(snapshot, 1),
     }
     opinion = {fact["id"]: fact["display"] for fact in build_facts(1, context)}
     activity = {fact["id"].removeprefix("ACT_1_"): fact["display"]

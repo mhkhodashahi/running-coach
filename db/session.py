@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from contextlib import contextmanager
+from functools import lru_cache
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
@@ -16,11 +17,14 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expi
 
 
 @contextmanager
-def session_scope() -> Iterator[Session]:
-    """Provide a transactional scope around database operations."""
+def session_scope(database_url: str | None = None) -> Iterator[Session]:
+    """Provide one transactional session for the configured or supplied database."""
 
-    session = SessionLocal()
+    session = _session_factory(database_url)()
     try:
+        connection = session.connection()
+        if connection.dialect.name == "sqlite":
+            connection.exec_driver_sql("PRAGMA foreign_keys=ON")
         yield session
         session.commit()
     except Exception:
@@ -28,3 +32,11 @@ def session_scope() -> Iterator[Session]:
         raise
     finally:
         session.close()
+
+
+@lru_cache(maxsize=8)
+def _session_factory(database_url: str | None) -> sessionmaker[Session]:
+    if database_url is None or database_url == settings.db_url:
+        return SessionLocal
+    database_engine = create_engine(database_url, future=True)
+    return sessionmaker(bind=database_engine, autoflush=False, autocommit=False, expire_on_commit=False)

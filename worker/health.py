@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from db.repositories.worker_health import WorkerHealthRepository
+from db.session import session_scope
 from worker.state import preferences, worker_running
 
 SYNC_MAX_AGE = timedelta(hours=26)
@@ -35,16 +36,14 @@ def worker_last_seen(database: Path) -> datetime | None:
 def health_problems(database: Path, user_id: int, now: datetime, timezone: str) -> tuple[HealthProblem, ...]:
     """Describe current failures; never expose stored exception text or credentials."""
     local = now.astimezone(ZoneInfo(timezone))
-    with sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True) as db:
-        sync_row = db.execute("SELECT last_synced_at FROM garmin_sync_status WHERE user_id=?",
-                              (user_id,)).fetchone()
-        jobs = db.execute("SELECT job,status FROM job_runs WHERE user_id=? AND status!='sending' "
-                          "AND job NOT LIKE 'health-alert-%' ORDER BY started_at DESC,id DESC",
-                          (user_id,)).fetchall()
-        morning = db.execute("SELECT status FROM job_runs WHERE user_id=? AND job='morning' AND run_date=?",
-                             (user_id, local.date().isoformat())).fetchone()
+    url = f"sqlite:///file:{database.resolve()}?mode=ro&uri=true"
+    with session_scope(url) as session:
+        repository = WorkerHealthRepository(session)
+        sync_time = repository.sync_time(user_id)
+        jobs = repository.recent_jobs(user_id, exclude_prefix="health-alert-")
+        morning = repository.job_status(user_id, "morning", local.date())
     problems: list[HealthProblem] = []
-    synced = _timestamp(sync_row[0] if sync_row else None)
+    synced = _timestamp(sync_time)
     if synced is None or now.astimezone(UTC) - synced.astimezone(UTC) > SYNC_MAX_AGE:
         when = (f" since {synced.astimezone(ZoneInfo(timezone)):%a} "
                 f"{synced.astimezone(ZoneInfo(timezone)).day} "
@@ -52,7 +51,8 @@ def health_problems(database: Path, user_id: int, now: datetime, timezone: str) 
         problems.append(HealthProblem("sync-stale", "Garmin sync has not worked" + when +
                                       ". Check your Garmin login or run python -m utils.garmin_sync_cli."))
     latest: dict[str, list[str]] = {}
-    for name, status in jobs:
+    for row in jobs:
+        name, status = row["job"], row["status"]
         key = "sync" if name.startswith("sync-") else name
         if len(latest.setdefault(key, [])) < 2:
             latest[key].append(status)
@@ -65,8 +65,7 @@ def health_problems(database: Path, user_id: int, now: datetime, timezone: str) 
                        else "Check the worker log and restart python -m worker.")
                 problems.append(HealthProblem(f"failed-{name}", f"{label} failed twice. {fix}"))
     pref = preferences(database, user_id)
-    if pref["morning_enabled"] and local.strftime("%H:%M") >= pref["morning_latest"] and (
-            morning is None or morning[0] != "sent"):
+    if pref["morning_enabled"] and local.strftime("%H:%M") >= pref["morning_latest"] and morning != "sent":
         problems.append(HealthProblem("morning-missed", "Morning call was not sent by " +
                                       pref["morning_latest"] + ". Check Telegram settings and the worker log."))
     return tuple(problems)
@@ -80,9 +79,9 @@ def web_status(database: Path, user_id: int, now: datetime, timezone: str) -> st
         return "Sync failed twice. Check your Garmin login."
     last = worker_last_seen(database)
     if last is None:
-        with sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True) as db:
-            row = db.execute("SELECT MAX(finished_at) FROM job_runs WHERE user_id=?", (user_id,)).fetchone()
-        last = _timestamp(row[0] if row else None)
+        url = f"sqlite:///file:{database.resolve()}?mode=ro&uri=true"
+        with session_scope(url) as session:
+            last = _timestamp(WorkerHealthRepository(session).latest_finished(user_id))
     if not worker_running(database) or last is None or now.astimezone(UTC) - last > HEARTBEAT_MAX_AGE:
         when = (f" since {last.astimezone(ZoneInfo(timezone)):%a} "
                 f"{last.astimezone(ZoneInfo(timezone)).day} "

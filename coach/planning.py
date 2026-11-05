@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
 from math import floor, inf
@@ -14,7 +13,7 @@ from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from coach.agent import CoachAgent, _read_version, _user_lock
+from coach.agent import CoachAgent
 from coach.decision import MIN_QUALITY_SESSION_MIN, WEEKLY_LIMIT_PCT
 from coach.proposals import (
     create_proposal,
@@ -25,8 +24,11 @@ from coach.proposals import (
     monday,
     request_revision,
 )
+from coach.runtime import require_current_database, user_job_lock
 from coach.workouts import build_workout, goal_phase, pace_targets, race_paces, recent_pace_samples, zone_targets
 from config import Settings, get_settings
+from db.repositories.planning import PlanningRepository
+from db.session import session_scope
 from llm.base import NullLLMClient
 from llm.factory import get_llm_client
 from metrics import get_daily_snapshot
@@ -227,11 +229,12 @@ def read_habits(database: Path, user_id: int, start: date,
     if not reference_weeks:
         return HabitPattern({"running": 0, "gym": 0}, {"running": 30, "gym": 30})
     earliest = min(week for week, _ in reference_weeks)
-    with sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True) as connection:
-        rows = connection.execute("SELECT date,type,duration FROM activities WHERE user_id=? "
-                                  "AND date>=? AND date<?", (user_id, earliest, start.isoformat())).fetchall()
-    return reference_habit_pattern([{"date": row[0], "sport": sport_category(row[1], start),
-                                     "duration_min": row[2]} for row in rows], reference_weeks)
+    with session_scope(f"sqlite:///{database.resolve()}") as session:
+        rows = PlanningRepository(session).habit_activities(
+            user_id, date.fromisoformat(earliest), start
+        )
+    return reference_habit_pattern([{"date": row["date"], "sport": sport_category(row["type"], start),
+                                     "duration_min": row["duration"]} for row in rows], reference_weeks)
 
 
 def validate_narrative(narrative: WeekNarrative, changes: tuple[dict[str, Any], ...],
@@ -692,9 +695,8 @@ def load_model(database: Path, user_id: int, start: date, settings: Settings) ->
     today = datetime.now(ZoneInfo(settings.local_timezone)).date()
     end = min(start - timedelta(days=1), today)
     cutoff = min(start, monday(today))
-    with sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True) as connection:
-        intents = {row[0]: row[1] for row in connection.execute(
-            "SELECT id,planned_intent FROM activities WHERE user_id=? AND date<=?", (user_id, end.isoformat()))}
+    with session_scope(f"sqlite:///{database.resolve()}") as session:
+        intents = PlanningRepository(session).planned_intents(user_id, end)
     inputs = read_inputs(database, user_id, end, settings.local_timezone, point_lookback_days=None)
     calibration, multipliers = calibration_and_scales(inputs.activities, inputs.profile,
                                                      inputs.health, end, settings.local_timezone)
@@ -773,19 +775,15 @@ def _context(database: Path, user_id: int, start: date, settings: Settings,
                                         timezone=settings.local_timezone,
                                         sleep_goal_hours=settings.sleep_goal_hours, hr_zones=settings.hr_zones)
     load_ratio = ratio_snapshot.load.ratio.value
-    with sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True) as connection:
-        user = connection.execute("SELECT max_hr,age FROM users WHERE id=?", (user_id,)).fetchone()
-        active_goal = connection.execute("SELECT 1 FROM goals WHERE user_id=? AND is_active=1 "
-                                         "AND goal_type IN ('running_pb','marathon_pb','5k_pb','10k_pb','half_marathon_pb') "
-                                         "LIMIT 1", (user_id,)).fetchone() is not None
-        recent_runs = [row[1] for row in connection.execute(
-            "SELECT type,duration FROM activities WHERE user_id=? AND date>=? AND date<=? "
-            "AND duration>0", (user_id, (today - timedelta(days=LONG_RUN_LOOKBACK_DAYS - 1)).isoformat(),
-                               today.isoformat()))
-            if sport_category(row[0], today) == "running"]
+    with session_scope(f"sqlite:///{database.resolve()}") as session:
+        history = PlanningRepository(session).week_history(user_id, today, LONG_RUN_LOOKBACK_DAYS)
+    user = history.profile
+    active_goal = history.has_running_goal
+    recent_runs = [row["duration"] for row in history.recent_activities
+                   if sport_category(row["type"], today) == "running"]
     longest_recent_run = max(recent_runs, default=None)
     run_limit = long_run_limit(longest_recent_run)
-    max_hr = user[0] or (220 - user[1] if user and user[1] else None) if user else None
+    max_hr = user["max_hr"] or (220 - user["age"] if user and user["age"] else None) if user else None
     z2_cap = (settings.hr_zones[1][2] if len(settings.hr_zones) >= 2 else
               int(heart_rate_zone_bounds(max_hr)[1][2] - 1e-9) if max_hr else None)
     pinned_estimates = [estimate_load(item, model) for item in week["sessions"]
@@ -862,32 +860,26 @@ def detailed_changes(database: Path, user_id: int, start: date, settings: Settin
                      build: WeekBuild, model: LoadModel
                      ) -> tuple[list[dict[str, Any]], list[dict[str, str]], str]:
     """Attach code-owned workouts and verification facts to a proposed week."""
-    with sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True) as connection:
-        profile = connection.execute("SELECT max_hr,age FROM users WHERE id=?", (user_id,)).fetchone()
-        goal = connection.execute("SELECT target_date,target_distance_km,target_time_minutes FROM goals "
-                                  "WHERE user_id=? AND is_active=1 AND goal_type IN "
-                                  "('running_pb','marathon_pb','5k_pb','10k_pb','half_marathon_pb') "
-                                  "ORDER BY id DESC LIMIT 1", (user_id,)).fetchone()
-        laps = connection.execute(
-            "SELECT a.date,a.type,l.pace,l.avg_hr FROM activity_laps l "
-            "JOIN activities a ON a.id=l.activity_id WHERE a.user_id=? AND a.date>=? AND a.date<?",
-            (user_id, (start - timedelta(weeks=8)).isoformat(), start.isoformat())).fetchall()
-        efforts = connection.execute(
-            "SELECT date,type,distance,duration FROM activities WHERE user_id=? AND date>=? AND date<?",
-            (user_id, (start - timedelta(weeks=8)).isoformat(), start.isoformat())).fetchall()
-        previous_sessions = connection.execute(
-            "SELECT workout_json FROM plan_sessions WHERE user_id=? AND date>=? AND date<? "
-            "AND workout_json IS NOT NULL", (user_id, (start - timedelta(days=7)).isoformat(),
-                                              start.isoformat())).fetchall()
-    max_hr = profile[0] or (220 - profile[1] if profile and profile[1] else None) if profile else None
+    with session_scope(f"sqlite:///{database.resolve()}") as session:
+        history = PlanningRepository(session).workout_history(user_id, start)
+    profile = history.profile
+    goal = history.goal
+    laps = history.laps
+    efforts = history.activities
+    previous_sessions = history.previous_workouts
+    max_hr = profile["max_hr"] or (220 - profile["age"] if profile and profile["age"] else None) if profile else None
     zones = zone_targets(settings.hr_zones, max_hr)
-    samples = recent_pace_samples([(date.fromisoformat(day), pace, hr) for day, kind, pace, hr in laps
-                                   if sport_category(kind, start) == "running"], start)
+    samples = recent_pace_samples([(date.fromisoformat(row["date"]), row["pace"], row["avg_hr"])
+                                   for row in laps
+                                   if sport_category(row["type"], start) == "running"], start)
     paces = pace_targets(samples, zones)
-    races = race_paces([(km, minutes) for _, kind, km, minutes in efforts
-                        if sport_category(kind, start) == "running"],
-                       (goal[1], goal[2]) if goal and goal[1] and goal[2] else None)
-    phase, weeks_to_goal = goal_phase(start, date.fromisoformat(goal[0]) if goal and goal[0] else None)
+    races = race_paces([(row["distance"], row["duration"]) for row in efforts
+                        if sport_category(row["type"], start) == "running"],
+                       (goal["target_distance_km"], goal["target_time_minutes"])
+                       if goal and goal["target_distance_km"] and goal["target_time_minutes"] else None)
+    phase, weeks_to_goal = goal_phase(
+        start, date.fromisoformat(goal["target_date"]) if goal and goal["target_date"] else None
+    )
     changes = []
     extra_facts: list[dict[str, str]] = []
     active = [item for item in build.candidate if item.get("status", "planned") == "planned"]
@@ -916,11 +908,13 @@ def detailed_changes(database: Path, user_id: int, start: date, settings: Settin
                                     estimated_load=session_load,
                                     why_day=why_day,
                                     race_targets=races,
-                                    max_duration_min=long_run_limit(max((minutes for day, kind, _, minutes in efforts
-                                                                          if start - timedelta(days=28) <=
-                                                                          date.fromisoformat(day) < start and
-                                                                          sport_category(kind, start) == "running"),
-                                                                         default=None)) if template_id == "long" else None)
+                                    max_duration_min=long_run_limit(max(
+                                        (row["duration"] for row in efforts
+                                         if start - timedelta(days=28) <=
+                                         date.fromisoformat(row["date"]) < start and
+                                         sport_category(row["type"], start) == "running"),
+                                        default=None,
+                                    )) if template_id == "long" else None)
             through_day = sum(estimate_load(item, model) or 0 for item in active
                               if item["date"] <= session["date"])
             workout["week_percent_after"] = (round(through_day / model.previous_weekly_average * 100)
@@ -966,8 +960,9 @@ def detailed_changes(database: Path, user_id: int, start: date, settings: Settin
         summary += f" Load change from last week: {delta:+d}% of usual."
     longest = max((item["session"]["duration_min"] for item in changes
                    if item["session"].get("workout_type") == "long"), default=None)
-    last_week_long = max((minutes for day, kind, _, minutes in efforts
-                         if previous_week <= day < start.isoformat() and sport_category(kind, start) == "running"),
+    last_week_long = max((row["duration"] for row in efforts
+                         if previous_week <= row["date"] < start.isoformat()
+                         and sport_category(row["type"], start) == "running"),
                         default=None)
     if longest and last_week_long:
         delta = round(longest - last_week_long)
@@ -977,8 +972,8 @@ def detailed_changes(database: Path, user_id: int, start: date, settings: Settin
     current_quality = next((item["session"].get("workout") for item in changes
                             if item["session"].get("workout_type") in
                             ("tempo", "threshold", "vo2_intervals", "speed")), None)
-    last_quality = next((json.loads(row[0]) for row in previous_sessions
-                         if json.loads(row[0]).get("type") in
+    last_quality = next((json.loads(workout) for workout in previous_sessions
+                         if json.loads(workout).get("type") in
                          ("tempo", "threshold", "vo2_intervals", "speed")), None)
     if current_quality and last_quality:
         current_reps = current_quality["steps"][1].get("reps", 0)
@@ -995,7 +990,7 @@ def propose_week(start: date, *, settings: Settings | None = None, user_id: int 
     user_id = user_id or settings.default_user_id
     start = monday(start)
     today = today or datetime.now(ZoneInfo(settings.local_timezone)).date()
-    _read_version(settings.db_path)
+    require_current_database(settings.db_path)
     materialize_week(settings.db_path, user_id, start)
     week, facts, model, decisions, running_goal, habits, z2_cap, load_ratio, week_readiness, longest_run = _context(
         settings.db_path, user_id, start, settings, today)
@@ -1063,7 +1058,7 @@ def propose_week(start: date, *, settings: Settings | None = None, user_id: int 
         return create_proposal(settings.db_path, user_id, "weekly_plan", detailed_summary,
                                facts, prepared, base_version=week["version"])
     prompt = json.dumps(payload, default=str)
-    with _user_lock(settings.db_path, user_id):
+    with user_job_lock(settings.db_path, user_id):
         agent = CoachAgent(settings, client, user_id)
         for attempt in range(2):
             agent._count_request()
@@ -1134,7 +1129,7 @@ def propose_day(day: date, *, settings: Settings | None = None, user_id: int | N
     today = today or datetime.now(ZoneInfo(settings.local_timezone)).date()
     if day not in (today, today + timedelta(days=1)):
         raise ValueError("Choose today or tomorrow for a daily proposal")
-    _read_version(settings.db_path)
+    require_current_database(settings.db_path)
     start = monday(day)
     for proposal in list_proposals(settings.db_path, user_id, start):
         if proposal["status"] == "pending" and any(
@@ -1144,21 +1139,18 @@ def propose_day(day: date, *, settings: Settings | None = None, user_id: int | N
     if any(item["date"] == day.isoformat() and item["status"] in ("planned", "done")
            for item in week["sessions"]):
         return {"status": "already_planned", "summary": "This day already has a planned session."}
-    with sqlite3.connect(settings.db_path.resolve().as_uri() + "?mode=ro", uri=True) as connection:
-        logged_types = [row[0] for row in connection.execute(
-            "SELECT type FROM activities WHERE user_id=? AND date=?", (user_id, day.isoformat()))]
-        if any(sport_category(raw, day) in ("running", "gym", "football", "volleyball")
-               for raw in logged_types):
-            return {"status": "already_logged", "summary": "This day already has a logged activity."}
+    with session_scope(f"sqlite:///{settings.db_path.resolve()}") as session:
+        logged_types = PlanningRepository(session).logged_activity_types(user_id, day)
+    if any(sport_category(raw, day) in ("running", "gym", "football", "volleyball")
+           for raw in logged_types):
+        return {"status": "already_logged", "summary": "This day already has a logged activity."}
     week, context_facts, model, decisions, _, _, z2_cap, _, _, longest_run = _context(
         settings.db_path, user_id, start, settings, today)
     decision = build_daily_decision(day, settings.db_path, user_id, settings.local_timezone,
                                     settings.sleep_goal_hours, settings.hr_zones)
-    with sqlite3.connect(settings.db_path.resolve().as_uri() + "?mode=ro", uri=True) as connection:
-        choice_row = connection.execute(
-            "SELECT payload_json FROM coaching_decisions WHERE user_id=? AND decision_type='daily_v2' "
-            "AND decision_date=? ORDER BY id DESC LIMIT 1", (user_id, day.isoformat())).fetchone()
-    athlete_choice = json.loads(choice_row[0]).get("athlete_choice") if choice_row else None
+    with session_scope(f"sqlite:///{settings.db_path.resolve()}") as session:
+        choice_payload = PlanningRepository(session).athlete_choice(user_id, day)
+    athlete_choice = json.loads(choice_payload).get("athlete_choice") if choice_payload else None
     if athlete_choice == "rest":
         return {"status": "rest", "summary": "You chose rest for this day; no training session was proposed."}
     if athlete_choice == "easy":
@@ -1226,7 +1218,7 @@ def propose_requested_change(request: str, start: date, *, settings: Settings,
         )
     start = monday(start)
     today = today or datetime.now(ZoneInfo(settings.local_timezone)).date()
-    _read_version(settings.db_path)
+    require_current_database(settings.db_path)
     week, facts, model, decisions, running_goal, _, _, _, _, longest_run = _context(
         settings.db_path, user_id, start, settings, today)
     client = llm or get_llm_client(settings.llm_provider, settings.openai_api_key, settings.openai_model,
@@ -1234,7 +1226,7 @@ def propose_requested_change(request: str, start: date, *, settings: Settings,
     prompt = json.dumps({"week": week, "facts": facts, "load_cap": model.cap,
                          "athlete_request_as_data": request.strip(),
                          "today": today.isoformat(), "running_goal": running_goal}, default=str)
-    with _user_lock(settings.db_path, user_id):
+    with user_job_lock(settings.db_path, user_id):
         agent = CoachAgent(settings, client, user_id)
         for attempt in range(2):
             agent._count_request()
@@ -1318,13 +1310,11 @@ def propose_daily_conflict(day: date, intensity: str, decision_facts: list[dict[
              ("READINESS", "WEEKLY_LOAD", "WEEKLY_LIMIT", "ILLNESS_FLAG")]
     if not facts:
         return []
-    with sqlite3.connect(settings.db_path.resolve().as_uri() + "?mode=ro", uri=True) as connection:
-        pending = connection.execute("SELECT 1 FROM coach_proposals p WHERE p.user_id=? "
-                                     "AND p.base_version=? AND p.summary=? "
-                                     "AND p.status IN ('pending','applied','partially_applied','dismissed') LIMIT 1",
-                                     (user_id, week["version"],
-                                      f"Review today's session ({day.isoformat()})")).fetchone()
-    if pending:
+    with session_scope(f"sqlite:///{settings.db_path.resolve()}") as session:
+        exists = PlanningRepository(session).has_daily_conflict_proposal(
+            user_id, week["version"], f"Review today's session ({day.isoformat()})"
+        )
+    if exists:
         return []
     proposals = []
     for planned in week["sessions"]:

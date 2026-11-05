@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 from dataclasses import dataclass
 from typing import Any
 
 from coach.agent import CoachAgent
 from config import Settings, get_settings
+from db.repositories.chat import ChatRepository
+from db.session import session_scope
 from llm.factory import get_llm_client
 from services.coach_memory_service import memory_context
 from services.running_coach_memory import load_running_memory
@@ -52,15 +53,15 @@ class TrainingChatService:
                                  result.activity_ids, result.follow_ups, result.tool_calls)
 
     def history(self, user_id: int | None = None, limit: int = 20) -> list[dict[str, Any]]:
-        database = self.settings.db_path
-        with sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True) as connection:
-            rows = connection.execute("SELECT question,answer,evidence_json,activity_ids_json,created_at,tool_calls_json "
-                                      "FROM coach_chat_turns "
-                                      "WHERE user_id=? ORDER BY id DESC LIMIT ?",
-                                      (user_id or self.settings.default_user_id, min(max(limit, 1), 30))).fetchall()
-        return [{"question": row[0], "answer": row[1], "evidence": json.loads(row[2]),
-                 "activity_ids": json.loads(row[3]), "created_at": row[4],
-                 "tool_calls": json.loads(row[5])} for row in reversed(rows)]
+        url = f"sqlite:///file:{self.settings.db_path.resolve()}?mode=ro&uri=true"
+        with session_scope(url) as session:
+            rows = ChatRepository(session).recent_turns(
+                user_id or self.settings.default_user_id, min(max(limit, 1), 30)
+            )
+        return [{"question": row["question"], "answer": row["answer"],
+                 "evidence": json.loads(row["evidence_json"]),
+                 "activity_ids": json.loads(row["activity_ids_json"]), "created_at": row["created_at"],
+                 "tool_calls": json.loads(row["tool_calls_json"])} for row in rows]
 
 
 def _telegram_limit(text: str, limit: int = 3900) -> str:

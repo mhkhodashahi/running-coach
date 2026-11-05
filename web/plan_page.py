@@ -3,12 +3,8 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 from datetime import date, timedelta
 from typing import Any
-
-from sqlalchemy import create_engine
-from sqlalchemy.orm import Session
 
 from coach.planning import (
     apply_draft,
@@ -35,6 +31,8 @@ from coach.proposals import (
     undo_last,
 )
 from config import Settings
+from db.repositories.plan_view import PlanViewRepository
+from db.session import session_scope
 from metrics import get_daily_snapshot
 from metrics.sports import RECOMMENDABLE_SPORTS, sport_category
 from services.daily_decision_service import build_daily_decision
@@ -79,33 +77,20 @@ def _actuals(settings: Settings, day: date, start: date) -> tuple[dict[str, list
     loads = {item.activity_id: item.load.value for item in snapshot.sessions}
     actuals: dict[str, list[dict[str, Any]]] = {}
     rest_choices: set[str] = set()
-    engine = create_engine(settings.db_url)
-    try:
-        with Session(engine) as session:
-            unrated_ids = {item.id for item in unrated_activities(
-                session, settings.default_user_id, limit=50, timezone=settings.local_timezone)}
-    finally:
-        engine.dispose()
-    with sqlite3.connect(settings.db_path.resolve().as_uri() + "?mode=ro", uri=True) as connection:
-        connection.row_factory = sqlite3.Row
-        for row in connection.execute("SELECT id,date,type,duration FROM activities WHERE user_id=? "
-                                      "AND substr(date,1,10) BETWEEN ? AND ? ORDER BY date,id",
-                                      (settings.default_user_id, start.isoformat(), day.isoformat())):
-            stamp = row["date"][:10]
-            sport = sport_category(row["type"], date.fromisoformat(stamp))
-            if sport not in RECOMMENDABLE_SPORTS:
-                continue
-            actuals.setdefault(stamp, []).append({"id": row["id"], "sport": sport,
-                "duration": display_duration(row["duration"]), "load": loads.get(row["id"]),
-                "rate_id": row["id"] if row["id"] in unrated_ids else None, "status": "done"})
-        for row in connection.execute("SELECT decision_date,payload_json FROM coaching_decisions "
-                                      "WHERE user_id=? AND decision_type='daily_v2' AND decision_date BETWEEN ? AND ?",
-                                      (settings.default_user_id, start.isoformat(), day.isoformat())):
-            try:
-                if json.loads(row["payload_json"]).get("athlete_choice") == "rest":
-                    rest_choices.add(row["decision_date"])
-            except (ValueError, TypeError):
-                continue
+    with session_scope(settings.db_url) as session:
+        repository = PlanViewRepository(session)
+        unrated_ids = {item.id for item in unrated_activities(
+            session, settings.default_user_id, limit=50, timezone=settings.local_timezone)}
+        activity_rows = repository.actual_activities(settings.default_user_id, start, day)
+        rest_choices = repository.athlete_rest_days(settings.default_user_id, start, day)
+    for row in activity_rows:
+        stamp = str(row["date"])[:10]
+        sport = sport_category(row["type"], date.fromisoformat(stamp))
+        if sport not in RECOMMENDABLE_SPORTS:
+            continue
+        actuals.setdefault(stamp, []).append({"id": row["id"], "sport": sport,
+            "duration": display_duration(row["duration"]), "load": loads.get(row["id"]),
+            "rate_id": row["id"] if row["id"] in unrated_ids else None, "status": "done"})
     return actuals, rest_choices
 
 
@@ -174,12 +159,11 @@ def _mobile_rows(days: list[dict[str, Any]], usual: float | None = None) -> list
 
 
 def _undo_label(settings: Settings) -> str | None:
-    with sqlite3.connect(settings.db_path.resolve().as_uri() + "?mode=ro", uri=True) as connection:
-        row = connection.execute("SELECT snapshot_json FROM plan_snapshots WHERE user_id=? AND undone_at IS NULL "
-                                 "ORDER BY id DESC LIMIT 1", (settings.default_user_id,)).fetchone()
-    if not row:
+    with session_scope(f"sqlite:///file:{settings.db_path.resolve()}?mode=ro&uri=true") as session:
+        value = PlanViewRepository(session).latest_undo_snapshot(settings.default_user_id)
+    if not value:
         return None
-    snapshot = json.loads(row[0])
+    snapshot = json.loads(value)
     count = sum(len({item["id"] for item in state["before"]} ^
                     {item["id"] for item in state["after"]}) +
                 sum(1 for before in state["before"] for after in state["after"]

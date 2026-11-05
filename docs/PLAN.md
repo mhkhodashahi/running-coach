@@ -208,6 +208,17 @@ The target contract is now in `AGENTS.md`. No milestone may rewrite stored data 
 - Athlete edits are immediate; model-extracted changes remain suggestions until explicitly kept. Extraction is opt-in, bounded by the daily LLM cap and remote-provider approval.
 - Inject bounded, escaped memory context into chat, planning, daily briefs and activity opinions; enforce structured rules in deterministic code. See `docs/milestone-6l-results.md`.
 
+### 6m. Application data-access boundary
+
+- **6m-1, Activity persistence (implemented):** database-scoped SQLAlchemy sessions and an explicit Activity repository own activity list/detail reads and Activity-owned mutations. Presentation shaping remains in the web layer. No schema change.
+- **6m-2, Planning persistence (implemented):** planning inputs, plan sessions, proposals, snapshots, and atomic apply/undo use scoped repositories. Planning and proposal rules remain in the coach layer; stale checks, snapshots, and accepted-change writes share one transaction.
+- **6m-3, Coach and health persistence (implemented):** bounded coach-tool reads, call-limit reservation, chat-turn writes, opinion lookup, and OpenAI usage-ledger writes use domain repositories. Coach decision and wording logic remain outside persistence.
+- **Metrics read boundary (implemented):** `MetricsRepository` owns user-scoped source-row reads for the pure metrics input adapter and legacy comparison report; local-time conversion and metric computation remain in `metrics/`.
+- **6m-4, service persistence (implemented):** daily decisions, morning briefs, memories, timeline notes, chat history, effort prompts, sync status, weekly-plan views, and import activity snapshots now go through focused repositories. Service modules retain application rules and orchestration. A static boundary test prevents direct SQLite/SQL execution from returning to these services.
+- **6m-5, worker and Settings persistence (implemented):** worker state, scheduling reads, health checks, memory-extraction cursors and Settings metadata use scoped repositories. Direct SQLite remains limited to the online backup/integrity implementation and database tooling. Static boundary tests prevent SQL access from returning to web and worker application modules.
+- **Current boundary:** application SQL is confined to `db/repositories/`; worker, Settings, web, coach, service, and metrics code use scoped repositories. `db/repository.py` is a compatibility forwarding module for older callers; new code must use focused repositories. Schema checks, migrations, backup, and restore remain operational direct-SQL exceptions.
+- Repository boundaries follow aggregates rather than creating empty CRUD wrappers for every physical table. The compatibility module is retained until its legacy consumers are migrated.
+
 ### 7. Open-source packaging
 
 - Files to touch: `README.md`, `CONTRIBUTING.md`, `SECURITY.md`, `.env.example`, `pyproject.toml`, `.gitignore`, `docs/upgrade.md`, `.github/workflows/`, release docs, and example data/tests.

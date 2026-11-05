@@ -6,11 +6,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO
 
-from sqlalchemy import text
-
 from config import get_settings
 from db import repository
-from db.models import GarminSyncStatus
+from db.repositories.activity import ActivityRepository
+from db.repositories.sync import GarminSyncRepository
 from services.effort_service import queue_new_activities
 from services.garmin_client import CSVGarminClient, GarminAPIClient, GarminClient
 from services.garmin_models import validate_laps, validate_track_points
@@ -89,7 +88,7 @@ class GarminImportService:
             token_dir=settings.garmin_token_dir,
             rate_limit_cooldown_minutes=settings.garmin_rate_limit_cooldown_minutes,
         )
-        sync_status = session.get(GarminSyncStatus, user_id)
+        sync_status = GarminSyncRepository(session).get(user_id)
         backfill_nights = include_health and (
             sync_status is None or sync_status.night_details_backfilled_at is None)
         requested_health_days = health_days or settings.garmin_health_sync_days
@@ -99,13 +98,11 @@ class GarminImportService:
             health_days=max(requested_health_days, 28) if backfill_nights else requested_health_days,
         )
         activity_rows, health_rows = result.activity_rows, result.health_rows
-        before_ids = ({row[0] for row in session.execute(
-            text("SELECT id FROM activities WHERE user_id=:uid"), {"uid": user_id})}
-            if include_activities else set())
+        activity_repository = ActivityRepository(session)
+        before_ids = activity_repository.ids_for_user(user_id) if include_activities else set()
         activities_imported = repository.bulk_upsert_activities(session, activity_rows) if include_activities else 0
         if activities_imported:
-            after_ids = {row[0] for row in session.execute(
-                text("SELECT id FROM activities WHERE user_id=:uid"), {"uid": user_id})}
+            after_ids = activity_repository.ids_for_user(user_id)
             queue_new_activities(session, after_ids - before_ids)
         track_points_imported = 0
         laps_imported = 0
@@ -153,5 +150,6 @@ class GarminImportService:
         if backfill_nights and result.night_details_complete:
             from datetime import UTC, datetime
 
-            session.get(GarminSyncStatus, user_id).night_details_backfilled_at = datetime.now(UTC).replace(tzinfo=None)
+            GarminSyncRepository(session).mark_night_details_backfilled(
+                user_id, datetime.now(UTC).replace(tzinfo=None))
         return summary

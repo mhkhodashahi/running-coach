@@ -11,7 +11,6 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
-from coach.agent import _user_lock
 from coach.planning import (
     MOBILITY_NOTE,
     HabitPattern,
@@ -62,10 +61,13 @@ from coach.proposals import (
     skip_manual_session,
     undo_last,
 )
+from coach.runtime import user_job_lock
 from coach.tools import CoachTools
 from config import get_settings
 from db.migration_runner import upgrade_database
+from db.repositories.plan import PlanRepository
 from db.repository import bulk_upsert_activities
+from db.session import session_scope
 from services.weekly_plan_service import scheduled_team_sports, todays_sessions
 
 START = date(2026, 6, 29)
@@ -332,8 +334,10 @@ def test_link_activity_marks_plan_done_without_editing_activity(database):
         connection.execute("INSERT INTO activities(user_id,date,type,distance,duration) VALUES(1,?,'running',5,1800)",
                            (START.isoformat(),))
         activity_id = connection.execute("SELECT max(id) FROM activities").fetchone()[0]
-        assert link_activity(connection, 1, activity_id, START, "running")
-        assert not link_activity(connection, 1, activity_id, START, "running")
+    with session_scope(f"sqlite:///{database}") as db_session:
+        repository = PlanRepository(db_session)
+        assert link_activity(repository, 1, activity_id, START, "running")
+        assert not link_activity(repository, 1, activity_id, START, "running")
     row = sqlite3.connect(database).execute("SELECT status,linked_activity_id FROM plan_sessions WHERE id=?",
                                              (session_id,)).fetchone()
     assert row == ("done", activity_id)
@@ -418,7 +422,7 @@ def test_mocked_llm_week_draft_is_validated_and_never_applied(database):
     assert get_week(database, 1, START)["sessions"] == []
     with sqlite3.connect(database) as connection:
         assert connection.execute("SELECT count(*) FROM coach_llm_calls").fetchone()[0] == 1
-    with _user_lock(database, 1), pytest.raises(RuntimeError, match="already running"):
+    with user_job_lock(database, 1), pytest.raises(RuntimeError, match="already running"):
         propose_week(START, settings=settings, llm=llm, today=START - timedelta(days=3))
     with pytest.raises(RuntimeError, match="call limit"):
         propose_week(START, settings=replace(settings, coach_daily_call_limit=1), llm=llm,
@@ -938,7 +942,8 @@ def test_mobility_is_separate_from_training_link_and_undo(database):
         connection.execute("INSERT INTO activities(user_id,date,type,distance,duration) "
                            "VALUES(1,?,'strength_training',0,30)", (day.isoformat(),))
         activity_id = connection.execute("SELECT max(id) FROM activities").fetchone()[0]
-        assert not link_activity(connection, 1, activity_id, day, "gym")
+    with session_scope(f"sqlite:///{database}") as db_session:
+        assert not link_activity(PlanRepository(db_session), 1, activity_id, day, "gym")
     undo_last(database, 1)
     assert not any(item["sport"] == "mobility" for item in get_week(database, 1, START)["sessions"])
 

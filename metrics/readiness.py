@@ -22,18 +22,18 @@ ILLNESS_HRV_DROP = -0.15
 MIN_COMPONENTS = 2
 
 
-def clamp(value: float, as_of: date) -> float:
+def clamp(value: float) -> float:
     return max(0.0, min(100.0, value))
 
 
-def load_score(ratio: float | None, as_of: date) -> float | None:
+def load_score(ratio: float | None) -> float | None:
     if ratio is None or not isfinite(ratio) or ratio < 0:
         return None
     if ratio < LOWER_LOAD:
         return MIDPOINT + MIDPOINT * max(0.0, ratio - LOW_LOAD_FLOOR) / (LOWER_LOAD - LOW_LOAD_FLOOR)
     if ratio <= UPPER_LOAD:
         return 100.0
-    return clamp(100 * (HIGH_LOAD_ZERO - ratio) / (HIGH_LOAD_ZERO - UPPER_LOAD), as_of)
+    return clamp(100 * (HIGH_LOAD_ZERO - ratio) / (HIGH_LOAD_ZERO - UPPER_LOAD))
 
 
 def readiness(current: dict[str, Metric], baselines: dict[tuple[str, int], Metric], ratio: Metric,
@@ -59,12 +59,12 @@ def readiness(current: dict[str, Metric], baselines: dict[tuple[str, int], Metri
     rhr_change = rhr - rhr_base if rhr is not None and rhr_base is not None else None
     scores = {
         "hrv": clamp((BASELINE_SCORE_V12 if version == "v1.2" else MIDPOINT) +
-                     hrv_change * (HRV_V1_SCALE if version == "v1" else HRV_SCALE), as_of)
+                     hrv_change * (HRV_V1_SCALE if version == "v1" else HRV_SCALE))
         if hrv_change is not None else None,
-        "sleep": clamp(sleep / sleep_goal_hours * 100, as_of) if sleep is not None else None,
-        "rhr": clamp((BASELINE_SCORE_V12 if version == "v1.2" else MIDPOINT) - rhr_change * RHR_SCALE, as_of)
+        "sleep": clamp(sleep / sleep_goal_hours * 100) if sleep is not None else None,
+        "rhr": clamp((BASELINE_SCORE_V12 if version == "v1.2" else MIDPOINT) - rhr_change * RHR_SCALE)
         if rhr_change is not None else None,
-        "load": load_score(ratio.value, as_of),
+        "load": load_score(ratio.value),
     }
     evidence = {
         "hrv": (hrv_recent.provenance if version in ("v1.1", "v1.2") and hrv_recent is not None else

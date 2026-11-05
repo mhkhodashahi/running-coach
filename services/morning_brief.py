@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from html import escape
@@ -13,6 +12,8 @@ from typing import Any
 
 from coach.guardrails import diagnosis_sentences
 from config import Settings
+from db.repositories.briefs import MorningBriefRepository
+from db.session import session_scope
 from llm.factory import get_llm_client
 from llm.schemas import MorningBriefDraft
 from metrics import get_daily_snapshot
@@ -105,7 +106,7 @@ def _duration(hours: float | None) -> str | None:
     return f"{minutes // 60}h {minutes % 60:02d}m" if minutes >= 60 else f"{minutes} min"
 
 
-def _average(rows: list[sqlite3.Row], field: str, count: int, minimum: int) -> float | None:
+def _average(rows: list[dict[str, Any]], field: str, count: int, minimum: int) -> float | None:
     values = [float(row[field]) for row in rows[:count] if row[field] is not None]
     return mean(values) if len(values) >= minimum else None
 
@@ -118,30 +119,16 @@ def _clock_minutes(clock: str) -> int:
 def build_morning_facts(settings: Settings, day: date, decision: Any) -> BriefContext:
     """Read only the athlete's bounded, dated inputs and format all claimable values."""
     user_id = settings.default_user_id
-    with sqlite3.connect(settings.db_path.resolve().as_uri() + "?mode=ro", uri=True) as db:
-        db.row_factory = sqlite3.Row
-        current = db.execute("SELECT * FROM health_metrics WHERE user_id=? AND date=?",
-                             (user_id, day.isoformat())).fetchone()
-        previous = db.execute("SELECT * FROM health_metrics WHERE user_id=? AND date>=? AND date<? "
-                              "ORDER BY date DESC LIMIT 28", (user_id, (day - timedelta(days=28)).isoformat(),
-                                                                day.isoformat())).fetchall()
-        sync = db.execute("SELECT last_synced_at FROM garmin_sync_status WHERE user_id=?",
-                          (user_id,)).fetchone()
-        activities = db.execute("SELECT a.id,a.type,a.date,a.duration,e.rpe FROM activities a "
-                                "LEFT JOIN activity_efforts e ON e.activity_id=a.id WHERE a.user_id=? AND a.date=? "
-                                "ORDER BY a.id LIMIT 20", (user_id, (day - timedelta(days=1)).isoformat())).fetchall()
-        today_activities = db.execute("SELECT type FROM activities WHERE user_id=? AND date=? LIMIT 20",
-                                      (user_id, day.isoformat())).fetchall()
-        planned_row = db.execute("SELECT workout_json FROM plan_sessions WHERE user_id=? AND date=? "
-                                 "AND status='planned' AND workout_json IS NOT NULL ORDER BY id LIMIT 1",
-                                 (user_id, day.isoformat())).fetchone()
-        commitments = db.execute("SELECT sport,kind,weekday FROM fixed_commitments WHERE user_id=? AND active=1 "
-                                 "AND weekday IN (?,?) LIMIT 4", (user_id, day.weekday(),
-                                                                   (day + timedelta(days=1)).weekday())).fetchall()
-        sent = db.execute("SELECT b.sections_json FROM morning_briefs b JOIN job_runs j "
-                          "ON j.user_id=b.user_id AND j.run_date=b.date AND j.job='morning' AND j.status='sent' "
-                          "WHERE b.user_id=? AND b.date<? ORDER BY b.date DESC LIMIT 3",
-                          (user_id, day.isoformat())).fetchall()
+    url = f"sqlite:///file:{settings.db_path.resolve()}?mode=ro&uri=true"
+    with session_scope(url) as session:
+        rows = MorningBriefRepository(session).context_rows(user_id, day)
+    current = rows["current_health"]
+    previous = rows["previous_health"]
+    activities = rows["yesterday_activities"]
+    today_activities = rows["today_activities"]
+    planned_json = rows["planned_workout_json"]
+    commitments = rows["commitments"]
+    sent = rows["recent_brief_sections"]
     snapshot = get_daily_snapshot(day, database=settings.db_path, user_id=user_id,
                                   timezone=settings.local_timezone, sleep_goal_hours=settings.sleep_goal_hours,
                                   hr_zones=settings.hr_zones)
@@ -149,7 +136,7 @@ def build_morning_facts(settings: Settings, day: date, decision: Any) -> BriefCo
     _fact(facts, "SEVEN_DAY_WINDOW", "Seven-day comparison window", "7 days", "brief.baseline_window")
     _fact(facts, "USUAL_WINDOW", "Usual comparison window", "28 days", "brief.usual_window")
     _fact(facts, "WEEKLY_LIMIT", "Weekly limit", "110% of usual", "coach.decision.weekly_limit")
-    planned_workout = json.loads(planned_row[0]) if planned_row else None
+    planned_workout = json.loads(planned_json) if planned_json else None
     if planned_workout:
         for index, step in enumerate(planned_workout.get("steps", ()), start=1):
             _fact(facts, f"PLAN_STEP_{index}_DURATION", f"Planned step {index} duration",
@@ -159,8 +146,8 @@ def build_morning_facts(settings: Settings, day: date, decision: Any) -> BriefCo
                   step.get("hr_target"), f"plan_sessions.workout_json.steps[{index - 1}].hr_target")
             _fact(facts, f"PLAN_STEP_{index}_PACE", f"Planned step {index} pace target",
                   step.get("pace_target"), f"plan_sessions.workout_json.steps[{index - 1}].pace_target")
-    values: dict[str, Any] = {"last_sync": sync[0] if sync else None, "fixed": [dict(row) for row in commitments],
-                              "planned_workout": json.loads(planned_row[0]) if planned_row else None}
+    values: dict[str, Any] = {"last_sync": rows["last_synced_at"], "fixed": commitments,
+                              "planned_workout": planned_workout}
     values["athlete_memories"] = coach_memory_context(settings.db_path, user_id)
     values["done"] = any(sport_category(row["type"], day) in ("running", "gym", "football", "volleyball")
                          for row in today_activities)
@@ -310,7 +297,7 @@ def build_morning_facts(settings: Settings, day: date, decision: Any) -> BriefCo
     values["based_on"] = getattr(decision, "based_on", day.isoformat())
     notes = tuple(escape(str(item["text"])) for item in read_notes(
         settings.db_path, user_id, day - timedelta(days=14), day))
-    tips = tuple(json.loads(row[0]).get("tip", "") for row in sent)
+    tips = tuple(json.loads(row["sections_json"]).get("tip", "") for row in sent)
     return BriefContext(day, tuple(facts), values, notes, tips, decision)
 
 
@@ -463,33 +450,29 @@ def render_brief(context: BriefContext, *, llm: Any | None = None, model: str | 
 
 
 def read_brief(database: Path, user_id: int, day: date) -> Brief | None:
-    with sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True) as db:
-        row = db.execute("SELECT sections_json,text,source,model,facts_json FROM morning_briefs "
-                         "WHERE user_id=? AND date=?", (user_id, day.isoformat())).fetchone()
+    url = f"sqlite:///file:{database.resolve()}?mode=ro&uri=true"
+    with session_scope(url) as session:
+        row = MorningBriefRepository(session).get(user_id, day)
     if row is None:
         return None
-    return Brief(day, json.loads(row[0]), row[1], row[2], row[3], tuple(json.loads(row[4])))
+    return Brief(day, json.loads(row["sections_json"]), row["text"], row["source"], row["model"],
+                 tuple(json.loads(row["facts_json"])))
 
 
 def save_brief(database: Path, user_id: int, brief: Brief) -> Brief:
     """First writer wins; a retry never replaces a previous day's message."""
-    with sqlite3.connect(database) as db:
-        db.execute("INSERT OR IGNORE INTO morning_briefs "
-                   "(user_id,date,text,sections_json,source,model,prompt_version,facts_json,created_at) "
-                   "VALUES(?,?,?,?,?,?,?,?,?)",
-                   (user_id, brief.date.isoformat(), brief.text, json.dumps(brief.sections), brief.source,
-                    brief.model, PROMPT_VERSION, json.dumps(brief.facts),
-                    datetime.now(UTC).replace(tzinfo=None).isoformat()))
+    with session_scope(f"sqlite:///{database.resolve()}") as session:
+        MorningBriefRepository(session).insert_if_absent(
+            user_id, brief.date, brief.text, json.dumps(brief.sections), brief.source, brief.model,
+            PROMPT_VERSION, json.dumps(brief.facts), datetime.now(UTC).replace(tzinfo=None))
     return read_brief(database, user_id, brief.date) or brief
 
 
 def save_feedback(database: Path, user_id: int, day: date, feedback: str) -> bool:
     if feedback not in {"useful", "not_useful"}:
         raise ValueError("Invalid brief feedback")
-    with sqlite3.connect(database) as db:
-        cursor = db.execute("UPDATE morning_briefs SET feedback=? WHERE user_id=? AND date=?",
-                            (feedback, user_id, day.isoformat()))
-        return cursor.rowcount == 1
+    with session_scope(f"sqlite:///{database.resolve()}") as session:
+        return MorningBriefRepository(session).save_feedback(user_id, day, feedback)
 
 
 def get_or_create_brief(settings: Settings, day: date, decision: Any, *, use_ai: bool) -> Brief:
@@ -501,13 +484,14 @@ def get_or_create_brief(settings: Settings, day: date, decision: Any, *, use_ai:
     approved = settings.allow_remote_llm and settings.remote_athlete_data_approved
     if not use_ai or (remote and not approved):
         return save_brief(settings.db_path, settings.default_user_id, render_brief(context))
-    from coach.agent import CoachAgent, _user_lock
+    from coach.agent import CoachAgent
+    from coach.runtime import user_job_lock
 
     try:
         client = get_llm_client(settings.llm_provider, settings.openai_api_key, settings.openai_model,
                                 settings.ollama_base_url, settings.ollama_model)
         model = settings.openai_model if remote else settings.ollama_model
-        with _user_lock(settings.db_path, settings.default_user_id):
+        with user_job_lock(settings.db_path, settings.default_user_id):
             counter = CoachAgent(settings, client, settings.default_user_id)
             brief = render_brief(context, llm=client, model=model, count_call=counter._count_request)
     except (RuntimeError, ValueError):

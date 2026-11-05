@@ -5,16 +5,24 @@ from __future__ import annotations
 import html
 import json
 import re
-import sqlite3
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any, Literal
+
+from db.repositories.memories import CoachMemoryRepository
+from db.session import session_scope
 
 CATEGORIES = frozenset({"goal", "schedule", "preference", "body", "equipment", "coaching_style", "other"})
 STATUSES = frozenset({"active", "suggested", "inactive"})
 SOURCES = frozenset({"athlete", "coach_suggestion", "migrated"})
 WEEKDAYS = frozenset(range(7))
 DAY_NAMES = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+
+
+def _database_url(database: Path, *, readonly: bool = False) -> str:
+    if readonly:
+        return f"sqlite:///file:{database.resolve()}?mode=ro&uri=true"
+    return f"sqlite:///{database.resolve()}"
 
 
 def _now() -> str:
@@ -93,19 +101,12 @@ def validate_rule(category: str, rule: dict[str, Any] | None) -> dict[str, Any] 
 def list_memories(database: Path, user_id: int, *, today: date | None = None,
                   status: str | None = None) -> list[dict[str, Any]]:
     today = today or date.today()
-    with sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True) as db:
-        db.row_factory = sqlite3.Row
-        if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='coach_memories'").fetchone():
-            return []
-        query = "SELECT * FROM coach_memories WHERE user_id=?"
-        args: list[Any] = [user_id]
-        if status:
-            if status not in STATUSES:
-                raise ValueError("Unknown memory status")
-            query += " AND status=?"
-            args.append(status)
-        rows = [dict(row) for row in db.execute(query + " ORDER BY rule_json IS NOT NULL DESC,created_at DESC", args)]
-        by_id = {row["id"]: row for row in rows}
+    if status and status not in STATUSES:
+        raise ValueError("Unknown memory status")
+    url = _database_url(database, readonly=True)
+    with session_scope(url) as session:
+        rows = CoachMemoryRepository(session).list_for_user(user_id, status)
+    by_id = {row["id"]: row for row in rows}
     for row in rows:
         row["expired"] = bool(row["valid_until"] and date.fromisoformat(row["valid_until"]) < today)
         row["effective_status"] = "inactive" if row["expired"] else row["status"]
@@ -146,19 +147,16 @@ def save_memory(database: Path, user_id: int, text: str, *, category: str = "oth
         raise ValueError("Invalid memory source or status")
     validated = validate_rule(category, rule)
     now = _now()
-    with sqlite3.connect(database) as db:
-        if status == "active" and db.execute(
-                "SELECT 1 FROM coach_memories WHERE user_id=? AND status='active' "
-                "AND lower(trim(text))=lower(trim(?)) AND (valid_until IS NULL OR valid_until>=?) LIMIT 1",
-                (user_id, text, date.today().isoformat())).fetchone():
+    with session_scope(_database_url(database)) as session:
+        repository = CoachMemoryRepository(session)
+        if status == "active" and repository.active_text_exists(user_id, text, date.today()):
             raise ValueError("An active memory with the same text already exists")
-        cur = db.execute("INSERT INTO coach_memories(user_id,category,text,rule_json,status,source,valid_from,"
-                         "valid_until,created_at,updated_at,suggestion_action,target_memory_id,suggestion_reason) "
-                         "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                         (user_id, category, text, json.dumps(validated) if validated else None, status, source,
-                          date.today().isoformat(), valid_until.isoformat() if valid_until else None, now, now,
-                          suggestion_action, target_memory_id, (suggestion_reason or "")[:200] or None))
-        return int(cur.lastrowid)
+        return repository.insert(user_id, category=category, text_value=text,
+                                 rule_json=json.dumps(validated) if validated else None,
+                                 status=status, source=source, valid_from=date.today(), valid_until=valid_until,
+                                 now=datetime.fromisoformat(now), suggestion_action=suggestion_action,
+                                 target_memory_id=target_memory_id,
+                                 suggestion_reason=(suggestion_reason or "")[:200] or None)
 
 
 def edit_memory(database: Path, user_id: int, memory_id: int, *, text: str,
@@ -168,50 +166,39 @@ def edit_memory(database: Path, user_id: int, memory_id: int, *, text: str,
     if not text or len(text) > 200:
         raise ValueError("Memory text must be between 1 and 200 characters")
     validated = validate_rule(category, rule)
-    with sqlite3.connect(database) as db:
-        db.row_factory = sqlite3.Row
-        old = db.execute("SELECT * FROM coach_memories WHERE id=? AND user_id=?", (memory_id, user_id)).fetchone()
+    with session_scope(_database_url(database)) as session:
+        repository = CoachMemoryRepository(session)
+        old = repository.get(user_id, memory_id)
         if old is None:
             raise ValueError("Memory not found")
-        if old["status"] == "active" and db.execute(
-                "SELECT 1 FROM coach_memories WHERE user_id=? AND id!=? AND status='active' "
-                "AND lower(trim(text))=lower(trim(?)) AND (valid_until IS NULL OR valid_until>=?) LIMIT 1",
-                (user_id, memory_id, text, date.today().isoformat())).fetchone():
+        if old["status"] == "active" and repository.active_text_exists(user_id, text, date.today(), memory_id):
             raise ValueError("An active memory with the same text already exists")
-        db.execute("INSERT INTO coach_memory_history(memory_id,previous_text,previous_rule_json,previous_status,"
-                   "changed_at,change_reason) VALUES(?,?,?,?,?,?)",
-                   (memory_id, old["text"], old["rule_json"], old["status"],
-                    _now(), reason[:200]))
-        db.execute("UPDATE coach_memories SET category=?,text=?,rule_json=?,valid_until=?,updated_at=? "
-                   "WHERE id=? AND user_id=?",
-                   (category, text, json.dumps(validated) if validated else None,
-                    valid_until.isoformat() if valid_until else None,
-                    _now(), memory_id, user_id))
+        now = datetime.now(UTC).replace(tzinfo=None)
+        repository.add_history(memory_id, old, now, reason)
+        repository.update(user_id, memory_id, {"category": category, "text": text,
+                             "rule": json.dumps(validated) if validated else None,
+                             "valid_until": valid_until}, now)
 
 
 def set_memory_status(database: Path, user_id: int, memory_id: int, status: str,
                       reason: str = "athlete changed status") -> None:
     if status not in STATUSES:
         raise ValueError("Unknown memory status")
-    with sqlite3.connect(database) as db:
-        db.row_factory = sqlite3.Row
-        old = db.execute("SELECT * FROM coach_memories WHERE id=? AND user_id=?", (memory_id, user_id)).fetchone()
+    with session_scope(_database_url(database)) as session:
+        repository = CoachMemoryRepository(session)
+        old = repository.get(user_id, memory_id)
         if old is None:
             raise ValueError("Memory not found")
         if old["status"] == status:
             return
-        db.execute("INSERT INTO coach_memory_history(memory_id,previous_text,previous_rule_json,previous_status,"
-                   "changed_at,change_reason) VALUES(?,?,?,?,?,?)",
-                   (memory_id, old["text"], old["rule_json"], old["status"],
-                        _now(), reason[:200]))
-        db.execute("UPDATE coach_memories SET status=?,updated_at=? WHERE id=? AND user_id=?",
-                   (status, _now(), memory_id, user_id))
+        now = datetime.now(UTC).replace(tzinfo=None)
+        repository.add_history(memory_id, old, now, reason)
+        repository.set_status(user_id, memory_id, status, now)
 
 
 def delete_memory(database: Path, user_id: int, memory_id: int) -> None:
-    with sqlite3.connect(database) as db:
-        db.execute("PRAGMA foreign_keys=ON")
-        db.execute("DELETE FROM coach_memories WHERE id=? AND user_id=?", (memory_id, user_id))
+    with session_scope(_database_url(database)) as session:
+        CoachMemoryRepository(session).delete(user_id, memory_id)
 
 
 def resolve_suggestion(database: Path, user_id: int, suggestion_id: int, action: str,
@@ -221,21 +208,16 @@ def resolve_suggestion(database: Path, user_id: int, suggestion_id: int, action:
     """Keep, edit, or discard one pending suggestion; changes are history-backed."""
     if action not in {"keep", "edit", "discard"}:
         raise ValueError("Choose keep, edit, or discard")
-    with sqlite3.connect(database) as db:
-        db.row_factory = sqlite3.Row
-        suggestion = db.execute("SELECT * FROM coach_memories WHERE id=? AND user_id=? AND status='suggested'",
-                                (suggestion_id, user_id)).fetchone()
+    with session_scope(_database_url(database)) as session:
+        repository = CoachMemoryRepository(session)
+        suggestion = repository.get(user_id, suggestion_id, status="suggested")
         if suggestion is None:
             raise ValueError("Suggestion not found")
-        target = suggestion["target_memory_id"]
         operation = suggestion["suggestion_action"] or "ADD"
         if action == "discard":
-            db.execute("INSERT INTO coach_memory_history(memory_id,previous_text,previous_rule_json,previous_status,"
-                       "changed_at,change_reason) VALUES(?,?,?,?,?,?)",
-                       (suggestion_id, suggestion["text"], suggestion["rule_json"], "suggested",
-                        _now(), "suggestion discarded"))
-            db.execute("UPDATE coach_memories SET status='inactive',updated_at=? WHERE id=?",
-                       (_now(), suggestion_id))
+            now = datetime.now(UTC).replace(tzinfo=None)
+            repository.add_history(suggestion_id, suggestion, now, "suggestion discarded")
+            repository.set_status(user_id, suggestion_id, "inactive", now)
             return
         final_text = " ".join((text if text is not None else suggestion["text"]).split())
         final_category = category or suggestion["category"]
@@ -243,51 +225,10 @@ def resolve_suggestion(database: Path, user_id: int, suggestion_id: int, action:
                                    (json.loads(suggestion["rule_json"]) if suggestion["rule_json"] else None))
         if not final_text or len(final_text) > 200:
             raise ValueError("Memory text must be between 1 and 200 characters")
-        now = _now()
-        if operation in {"UPDATE", "DEACTIVATE"}:
-            old = db.execute("SELECT * FROM coach_memories WHERE id=? AND user_id=? AND status='active'",
-                             (target, user_id)).fetchone()
-            if old is None:
-                raise ValueError("The memory this suggestion refers to is no longer active")
-            if operation == "UPDATE" and db.execute(
-                    "SELECT 1 FROM coach_memories WHERE user_id=? AND id!=? AND status='active' "
-                    "AND lower(trim(text))=lower(trim(?)) LIMIT 1", (user_id, target, final_text)).fetchone():
-                raise ValueError("An active memory with the same text already exists")
-            db.execute("INSERT INTO coach_memory_history(memory_id,previous_text,previous_rule_json,previous_status,"
-                       "changed_at,change_reason) VALUES(?,?,?,?,?,?)",
-                       (target, old["text"], old["rule_json"], old["status"], now,
-                        "coach suggestion kept"))
-            if operation == "DEACTIVATE":
-                db.execute("UPDATE coach_memories SET status='inactive',updated_at=? WHERE id=?", (now, target))
-            else:
-                replacement_rule = (json.loads(old["rule_json"]) if suggestion["rule_json"] is None and
-                                    old["rule_json"] else final_rule)
-                db.execute("UPDATE coach_memories SET category=?,text=?,rule_json=?,valid_until=?,updated_at=? "
-                           "WHERE id=?", (final_category, final_text,
-                           json.dumps(replacement_rule) if replacement_rule else None,
-                           valid_until.isoformat() if valid_until else suggestion["valid_until"], now, target))
-        elif operation == "ADD":
-            if db.execute("SELECT 1 FROM coach_memories WHERE user_id=? AND id!=? AND status='active' "
-                          "AND lower(trim(text))=lower(trim(?)) LIMIT 1",
-                          (user_id, suggestion_id, final_text)).fetchone():
-                raise ValueError("An active memory with the same text already exists")
-            db.execute("INSERT INTO coach_memory_history(memory_id,previous_text,previous_rule_json,previous_status,"
-                       "changed_at,change_reason) VALUES(?,?,?,?,?,?)",
-                       (suggestion_id, suggestion["text"], suggestion["rule_json"], "suggested", now,
-                        "coach suggestion kept"))
-            db.execute("UPDATE coach_memories SET category=?,text=?,rule_json=?,status='active',valid_until=?,"
-                       "updated_at=? WHERE id=?", (final_category, final_text,
-                       json.dumps(final_rule) if final_rule else None,
-                       valid_until.isoformat() if valid_until else suggestion["valid_until"], now, suggestion_id))
-        else:
-            raise ValueError("Unknown suggestion action")
-        if operation != "ADD":
-            db.execute("INSERT INTO coach_memory_history(memory_id,previous_text,previous_rule_json,previous_status,"
-                       "changed_at,change_reason) VALUES(?,?,?,?,?,?)",
-                       (suggestion_id, suggestion["text"], suggestion["rule_json"], "suggested", now,
-                        "suggestion resolved"))
-        if operation != "ADD":
-            db.execute("UPDATE coach_memories SET status='inactive',updated_at=? WHERE id=?", (now, suggestion_id))
+        now = datetime.now(UTC).replace(tzinfo=None)
+        repository.resolve_suggestion(
+            user_id, suggestion_id, operation, final_text, final_category,
+            json.dumps(final_rule) if final_rule else None, valid_until, now)
 
 
 def extract_suggestions(database: Path, user_id: int, turns: list[dict[str, str]], client: Any) -> int:
@@ -338,7 +279,6 @@ def extract_suggestions(database: Path, user_id: int, turns: list[dict[str, str]
 def mark_used(database: Path, memory_ids: list[int]) -> None:
     if not memory_ids:
         return
-    now = datetime.now(UTC).replace(tzinfo=None).isoformat()
-    with sqlite3.connect(database) as db:
-        db.executemany("UPDATE coach_memories SET last_used_at=? WHERE id=? AND status='active'",
-                       [(now, identifier) for identifier in memory_ids])
+    now = datetime.now(UTC).replace(tzinfo=None)
+    with session_scope(_database_url(database)) as session:
+        CoachMemoryRepository(session).touch_used(memory_ids, now)

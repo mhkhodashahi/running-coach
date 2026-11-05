@@ -6,11 +6,8 @@ import json
 import logging
 import os
 import re
-import sqlite3
 import threading
 import tomllib
-from collections.abc import Iterator
-from contextlib import contextmanager
 from dataclasses import replace
 from datetime import date, datetime
 from io import BytesIO
@@ -18,13 +15,13 @@ from typing import BinaryIO
 from zoneinfo import ZoneInfo
 
 from dotenv import set_key
-from sqlalchemy import create_engine
-from sqlalchemy.orm import Session
 
 from analytics.performance import goal_time_minutes
 from coach.workouts import TEMPLATES as WORKOUT_TEMPLATES
 from config import BASE_DIR, Settings, _parse_hr_zones, get_settings
 from db import repository
+from db.repositories.settings_view import SettingsViewRepository
+from db.session import session_scope
 from services.coach_memory_service import list_memories, validate_rule
 from services.goal_service import GoalService
 from services.hr_zones import heart_rate_zone_bounds
@@ -42,29 +39,16 @@ _SYNC_LOCK = threading.Lock()
 LOGGER = logging.getLogger(__name__)
 
 
-@contextmanager
-def _session(settings: Settings) -> Iterator[Session]:
-    engine = create_engine(settings.db_url)
-    try:
-        with Session(engine) as session:
-            with session.begin():
-                yield session
-    finally:
-        engine.dispose()
-
-
 def settings_context(settings: Settings, sync_state: dict[str, str]) -> dict:
     """Read profile, goals, sync status and coach usage for the Settings page."""
-    with _session(settings) as session:
+    with session_scope(settings.db_url) as session:
         user = session.get(repository.User, settings.default_user_id)
         if user is None:
             raise ValueError("Profile is not configured")
         goals = repository.list_goals(session, user.id)
         last_sync = repository.get_last_garmin_sync(session, user.id)
-        usage = session.execute(repository.text(
-            "SELECT COUNT(*) FROM coach_llm_calls WHERE user_id=:uid AND local_day=:day"),
-            {"uid": user.id, "day": datetime.now(ZoneInfo(settings.local_timezone)).date().isoformat()},
-        ).scalar_one()
+        usage = SettingsViewRepository(session).calls_today(
+            user.id, datetime.now(ZoneInfo(settings.local_timezone)).date())
         profile = {key: getattr(user, key) for key in ("name", "age", "gender", "weight", "height", "max_hr")}
         goal_rows = [{"id": goal.id, "name": goal.name, "goal_type": goal.goal_type,
                       "distance": goal.target_distance_km, "time": goal.target_time_minutes,
@@ -97,12 +81,10 @@ def settings_context(settings: Settings, sync_state: dict[str, str]) -> dict:
                                    if item["status"] == "suggested"]
     backup = latest_backup(settings.backup_dir)
     backup_day = BACKUP_NAME.fullmatch(backup.name).group(2) if backup else None
-    with sqlite3.connect(settings.db_path.resolve().as_uri() + "?mode=ro", uri=True) as db:
-        backup_run = (db.execute("SELECT status FROM job_runs WHERE user_id=? AND job='daily_backup' "
-                                 "AND run_date=?", (settings.default_user_id, backup_day)).fetchone()
-                      if backup else None)
-    context["last_backup"] = (f"{short_date(backup_day)} · OK" if backup_run and
-                               backup_run[0] == "done" else "No verified backup yet")
+    with session_scope(settings.db_url) as session:
+        backup_status = SettingsViewRepository(session).backup_status(settings.default_user_id, backup_day)
+    context["last_backup"] = (f"{short_date(backup_day)} · OK" if backup_status == "done"
+                               else "No verified backup yet")
     context["backup_folder"] = str(settings.backup_dir)
     project = tomllib.loads((BASE_DIR / "pyproject.toml").read_text(encoding="utf-8"))["project"]
     context["me"] = me_view(context, telegram_configured=bool(settings.telegram_bot_token and
@@ -169,7 +151,7 @@ def save_profile(settings: Settings, fields: dict[str, str]) -> None:
         raise ValueError("Check the name, age and sex fields")
     if not 30 <= weight <= 300 or not 100 <= height <= 250 or not 100 <= max_hr <= 240:
         raise ValueError("Check weight, height and maximum heart rate")
-    with _session(settings) as session:
+    with session_scope(settings.db_url) as session:
         repository.update_user_profile(session, settings.default_user_id,
                                        {"name": name, "age": age, "gender": gender,
                                         "weight": weight, "height": height, "max_hr": max_hr})
@@ -181,7 +163,7 @@ def save_goal(settings: Settings, fields: dict[str, str], goal_id: int | None = 
     goal_type = fields["goal_type"]
     allowed_types = {kind for kind, _, _ in GoalService.supported_goal_types()}
     if goal_id is not None:
-        with _session(settings) as session:
+        with session_scope(settings.db_url) as session:
             existing = repository.get_goal(session, goal_id)
             if existing is None or existing.user_id != settings.default_user_id:
                 raise ValueError("Goal not found")
@@ -203,7 +185,7 @@ def save_goal(settings: Settings, fields: dict[str, str], goal_id: int | None = 
     payload = {"name": name, "goal_type": goal_type, "target_distance_km": distance,
                "target_time_minutes": target_time, "target_date": target_date,
                "priority": priority, "notes": fields.get("notes", "").strip() or None}
-    with _session(settings) as session:
+    with session_scope(settings.db_url) as session:
         if goal_id is None:
             repository.create_goal(session, settings.default_user_id,
                                    payload | {"status": "planned", "is_active": False})
@@ -216,7 +198,7 @@ def save_goal(settings: Settings, fields: dict[str, str], goal_id: int | None = 
 
 def change_goal_state(settings: Settings, goal_id: int, action: str) -> None:
     """Activate or archive a goal without deleting it."""
-    with _session(settings) as session:
+    with session_scope(settings.db_url) as session:
         goal = repository.get_goal(session, goal_id)
         if goal is None or goal.user_id != settings.default_user_id:
             raise ValueError("Goal not found")
@@ -261,7 +243,7 @@ def import_csv(settings: Settings, activities: BinaryIO | None, health: BinaryIO
     """Import bounded uploaded CSVs through the existing importer."""
     if activities is None and health is None:
         raise ValueError("Choose at least one CSV file")
-    with _session(settings) as session:
+    with session_scope(settings.db_url) as session:
         return GarminImportService().import_files(session, settings.default_user_id,
                                                    activities_source=activities, health_source=health)
 
@@ -281,7 +263,7 @@ def sync_now(settings: Settings, state: dict[str, str]) -> None:
         return
     try:
         state.update(status="running", message="Connecting to Garmin")
-        with _session(settings) as session:
+        with session_scope(settings.db_url) as session:
             result = GarminImportService().sync_garmin(session, settings.default_user_id,
                                                         days=settings.garmin_sync_days,
                                                         health_days=settings.garmin_health_sync_days)

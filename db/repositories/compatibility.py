@@ -1,0 +1,816 @@
+"""Repository helpers for database access."""
+
+from __future__ import annotations
+
+from datetime import UTC, date, datetime
+from typing import Any
+
+import pandas as pd
+from sqlalchemy import MetaData, Table, delete, func, inspect, select, text
+from sqlalchemy.orm import Session
+
+from config import get_settings
+from db.models import (
+    Activity,
+    ActivityCoachingInsight,
+    ActivityCoachingOpinionHistory,
+    ActivityExerciseSet,
+    ActivityLap,
+    ActivityTrackPoint,
+    CoachingDecision,
+    EmailDelivery,
+    GarminSyncStatus,
+    Goal,
+    HealthMetric,
+    LLMMemory,
+    NutritionEntry,
+    PlanSession,
+    PlanVersion,
+    PredictionSnapshot,
+    User,
+)
+from metrics.sports import sport_category
+
+
+def get_or_create_default_user(session: Session, default_user_id: int) -> User:
+    """Return the default user profile, creating a demo profile when missing."""
+
+    user = session.get(User, default_user_id)
+    if user:
+        _backfill_legacy_default_profile(user)
+        session.flush()
+        return user
+
+    user = User(
+        id=default_user_id,
+        name="Demo Athlete",
+        age=35,
+        gender="unspecified",
+        weight=75.0,
+        height=175.0,
+        max_hr=185,
+        training_days_per_week=5,
+        injury_notes=None,
+        running_date=date(2026, 9, 27),
+    )
+    # Runtime databases retain a required legacy column that is not mapped by User.
+    if "marathon_goal_time" in {column["name"] for column in inspect(session.connection()).get_columns("users")}:
+        table = Table("users", MetaData(), autoload_with=session.connection())
+        values = {column.name: getattr(user, column.name) for column in User.__table__.columns}
+        values["running_goal_time"] = user.running_goal_time or "03:59:59"
+        values["marathon_goal_time"] = values["running_goal_time"]
+        session.execute(table.insert().values(**values))
+        return session.get(User, default_user_id)
+    session.add(user)
+    session.flush()
+    return user
+
+
+def get_last_garmin_sync(session: Session, user_id: int) -> datetime | None:
+    status = session.get(GarminSyncStatus, user_id)
+    return status.last_synced_at if status else None
+
+
+def latest_activity_date(session: Session, user_id: int) -> date | None:
+    return session.scalar(select(func.max(Activity.date)).where(Activity.user_id == user_id))
+
+
+def record_garmin_sync(session: Session, user_id: int) -> datetime:
+    synced_at = datetime.now(UTC).replace(tzinfo=None)
+    status = session.get(GarminSyncStatus, user_id)
+    if status is None:
+        session.add(GarminSyncStatus(user_id=user_id, last_synced_at=synced_at))
+    else:
+        status.last_synced_at = synced_at
+    session.flush()
+    return synced_at
+
+
+def _backfill_legacy_default_profile(user: User) -> None:
+    """Update old demo defaults without overwriting user-edited profiles."""
+
+    if user.name == "Demo Athlete" and user.age == 34:
+        user.age = 35
+    if user.name == "Demo Athlete" and user.weight == 73.0:
+        user.weight = 75.0
+    if user.name == "Demo Athlete" and user.max_hr == 188:
+        user.max_hr = 185
+
+
+def get_or_create_default_goal(session: Session, user: User) -> Goal:
+    """Create a default running goal when the athlete has not configured one yet."""
+
+    goal = session.scalars(
+        select(Goal)
+        .where(Goal.user_id == user.id)
+        .order_by(Goal.is_active.desc(), Goal.created_at.asc())
+    ).first()
+    if goal is not None:
+        return goal
+
+    goal = Goal(
+        user_id=user.id,
+        name="Primary Running Goal",
+        goal_type="running_pb",
+        target_distance_km=42.195,
+        target_time_minutes=get_settings().sub_four_goal_minutes,
+        target_date=user.running_date,
+        priority="A",
+        status="active",
+        is_active=True,
+        notes="Default active goal created from app settings.",
+    )
+    session.add(goal)
+    session.flush()
+    return goal
+
+
+def update_user_profile(session: Session, user_id: int, payload: dict[str, Any]) -> User:
+    """Update the user profile."""
+
+    user = session.get(User, user_id)
+    if user is None:
+        raise ValueError(f"Unknown user id: {user_id}")
+
+    for field, value in payload.items():
+        setattr(user, field, value)
+    session.flush()
+    return user
+
+
+def list_goals(session: Session, user_id: int) -> list[Goal]:
+    """Return configured goals for a user."""
+
+    return list(
+        session.scalars(
+            select(Goal)
+            .where(Goal.user_id == user_id)
+            .order_by(Goal.is_active.desc(), Goal.target_date.asc(), Goal.created_at.desc())
+        ).all()
+    )
+
+
+def get_goal(session: Session, goal_id: int) -> Goal | None:
+    """Return one goal by id."""
+
+    return session.get(Goal, goal_id)
+
+
+def get_active_goal(session: Session, user_id: int) -> Goal | None:
+    """Return the active goal for a user."""
+
+    return session.scalars(
+        select(Goal)
+        .where(Goal.user_id == user_id, Goal.is_active.is_(True))
+        .order_by(Goal.created_at.desc())
+    ).first()
+
+
+def create_goal(session: Session, user_id: int, payload: dict[str, Any]) -> Goal:
+    """Create a new user goal."""
+
+    goal = Goal(user_id=user_id, **payload)
+    session.add(goal)
+    session.flush()
+    if goal.is_active:
+        set_active_goal(session, user_id, goal.id)
+    return goal
+
+
+def update_goal(session: Session, goal_id: int, payload: dict[str, Any]) -> Goal:
+    """Update a goal."""
+
+    goal = session.get(Goal, goal_id)
+    if goal is None:
+        raise ValueError(f"Unknown goal id: {goal_id}")
+
+    for field, value in payload.items():
+        setattr(goal, field, value)
+    session.flush()
+    if goal.is_active:
+        set_active_goal(session, goal.user_id, goal.id)
+    return goal
+
+
+def set_active_goal(session: Session, user_id: int, goal_id: int) -> Goal:
+    """Mark one goal as active and clear the rest."""
+
+    goals = list(
+        session.scalars(select(Goal).where(Goal.user_id == user_id)).all()
+    )
+    selected: Goal | None = None
+    for goal in goals:
+        goal.is_active = goal.id == goal_id
+        if goal.id == goal_id:
+            goal.status = "active"
+            selected = goal
+    if selected is None:
+        raise ValueError(f"Unknown goal id: {goal_id}")
+    session.flush()
+    return selected
+
+
+def activities_count(session: Session, user_id: int) -> int:
+    """Return the number of stored activities."""
+
+    return len(session.scalars(select(Activity.id).where(Activity.user_id == user_id)).all())
+
+
+def health_metrics_count(session: Session, user_id: int) -> int:
+    """Return the number of stored health rows."""
+
+    return len(session.scalars(select(HealthMetric.id).where(HealthMetric.user_id == user_id)).all())
+
+
+def bulk_upsert_activities(session: Session, rows: list[dict[str, Any]]) -> int:
+    """Insert or update activity rows."""
+
+    inserted = 0
+    touched: list[Activity] = []
+    for row in rows:
+        external_id = row.get("external_id")
+        query = select(Activity).where(Activity.user_id == row["user_id"])
+        if external_id:
+            query = query.where(Activity.external_id == external_id)
+        else:
+            query = query.where(
+                Activity.date == row["date"],
+                Activity.type == row["type"],
+                Activity.distance == row["distance"],
+            )
+        activity = session.scalars(query).first()
+        if activity is None:
+            activity = Activity(**row)
+            session.add(activity)
+            inserted += 1
+            touched.append(activity)
+            continue
+
+        for field, value in row.items():
+            setattr(activity, field, value)
+        touched.append(activity)
+    session.flush()
+    for activity in touched:
+        if session.scalar(select(PlanSession.id).where(
+                PlanSession.user_id == activity.user_id,
+                PlanSession.linked_activity_id == activity.id,
+        )) is not None:
+            continue
+        sport = sport_category(activity.type, activity.date)
+        if sport not in ("running", "gym", "football", "volleyball"):
+            continue
+        planned = session.scalars(select(PlanSession).where(
+            PlanSession.user_id == activity.user_id,
+            PlanSession.date == activity.date,
+            PlanSession.sport == sport,
+            PlanSession.status == "planned",
+            PlanSession.linked_activity_id.is_(None),
+        ).order_by(PlanSession.id)).first()
+        if planned is None:
+            continue
+        planned.status = "done"
+        planned.linked_activity_id = activity.id
+        planned.updated_at = datetime.now(UTC).replace(tzinfo=None)
+        version = session.get(PlanVersion, activity.user_id)
+        if version is None:
+            session.add(PlanVersion(user_id=activity.user_id, version=1))
+        else:
+            version.version += 1
+    session.flush()
+    return inserted
+
+
+def activity_ids_by_external_id(session: Session, user_id: int, external_ids: list[str]) -> dict[str, int]:
+    """Return local activity ids keyed by Garmin/external id."""
+
+    if not external_ids:
+        return {}
+    rows = session.execute(
+        select(Activity.external_id, Activity.id).where(
+            Activity.user_id == user_id,
+            Activity.external_id.in_([str(external_id) for external_id in external_ids]),
+        )
+    ).all()
+    return {str(external_id): int(activity_id) for external_id, activity_id in rows if external_id}
+
+
+def replace_activity_track_points(session: Session, activity_id: int, rows: list[dict[str, Any]]) -> int:
+    """Replace stored GPS/metric stream points for one activity."""
+
+    session.execute(delete(ActivityTrackPoint).where(ActivityTrackPoint.activity_id == activity_id))
+    if not rows:
+        session.flush()
+        return 0
+
+    for row in rows:
+        session.add(ActivityTrackPoint(activity_id=activity_id, **row))
+    session.flush()
+    return len(rows)
+
+
+def replace_activity_laps(session: Session, activity_id: int, rows: list[dict[str, Any]]) -> int:
+    """Replace stored laps/splits for one activity."""
+
+    session.execute(delete(ActivityLap).where(ActivityLap.activity_id == activity_id))
+    if not rows:
+        session.flush()
+        return 0
+
+    for row in rows:
+        session.add(ActivityLap(activity_id=activity_id, **row))
+    session.flush()
+    return len(rows)
+
+
+def replace_activity_exercise_sets(session: Session, activity_id: int, rows: list[dict[str, Any]]) -> int:
+    """Refresh imported set details after a successful Garmin response."""
+
+    session.execute(delete(ActivityExerciseSet).where(ActivityExerciseSet.activity_id == activity_id))
+    for row in rows:
+        session.add(ActivityExerciseSet(activity_id=activity_id, **row))
+    session.flush()
+    return len(rows)
+
+
+def track_points_dataframe(session: Session, activity_id: int) -> pd.DataFrame:
+    """Return GPS/metric stream points for an activity."""
+
+    query = text(
+        """
+        SELECT id, activity_id, point_index, timestamp, elapsed_seconds, distance_km,
+               latitude, longitude, elevation, pace, speed, heart_rate, cadence
+        FROM activity_track_points
+        WHERE activity_id = :activity_id
+        ORDER BY point_index ASC
+        """
+    )
+    df = pd.read_sql_query(query, session.bind, params={"activity_id": activity_id})
+    if not df.empty:
+        df["timestamp"] = pd.to_datetime(df["timestamp"])
+    return df
+
+
+def activity_laps_dataframe(session: Session, activity_id: int) -> pd.DataFrame:
+    """Return laps/splits for an activity."""
+
+    query = text(
+        """
+        SELECT id, activity_id, lap_index, lap_type, start_time, duration, distance,
+               pace, avg_hr, max_hr, elevation_gain, avg_cadence
+        FROM activity_laps
+        WHERE activity_id = :activity_id
+        ORDER BY lap_index ASC
+        """
+    )
+    df = pd.read_sql_query(query, session.bind, params={"activity_id": activity_id})
+    if not df.empty:
+        df["start_time"] = pd.to_datetime(df["start_time"])
+    return df
+
+
+def get_activity(session: Session, activity_id: int, user_id: int | None = None) -> Activity | None:
+    """Return one activity, optionally scoped to a user."""
+
+    query = select(Activity).where(Activity.id == activity_id)
+    if user_id is not None:
+        query = query.where(Activity.user_id == user_id)
+    return session.scalars(query).first()
+
+
+def get_activity_coaching_insight(session: Session, activity_id: int, user_id: int) -> ActivityCoachingInsight | None:
+    """Return the stored coach opinion for one activity."""
+
+    return session.scalars(
+        select(ActivityCoachingInsight).where(
+            ActivityCoachingInsight.activity_id == activity_id,
+            ActivityCoachingInsight.user_id == user_id,
+        )
+    ).first()
+
+
+def upsert_activity_coaching_insight(
+    session: Session,
+    *,
+    user_id: int,
+    activity_id: int,
+    summary: str,
+    payload_json: str,
+    prompt_context_json: str,
+    model_provider: str | None,
+    model_name: str | None,
+    schema_version: str | None = None,
+    prompt_version: str | None = None,
+    validation_notes: str | None = None,
+    archive_existing: bool = False,
+) -> ActivityCoachingInsight:
+    """Create or replace an opinion, archiving the prior row when requested."""
+
+    insight = get_activity_coaching_insight(session, activity_id=activity_id, user_id=user_id)
+    if insight is None:
+        insight = ActivityCoachingInsight(
+            user_id=user_id,
+            activity_id=activity_id,
+            summary=summary,
+            payload_json=payload_json,
+            prompt_context_json=prompt_context_json,
+            model_provider=model_provider,
+            model_name=model_name,
+            schema_version=schema_version,
+            prompt_version=prompt_version,
+            validation_notes=validation_notes,
+        )
+        session.add(insight)
+    else:
+        if archive_existing:
+            session.add(ActivityCoachingOpinionHistory(
+                activity_id=activity_id,
+                payload_json=insight.payload_json,
+                prompt_context_json=insight.prompt_context_json,
+                schema_version=insight.schema_version,
+                prompt_version=insight.prompt_version,
+                model_provider=insight.model_provider,
+                model_name=insight.model_name,
+                created_at=insight.created_at,
+                replaced_at=datetime.now(UTC).replace(tzinfo=None),
+            ))
+        insight.summary = summary
+        insight.payload_json = payload_json
+        insight.prompt_context_json = prompt_context_json
+        insight.model_provider = model_provider
+        insight.model_name = model_name
+        insight.schema_version = schema_version
+        insight.prompt_version = prompt_version
+        insight.validation_notes = validation_notes
+        insight.created_at = datetime.now(UTC).replace(tzinfo=None)
+        insight.updated_at = insight.created_at
+    session.flush()
+    return insight
+
+
+def set_activity_planned_intent(session: Session, *, activity_id: int, user_id: int,
+                                planned_intent: str | None) -> None:
+    """Save an athlete-selected plan without touching the stored opinion."""
+    if planned_intent not in (None, "recovery", "easy", "steady", "tempo", "race"):
+        raise ValueError("Invalid planned intent")
+    activity = get_activity(session, activity_id=activity_id, user_id=user_id)
+    if activity is None:
+        raise ValueError("Activity not found")
+    activity.planned_intent = planned_intent
+    session.flush()
+
+
+def upsert_prediction_snapshot(
+    session: Session,
+    *,
+    user_id: int,
+    activity_id: int | None,
+    goal_id: int | None,
+    prediction_date: date,
+    race_distance_km: float,
+    predicted_time_minutes: float,
+    predicted_pace: float,
+    gap_minutes: float,
+    confidence: float,
+    payload_json: str,
+) -> PredictionSnapshot:
+    """Create or update one prediction snapshot for an activity/goal pair."""
+
+    query = select(PredictionSnapshot).where(
+        PredictionSnapshot.user_id == user_id,
+        PredictionSnapshot.goal_id == goal_id,
+    )
+    if activity_id is None:
+        query = query.where(PredictionSnapshot.activity_id.is_(None), PredictionSnapshot.prediction_date == prediction_date)
+    else:
+        query = query.where(PredictionSnapshot.activity_id == activity_id)
+    snapshot = session.scalars(query).first()
+    if snapshot is None:
+        snapshot = PredictionSnapshot(
+            user_id=user_id,
+            activity_id=activity_id,
+            goal_id=goal_id,
+            prediction_date=prediction_date,
+            race_distance_km=race_distance_km,
+            predicted_time_minutes=predicted_time_minutes,
+            predicted_pace=predicted_pace,
+            gap_minutes=gap_minutes,
+            confidence=confidence,
+            payload_json=payload_json,
+        )
+        session.add(snapshot)
+    else:
+        snapshot.prediction_date = prediction_date
+        snapshot.race_distance_km = race_distance_km
+        snapshot.predicted_time_minutes = predicted_time_minutes
+        snapshot.predicted_pace = predicted_pace
+        snapshot.gap_minutes = gap_minutes
+        snapshot.confidence = confidence
+        snapshot.payload_json = payload_json
+    session.flush()
+    return snapshot
+
+
+def prediction_snapshots_dataframe(session: Session, user_id: int) -> pd.DataFrame:
+    """Return stored prediction snapshots."""
+
+    query = text(
+        """
+        SELECT ps.id, ps.user_id, ps.activity_id, ps.goal_id, ps.prediction_date,
+               ps.race_distance_km, ps.predicted_time_minutes, ps.predicted_pace,
+               ps.gap_minutes, ps.confidence, ps.payload_json, ps.created_at,
+               a.activity_name, a.type AS activity_type, a.distance AS activity_distance
+        FROM prediction_snapshots ps
+        LEFT JOIN activities a ON a.id = ps.activity_id
+        WHERE ps.user_id = :user_id
+        ORDER BY ps.prediction_date ASC, ps.created_at ASC
+        """
+    )
+    df = pd.read_sql_query(query, session.connection(), params={"user_id": user_id})
+    if not df.empty:
+        for column in ("prediction_date", "created_at"):
+            df[column] = pd.to_datetime(df[column])
+    return df
+
+
+def bulk_upsert_health_metrics(
+    session: Session, rows: list[dict[str, Any]], *, skip_empty_inserts: bool = False,
+) -> int:
+    """Upsert health rows; omitted fields on existing rows are left unchanged."""
+
+    inserted = 0
+    for row in rows:
+        metric = session.scalars(
+            select(HealthMetric).where(
+                HealthMetric.user_id == row["user_id"],
+                HealthMetric.date == row["date"],
+            )
+        ).first()
+        if metric is None:
+            if skip_empty_inserts and not any(
+                value is not None for field, value in row.items() if field not in {"user_id", "date"}
+            ):
+                continue
+            metric = HealthMetric(**row)
+            session.add(metric)
+            inserted += 1
+            continue
+
+        for field, value in row.items():
+            setattr(metric, field, value)
+    session.flush()
+    return inserted
+
+
+def activities_dataframe(session: Session, user_id: int) -> pd.DataFrame:
+    """Return activities as a pandas DataFrame."""
+
+    query = text(
+        """
+        SELECT id, user_id, external_id, activity_name, date, type, distance, duration, pace,
+               avg_hr, max_hr, cadence, elevation, training_effect,
+               aerobic_effect, anaerobic_effect, notes, planned_intent
+        FROM activities
+        WHERE user_id = :user_id
+        ORDER BY date ASC
+        """
+    )
+    df = pd.read_sql_query(query, session.connection(), params={"user_id": user_id})
+    if not df.empty:
+        df["date"] = pd.to_datetime(df["date"])
+    return df
+
+
+def health_metrics_dataframe(session: Session, user_id: int) -> pd.DataFrame:
+    """Return health metrics as a pandas DataFrame."""
+
+    query = text(
+        """
+        SELECT id, user_id, date, sleep_duration, sleep_score, resting_hr, hrv,
+               stress, body_battery, recovery_time, vo2max
+        FROM health_metrics
+        WHERE user_id = :user_id
+        ORDER BY date ASC
+        """
+    )
+    df = pd.read_sql_query(query, session.connection(), params={"user_id": user_id})
+    if not df.empty:
+        df["date"] = pd.to_datetime(df["date"])
+    return df
+
+
+def nutrition_entries_dataframe(session: Session, user_id: int) -> pd.DataFrame:
+    """Return nutrition log rows as a dataframe."""
+
+    query = text(
+        """
+        SELECT id, user_id, entry_date, meal_type, food_name, calories,
+               protein_g, carbs_g, fat_g, notes, created_at
+        FROM nutrition_entries
+        WHERE user_id = :user_id
+        ORDER BY entry_date ASC, created_at ASC
+        """
+    )
+    df = pd.read_sql_query(query, session.bind, params={"user_id": user_id})
+    if not df.empty:
+        for column in ("entry_date", "created_at"):
+            df[column] = pd.to_datetime(df[column])
+    return df
+
+
+def create_nutrition_entry(session: Session, user_id: int, payload: dict[str, Any]) -> NutritionEntry:
+    """Create one nutrition log entry."""
+
+    entry = NutritionEntry(
+        user_id=user_id,
+        entry_date=payload["entry_date"],
+        meal_type=payload.get("meal_type") or "meal",
+        food_name=payload["food_name"],
+        calories=float(payload.get("calories") or 0.0),
+        protein_g=float(payload.get("protein_g") or 0.0),
+        carbs_g=float(payload.get("carbs_g") or 0.0),
+        fat_g=float(payload.get("fat_g") or 0.0),
+        notes=(payload.get("notes") or "").strip() or None,
+    )
+    session.add(entry)
+    session.flush()
+    return entry
+
+
+def delete_nutrition_entry(session: Session, entry_id: int, user_id: int) -> None:
+    """Delete one nutrition entry owned by a user."""
+
+    entry = session.get(NutritionEntry, entry_id)
+    if entry is None or entry.user_id != user_id:
+        raise ValueError(f"Unknown nutrition entry id: {entry_id}")
+    session.delete(entry)
+    session.flush()
+
+
+def llm_memory_dataframe(session: Session, user_id: int) -> pd.DataFrame:
+    """Return LLM memory rows as a pandas DataFrame."""
+
+    query = text(
+        """
+        SELECT id, user_id, date, context_summary, recommendations,
+               fatigue_flag, confidence_score
+        FROM llm_memory
+        WHERE user_id = :user_id
+        ORDER BY date DESC
+        """
+    )
+    df = pd.read_sql_query(query, session.bind, params={"user_id": user_id})
+    if not df.empty:
+        df["date"] = pd.to_datetime(df["date"])
+    return df
+
+
+def goals_dataframe(session: Session, user_id: int) -> pd.DataFrame:
+    """Return user goals as a dataframe."""
+
+    query = text(
+        """
+        SELECT id, user_id, name, goal_type, target_distance_km, target_time_minutes,
+               target_date, priority, status, is_active, notes, created_at, updated_at
+        FROM goals
+        WHERE user_id = :user_id
+        ORDER BY is_active DESC, target_date ASC, created_at DESC
+        """
+    )
+    df = pd.read_sql_query(query, session.bind, params={"user_id": user_id})
+    if not df.empty:
+        for column in ("target_date", "created_at", "updated_at"):
+            df[column] = pd.to_datetime(df[column])
+    return df
+
+
+def coaching_decisions_dataframe(session: Session, user_id: int) -> pd.DataFrame:
+    """Return stored coaching decisions as a dataframe."""
+
+    query = text(
+        """
+        SELECT id, user_id, goal_id, decision_type, decision_date, summary, risk_level,
+               payload_json, email_subject, email_body, created_at
+        FROM coaching_decisions
+        WHERE user_id = :user_id
+        ORDER BY decision_date DESC, created_at DESC
+        """
+    )
+    df = pd.read_sql_query(query, session.bind, params={"user_id": user_id})
+    if not df.empty:
+        df["decision_date"] = pd.to_datetime(df["decision_date"])
+        df["created_at"] = pd.to_datetime(df["created_at"], format="mixed")
+    return df
+
+
+def email_deliveries_dataframe(session: Session, user_id: int) -> pd.DataFrame:
+    """Return outbound email history as a dataframe."""
+
+    query = text(
+        """
+        SELECT id, user_id, coaching_decision_id, recipient, subject, status,
+               provider_message, sent_at
+        FROM email_deliveries
+        WHERE user_id = :user_id
+        ORDER BY sent_at DESC
+        """
+    )
+    df = pd.read_sql_query(query, session.bind, params={"user_id": user_id})
+    if not df.empty:
+        df["sent_at"] = pd.to_datetime(df["sent_at"])
+    return df
+
+
+def store_llm_memory(
+    session: Session,
+    user_id: int,
+    context_summary: str,
+    recommendations: str,
+    fatigue_flag: bool,
+    confidence_score: float | None,
+) -> LLMMemory:
+    """Persist a generated coaching recommendation."""
+
+    memory = LLMMemory(
+        user_id=user_id,
+        date=datetime.utcnow(),
+        context_summary=context_summary,
+        recommendations=recommendations,
+        fatigue_flag=fatigue_flag,
+        confidence_score=confidence_score,
+    )
+    session.add(memory)
+    session.flush()
+    return memory
+
+
+def store_coaching_decision(
+    session: Session,
+    user_id: int,
+    goal_id: int | None,
+    decision_type: str,
+    decision_date: date,
+    summary: str,
+    risk_level: str,
+    payload_json: str,
+    email_subject: str | None,
+    email_body: str | None,
+) -> CoachingDecision:
+    """Persist one structured coaching decision."""
+
+    decision = CoachingDecision(
+        user_id=user_id,
+        goal_id=goal_id,
+        decision_type=decision_type,
+        decision_date=decision_date,
+        summary=summary,
+        risk_level=risk_level,
+        payload_json=payload_json,
+        email_subject=email_subject,
+        email_body=email_body,
+    )
+    session.add(decision)
+    session.flush()
+    return decision
+
+
+def store_email_delivery(
+    session: Session,
+    user_id: int,
+    coaching_decision_id: int | None,
+    recipient: str,
+    subject: str,
+    status: str,
+    provider_message: str | None,
+) -> EmailDelivery:
+    """Persist one outbound email event."""
+
+    delivery = EmailDelivery(
+        user_id=user_id,
+        coaching_decision_id=coaching_decision_id,
+        recipient=recipient,
+        subject=subject,
+        status=status,
+        provider_message=provider_message,
+    )
+    session.add(delivery)
+    session.flush()
+    return delivery
+
+
+def update_activity_note(session: Session, activity_id: int, note: str) -> None:
+    """Store a manual note for an activity."""
+
+    activity = session.get(Activity, activity_id)
+    if activity is None:
+        raise ValueError(f"Unknown activity id: {activity_id}")
+    activity.notes = note.strip() or None
+    session.flush()
+
+
+def _goal_time_to_minutes(goal_time: str | float | int | None) -> float:
+    if goal_time is None:
+        return 240.0
+    if isinstance(goal_time, (float, int)):
+        return float(goal_time)
+    hours, minutes, seconds = [int(part) for part in str(goal_time).split(":")]
+    return hours * 60 + minutes + seconds / 60
