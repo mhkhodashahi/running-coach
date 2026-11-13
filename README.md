@@ -80,7 +80,6 @@ services/    Imports, Garmin sync, coaching, memory, and Telegram integration
 web/         FastAPI routes, templates, and self-hosted assets
 worker/      Scheduled jobs and notifications
 tests/       Automated tests using synthetic data
-legacy/     Optional retired Streamlit interface
 ```
 
 ## Contributing and license

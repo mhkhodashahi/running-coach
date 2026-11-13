@@ -622,13 +622,12 @@ def test_legacy_profile_backfill_only_fills_null_fields(tmp_path):
         ]
 
 
-@pytest.mark.parametrize("entrypoint", ["streamlit", "telegram", "sync", "digest"])
+@pytest.mark.parametrize("entrypoint", ["telegram", "sync", "digest"])
 def test_app_entrypoints_stop_before_work_when_database_is_behind(tmp_path, monkeypatch, entrypoint):
     from unittest.mock import Mock
 
     from db import setup
     from services.telegram_chatbot import TelegramTrainingChatBot
-    from services.training_context_service import AppBootstrapService
     from utils import daily_digest_cli, garmin_sync_cli
 
     database = tmp_path / "behind.db"
@@ -639,9 +638,7 @@ def test_app_entrypoints_stop_before_work_when_database_is_behind(tmp_path, monk
     monkeypatch.setattr(setup, "engine", engine)
     monkeypatch.setattr(sys, "argv", ["test"])
     work = Mock(side_effect=AssertionError("Work must not start before the schema check"))
-    if entrypoint == "streamlit":
-        start = AppBootstrapService(session_scope_factory=work).initialize_default_user
-    elif entrypoint == "telegram":
+    if entrypoint == "telegram":
         telegram = Mock()
         telegram.get_updates = work
         start = TelegramTrainingChatBot(telegram_service=telegram, chat_service=Mock()).run_polling

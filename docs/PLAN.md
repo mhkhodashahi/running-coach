@@ -139,7 +139,7 @@ The target contract is now in `AGENTS.md`. No milestone may rewrite stored data 
 ### 5d. Settings and Streamlit retirement
 
 - Files: `web/`, `config.py`, `services/`, `legacy/streamlit/`, `pyproject.toml`, `README.md`, tests, and `docs/milestone-5d-parity.md`.
-- Acceptance: Settings covers profile, custom HR zones, sleep goal, goal management, Garmin sync, CSV import and read-only coach configuration; every old feature has an owner disposition in the parity document. Streamlit remains startable as an optional legacy extra, but is absent from the default run path.
+- Acceptance: Settings covers profile, custom HR zones, sleep goal, goal management, Garmin sync, CSV import and read-only coach configuration; every old feature has an owner disposition in the parity document. Streamlit was retired from the default run path in 5d and its optional implementation was removed during open-source cleanup.
 - Risks: editing local configuration must preserve credentials and file permissions; sync and import must not run during page rendering; old data remains intact.
 
 ### 5e. UI v2 (complete)

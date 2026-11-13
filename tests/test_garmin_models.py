@@ -3,7 +3,6 @@ from __future__ import annotations
 from datetime import date
 from io import StringIO
 
-import pandas as pd
 import pytest
 from pydantic import ValidationError
 
@@ -14,7 +13,6 @@ from services.garmin_normalization import (
     extract_activity_exercise_sets,
     extract_activity_track_points,
 )
-from services.route_geometry import downsample_route, encode_polyline, route_heading_degrees
 
 
 def test_strength_sets_preserve_intervals_without_inventing_exercises() -> None:
@@ -274,35 +272,3 @@ def test_validate_laps_cleans_lap_type() -> None:
     )
 
     assert rows[0]["lap_type"] == "lap"
-
-
-def test_route_heading_degrees_for_eastbound_route() -> None:
-    heading = route_heading_degrees([{"lat": 52.52, "lng": 13.40}, {"lat": 52.52, "lng": 13.41}])
-
-    assert 85 <= heading <= 95
-
-
-def test_downsample_route_preserves_last_point() -> None:
-    route = pd.DataFrame(
-        {
-            "latitude": [52.0 + index * 0.001 for index in range(20)],
-            "longitude": [13.0 + index * 0.001 for index in range(20)],
-        }
-    )
-
-    sampled = downsample_route(route, max_points=6)
-
-    assert len(sampled) <= 8
-    assert sampled.iloc[-1]["latitude"] == route.iloc[-1]["latitude"]
-
-
-def test_encode_polyline_matches_google_example() -> None:
-    encoded = encode_polyline(
-        [
-            {"lat": 38.5, "lng": -120.2},
-            {"lat": 40.7, "lng": -120.95},
-            {"lat": 43.252, "lng": -126.453},
-        ]
-    )
-
-    assert encoded == "_p~iF~ps|U_ulLnnqC_mqNvxq`@"
