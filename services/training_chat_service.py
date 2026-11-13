@@ -1,4 +1,4 @@
-"""DB-backed, evidence-grounded coach chat for Telegram and Streamlit."""
+"""DB-backed, evidence-grounded coach chat for the web app and Telegram."""
 
 from __future__ import annotations
 

@@ -187,6 +187,29 @@ def strength_set_rows(rows: list[dict[str, Any]]) -> tuple[dict[str, str | None]
     return tuple(result)
 
 
+def route_map_points(rows: list[dict[str, Any]], max_points: int = 650) -> list[dict[str, float]]:
+    """Bound a GPS route for browser rendering while preserving its endpoints."""
+    points = []
+    for row in rows:
+        lat, lon = row.get("latitude"), row.get("longitude")
+        if lat is None or lon is None:
+            continue
+        lat, lon = float(lat), float(lon)
+        if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+            continue
+        point = {"lat": lat, "lng": lon}
+        for key in ("distance_km", "elevation", "elapsed_seconds"):
+            if row.get(key) is not None:
+                point[key] = float(row[key])
+        points.append(point)
+    if len(points) <= max_points:
+        return points
+    if max_points < 2:
+        return []
+    last_index = len(points) - 1
+    return [points[round(index * last_index / (max_points - 1))] for index in range(max_points)]
+
+
 def coach_fact_summary(activity: dict[str, Any], facts: list[dict[str, str]], sync: str) -> str:
     activity_id = activity["id"]
     prefix = f"ACT_{activity_id}_"

@@ -18,6 +18,7 @@ class ActivityDetailData:
     laps: list[dict[str, Any]]
     exercise_sets: list[dict[str, Any]]
     heart_rate_points: list[dict[str, Any]]
+    route_points: list[dict[str, Any]]
     cadence_range: tuple[float | None, float | None]
     athlete: dict[str, Any] | None
     opinion: dict[str, Any] | None
@@ -77,6 +78,10 @@ class ActivityRepository:
         heart_rate_points = self._rows(
             "SELECT elapsed_seconds,heart_rate FROM activity_track_points "
             "WHERE activity_id=:id AND heart_rate IS NOT NULL ORDER BY point_index", activity_id)
+        route_points = self._rows(
+            "SELECT latitude,longitude,distance_km,elevation,elapsed_seconds FROM activity_track_points "
+            "WHERE activity_id=:id AND latitude IS NOT NULL AND longitude IS NOT NULL ORDER BY point_index",
+            activity_id)
         cadence = self._session.execute(text(
             "SELECT MIN(avg_cadence),MAX(avg_cadence) FROM activity_laps "
             "WHERE activity_id=:id AND distance>=0.9"), {"id": activity_id}).first()
@@ -92,7 +97,7 @@ class ActivityRepository:
         next_id = self._adjacent_id(activity, user_id, before=False)
         return ActivityDetailData(
             activity=activity, laps=laps, exercise_sets=exercise_sets,
-            heart_rate_points=heart_rate_points,
+            heart_rate_points=heart_rate_points, route_points=route_points,
             cadence_range=(cadence[0], cadence[1]) if cadence else (None, None),
             athlete=dict(athlete_row) if athlete_row else None,
             opinion=dict(opinion_row) if opinion_row else None, calls_today=int(calls),

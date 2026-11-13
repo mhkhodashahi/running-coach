@@ -36,6 +36,7 @@ Add values to `.env` only for features you enable:
 - **Local AI:** no API key is needed. Install and start Ollama; optionally set `OLLAMA_BASE_URL` and `OLLAMA_MODEL` if you use non-default values.
 - **OpenAI:** set `OPENAI_API_KEY`, `LLM_PROVIDER=openai`, `ALLOW_REMOTE_LLM=true`, and `REMOTE_ATHLETE_DATA_APPROVED=true`. Both approval flags are required before athlete data can be sent remotely.
 - **Garmin Connect sync:** set `GARMIN_EMAIL` and `GARMIN_PASSWORD`. The app creates local Garmin tokens on sync. CSV import needs no Garmin credentials.
+- **Run maps:** set `GOOGLE_MAPS_API_KEY` to enable the interactive route replay on Activity pages. Restrict the browser key to your app's referrers and the Maps JavaScript API.
 - **Telegram:** set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` for bot delivery.
 - **Remote web login:** optionally set `WEB_PASSWORD`; the app signs the session cookie. The default bind remains local-only.
 - **Optional preferences:** `LOCAL_TIMEZONE`, `SLEEP_GOAL_HOURS`, `HR_ZONES`, and `COACH_DAILY_CALL_LIMIT` have defaults. See comments in `.env.example` before overriding them.
@@ -46,6 +47,7 @@ Add values to `.env` only for features you enable:
 - The narrative coach memory is kept separately in `data/couch_running_memory.md`. It contains compact coaching cues and recent coaching entries; it is local personal data and is git-ignored.
 - Chat history is stored in the database separately from the narrative memory. Training history in SQLite is the primary input to plan suggestions.
 - With Ollama, prompt data is sent to the configured Ollama server. With OpenAI, relevant activity, health, goal, plan, chat, and memory context may be sent to OpenAI. Credentials and API keys are not included in prompts. Remote sharing is refused unless both approval settings are enabled.
+- When you open a route map, the activity's GPS coordinates are sent to Google Maps for rendering. The map is not loaded unless an activity has route coordinates and a Maps API key is configured.
 - Keep `.env`, Garmin tokens, databases, backups, logs, and personal exports private. Review the database and memory file before sharing diagnostic output.
 
 ## Backups and scheduled jobs
@@ -78,7 +80,7 @@ services/    Imports, Garmin sync, coaching, memory, and Telegram integration
 web/         FastAPI routes, templates, and self-hosted assets
 worker/      Scheduled jobs and notifications
 tests/       Automated tests using synthetic data
-legacy/      Optional retired Streamlit interface
+legacy/     Optional retired Streamlit interface
 ```
 
 ## Contributing and license

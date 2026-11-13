@@ -20,7 +20,7 @@ from web.activities import evidence_source_label
 from web.app import create_app
 from web.charts import heart_rate_chart
 from web.trends import trends_context
-from web.view_models.activity import strength_set_rows
+from web.view_models.activity import route_map_points, strength_set_rows
 
 DAY = date(2026, 10, 23)
 
@@ -120,6 +120,51 @@ def test_strength_set_view_model_uses_named_exercise_only_when_available():
     result = strength_set_rows(rows)
     assert result[0]["label"] == "Goblet Squat"
     assert result[0]["weight"] == "12.5 kg"
+
+
+def test_route_map_points_filters_invalid_coordinates_and_preserves_endpoints():
+    rows = [{"latitude": 52.0, "longitude": 13.0, "distance_km": 0.0},
+            {"latitude": None, "longitude": 13.1},
+            {"latitude": 95.0, "longitude": 13.2},
+            {"latitude": 52.2, "longitude": 13.4, "distance_km": 2.0}]
+    assert route_map_points(rows) == [
+        {"lat": 52.0, "lng": 13.0, "distance_km": 0.0},
+        {"lat": 52.2, "lng": 13.4, "distance_km": 2.0},
+    ]
+    many = [{"latitude": 52 + index / 10000, "longitude": 13 + index / 10000} for index in range(1000)]
+    sampled = route_map_points(many, max_points=100)
+    assert len(sampled) == 100
+    assert sampled[0]["lat"] == many[0]["latitude"]
+    assert sampled[-1]["lat"] == many[-1]["latitude"]
+
+
+def test_running_activity_renders_google_route_replay_when_key_and_gps_exist(activity_db):
+    with sqlite3.connect(activity_db) as connection:
+        connection.executemany(
+            "UPDATE activity_track_points SET latitude=?,longitude=?,distance_km=? "
+            "WHERE activity_id=101 AND point_index=?",
+            [(52.0, 13.0, 0.0, 0), (52.01, 13.02, 2.0, 1), (52.02, 13.04, 4.2, 2)],
+        )
+    settings = replace(get_settings(), db_path=activity_db, llm_provider="none",
+                      google_maps_api_key="fixture-key", google_maps_map_id="fixture-map")
+    with TestClient(create_app(settings, password="")) as client:
+        html = client.get("/activities/101").text
+        assert 'id="activity-route-map"' in html
+        assert "Replay route" in html or "Loading map…" in html
+        assert "fixture-key" in html and "fixture-map" in html
+        assert "GPS route map with replay controls" in html
+        assert 'id="activity-route-map"' not in client.get("/activities/103").text
+
+
+def test_route_without_key_shows_setup_hint_not_external_map(activity_db):
+    with sqlite3.connect(activity_db) as connection:
+        connection.execute("UPDATE activity_track_points SET latitude=52.0,longitude=13.0 "
+                           "WHERE activity_id=101 AND point_index IN (0,1)")
+    settings = replace(get_settings(), db_path=activity_db, llm_provider="none", google_maps_api_key="")
+    with TestClient(create_app(settings, password="")) as client:
+        html = client.get("/activities/101").text
+    assert "Set GOOGLE_MAPS_API_KEY in .env" in html
+    assert "activity-map.js" not in html
 
 
 def test_strength_set_refresh_replaces_only_imported_sets(activity_db):

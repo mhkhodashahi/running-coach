@@ -1,8 +1,8 @@
-"""Backward-compatible access to the repositories' legacy operations.
+"""Backward-compatible access to operations not yet moved to domain repositories.
 
 New application code should depend on the focused repository classes in
-``db.repositories``. This module remains for the retired Streamlit UI and
-older service entry points while those callers are migrated.
+``db.repositories``. This facade remains for active service and CLI callers
+while those call sites are migrated.
 """
 
 from __future__ import annotations

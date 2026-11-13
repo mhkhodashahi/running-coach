@@ -31,7 +31,7 @@ from services.workout_laps import interpret_laps
 from web.charts import heart_rate_chart, plot_only
 from web.formatting import activity_distance, activity_duration, lap_time, metric, short_date
 from web.today import sync_label
-from web.view_models.activity import build_activity_view, difference_words, display_opinion, list_row
+from web.view_models.activity import build_activity_view, difference_words, display_opinion, list_row, route_map_points
 
 PAGE_SIZE = 20
 INTENTS = ("recovery", "easy", "steady", "tempo", "race")
@@ -255,6 +255,7 @@ def detail_context(settings: Settings, activity_id: int, *, from_page: str = "ac
     day = date.fromisoformat(row["date"])
     laps = detail.laps
     exercise_sets = detail.exercise_sets if _sport(row) == "gym" else []
+    route_points = route_map_points(detail.route_points) if _sport(row) == "running" else []
     points = detail.heart_rate_points
     cadence = detail.cadence_range
     user = detail.athlete
@@ -305,6 +306,8 @@ def detail_context(settings: Settings, activity_id: int, *, from_page: str = "ac
                          "rateable": row["type"].strip().lower() != "walking" and
                          _sport(row) not in ("excluded", "mobility")},
             "prev_id": detail.previous_id, "next_id": detail.next_id,
+            "route_map": {"points": route_points, "api_key": settings.google_maps_api_key,
+                          "map_id": settings.google_maps_map_id} if len(route_points) >= 2 else None,
             "stats": _stats(row, session, cadence, effort_label), "opinion": opinion,
             "opinion_meta": dict(opinion_row) if opinion_row else None,
             "review_provider": {"openai": "OpenAI", "chatgpt": "OpenAI", "ollama": "Ollama",

@@ -408,3 +408,10 @@
 .v2-training-type{display:inline-flex;width:max-content;max-width:100%;margin-top:4px;white-space:normal}
 .v2-workout-variant{margin-top:8px;border-top:1px solid var(--line)}
 .v2-workout-variant summary{min-height:44px;cursor:pointer}
+.v2-route-card{margin:16px 0;padding:20px;min-width:0}
+.v2-route-card .v2-activity-panel-head{align-items:center;flex-wrap:wrap;gap:8px}
+.v2-route-card h2{margin:0}
+.v2-route-map{height:360px;width:100%;min-width:0;border:1px solid var(--line);border-radius:var(--radius-sm);overflow:hidden;background:var(--surface-raised)}
+.v2-route-controls{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:10px}
+.v2-route-controls progress{width:min(180px,40vw);accent-color:var(--load)}
+@media(max-width:767px){.v2-route-card{padding:14px}.v2-route-map{height:280px}}
