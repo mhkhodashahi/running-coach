@@ -414,4 +414,9 @@
 .v2-route-map{height:360px;width:100%;min-width:0;border:1px solid var(--line);border-radius:var(--radius-sm);overflow:hidden;background:var(--surface-raised)}
 .v2-route-controls{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:10px}
 .v2-route-controls progress{width:min(180px,40vw);accent-color:var(--load)}
+.v2-route-pin{display:grid;place-items:center;font:600 12px var(--font-sans);pointer-events:none}
+.v2-route-overlay-pin{position:absolute;transform:translate(-50%,-50%)}
+.v2-route-pin-start,.v2-route-pin-finish{width:26px;height:26px;border:2px solid var(--surface);border-radius:50%;background:var(--volt);color:var(--on-volt)}
+.v2-route-pin-finish{background:var(--surface-raised);color:var(--ink)}
+.v2-route-pin-runner{width:18px;height:18px;border:3px solid var(--surface);border-radius:50%;background:var(--load)}
 @media(max-width:767px){.v2-route-card{padding:14px}.v2-route-map{height:280px}}

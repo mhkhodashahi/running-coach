@@ -167,6 +167,23 @@ def test_route_without_key_shows_setup_hint_not_external_map(activity_db):
     assert "activity-map.js" not in html
 
 
+def test_route_map_avoids_deprecated_markers_and_raster_tilt():
+    script = (Path(__file__).parents[1] / "web/static/js/activity-map.js").read_text()
+    assert "google.maps.Marker(" not in script
+    assert 'google.maps.importLibrary("marker")' in script
+    assert "renderingType: google.maps.RenderingType.VECTOR" in script
+    assert "tilt: 45" not in script
+    assert "setTilt(45)" not in script
+
+
+def test_route_replay_clamps_progress_and_guards_missing_points():
+    script = (Path(__file__).parents[1] / "web/static/js/activity-map.js").read_text()
+    assert "Math.max(0, Math.min((now - start) / duration, 1))" in script
+    assert "Math.min(Math.floor(scaled), lastIndex)" in script
+    assert "points[index] ?? points[lastIndex]" in script
+    assert "token !== replayToken" in script
+
+
 def test_strength_set_refresh_replaces_only_imported_sets(activity_db):
     engine = create_engine(f"sqlite:///{activity_db}")
     try:
