@@ -51,8 +51,11 @@ Repository = "https://github.com/mhkhodashahi/running-coach"
 Issues = "https://github.com/mhkhodashahi/running-coach/issues"
 
 [tool.poetry]
+exclude = ["db/*.lock", "db/.*.lock", "docs/private", "data/couch_running_memory.md"]
 packages = [
+    { include = "config.py" },
     { include = "analytics" },
+    { include = "coach" },
     { include = "db" },
     { include = "llm" },
     { include = "metrics" },
@@ -60,6 +63,11 @@ packages = [
     { include = "scripts" },
     { include = "utils" },
     { include = "web" },
+    { include = "worker" },
+]
+include = [
+    { path = "data/mock_activities.csv", format = ["sdist", "wheel"] },
+    { path = "data/mock_health_metrics.csv", format = ["sdist", "wheel"] },
 ]
 
 [build-system]

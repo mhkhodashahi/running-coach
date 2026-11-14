@@ -8,6 +8,11 @@
 *.db
 *.sqlite
 *.sqlite3
+*.db-wal
+*.db-shm
+*.worker.lock
+.*.coach-*.lock
+dist/
 db/*.db
 garmin_data/
 data/body_scans/

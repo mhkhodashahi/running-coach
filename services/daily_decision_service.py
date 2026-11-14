@@ -136,7 +136,7 @@ def _recent_sessions(rows: list[dict[str, Any]], requested: date, timezone: str,
 def _weekly_budget(database: Path, user_id: int, requested: date, snapshot: Any,
                    settings: Settings) -> tuple[float | None, float | None, float | None, Any]:
     """Count logged work once, then remaining plan work; never count walking."""
-    from coach.planning import estimate_load, load_model
+    from coach.load_model import estimate_load, load_model
     from coach.proposals import get_week, monday
 
     start = monday(requested)
@@ -250,7 +250,7 @@ def build_daily_decision(requested: date, database: Path, user_id: int, timezone
         ranking = ()
         weekly_reason = "weekly load unavailable"
     elif ranking:
-        from coach.planning import estimate_load
+        from coach.load_model import estimate_load
 
         def rates_for(items: tuple[Any, ...]) -> dict[str, float | None]:
             return {item.sport: ((estimated / int(item.session["duration_min"])) if
@@ -511,12 +511,12 @@ def get_or_create_daily_decision(day: date, *, settings: Settings | None = None,
         previous = json.loads(old["payload_json"]) if old else {}
         if previous.get("input_hash") == fingerprint:
             cached = with_fallback(DailyDecision(**previous["decision"]))
-            from coach.planning import propose_daily_conflict
+            from services.daily_plan_service import propose_daily_conflict
 
             propose_daily_conflict(day, cached.intensity, list(cached.facts), settings=settings, user_id=user_id)
             return cached
         client = llm or get_llm_client(settings.llm_provider, settings.openai_api_key, settings.openai_model,
-                                       settings.ollama_base_url, settings.ollama_model)
+                                       settings.ollama_base_url, settings.ollama_model, settings=settings)
         if isinstance(client, NullLLMClient):
             client = None
         if settings.llm_provider in ("openai", "chatgpt") and not (
@@ -534,7 +534,7 @@ def get_or_create_daily_decision(day: date, *, settings: Settings | None = None,
                 "high" if decision.intensity == "rest" else "moderate" if decision.intensity == "easy" else "low",
                 json.dumps(payload), datetime.now(UTC).replace(tzinfo=None),
             )
-        from coach.planning import propose_daily_conflict
+        from services.daily_plan_service import propose_daily_conflict
 
         propose_daily_conflict(day, decision.intensity, list(decision.facts), settings=settings, user_id=user_id)
         return decision

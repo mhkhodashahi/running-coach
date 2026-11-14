@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import llm.openai_client as openai_module
 from db.migration_runner import upgrade_database
 from llm.openai_client import OpenAIClient
 from llm.schemas import ActivityCoachInsightSchema, CoachOpinionV2
@@ -13,6 +14,7 @@ from llm.schemas import ActivityCoachInsightSchema, CoachOpinionV2
 
 def _client(create):
     client = OpenAIClient.__new__(OpenAIClient)
+    client.settings = openai_module.get_settings()
     client.model = "synthetic"
     client.client = SimpleNamespace(responses=SimpleNamespace(create=create))
     return client
@@ -72,6 +74,7 @@ def test_structured_and_fallback_requests_are_separate_rows(tmp_path, monkeypatc
     structured = CoachOpinionV2(headline="Useful run", assessment="Measured.", confidence="medium",
                                 intent={"planned": None, "detected": "easy"})
     client = OpenAIClient.__new__(OpenAIClient)
+    client.settings = openai_module.get_settings()
     client.model = "synthetic"
     calls = 0
 

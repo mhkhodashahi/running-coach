@@ -127,7 +127,7 @@ def today_context(settings: Settings, *, day: date, llm: Any = None) -> dict[str
                        if week_start.isoformat() <= row["date"][:10] and
                        sport_category(row["type"], day) in RECOMMENDABLE_SPORTS]
     unrated_id = unrated.id if unrated else None
-    from coach.planning import load_model
+    from coach.load_model import load_model
     from coach.proposals import monday
 
     week_start = monday(day)

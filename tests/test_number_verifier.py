@@ -56,3 +56,20 @@ def test_full_date_cannot_be_verified_from_a_yearless_fact():
 def test_composite_claims_and_zone_labels_are_not_split():
     claims = extract_numbers("Z1-Z2 held 90%. The 7h 42m night ended at 06:36.")
     assert [item.text for item in claims] == ["90%", "7h 42m", "06:36"]
+
+
+@pytest.mark.parametrize("claim", ["-17 bpm", "\N{MINUS SIGN}17 bpm", "17 bpm below usual"])
+def test_reversed_delta_is_rejected(claim):
+    assert verify_numbers([fact("RHR_DELTA", "+17 bpm")], claim).unmatched
+
+
+@pytest.mark.parametrize("claim", ["-7 ms", "\N{MINUS SIGN}7 ms", "7 ms below usual"])
+def test_negative_delta_keeps_its_direction(claim):
+    result = verify_numbers([fact("HRV_DELTA", "-7 ms")], claim)
+    assert result.unmatched == ()
+    assert result.matched[0]["id"] == "HRV_DELTA"
+
+
+def test_derived_values_keep_signed_inputs():
+    assert derive_sum(fact("FIRST", "-7 ms"), fact("SECOND", "+2 ms"), "TOTAL")["display"] == "-5 ms"
+    assert derive_difference(fact("FIRST", "-7 ms"), fact("SECOND", "+2 ms"), "DELTA")["display"] == "-9 ms"

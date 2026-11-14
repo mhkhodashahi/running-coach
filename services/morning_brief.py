@@ -489,7 +489,7 @@ def get_or_create_brief(settings: Settings, day: date, decision: Any, *, use_ai:
 
     try:
         client = get_llm_client(settings.llm_provider, settings.openai_api_key, settings.openai_model,
-                                settings.ollama_base_url, settings.ollama_model)
+                                settings.ollama_base_url, settings.ollama_model, settings=settings)
         model = settings.openai_model if remote else settings.ollama_model
         with user_job_lock(settings.db_path, settings.default_user_id):
             counter = CoachAgent(settings, client, settings.default_user_id)

@@ -7,9 +7,9 @@ import logging
 import os
 import re
 import threading
-import tomllib
 from dataclasses import replace
 from datetime import date, datetime
+from importlib.metadata import PackageNotFoundError, version
 from io import BytesIO
 from typing import BinaryIO
 from zoneinfo import ZoneInfo
@@ -42,7 +42,7 @@ LOGGER = logging.getLogger(__name__)
 def settings_context(settings: Settings, sync_state: dict[str, str]) -> dict:
     """Read profile, goals, sync status and coach usage for the Settings page."""
     with session_scope(settings.db_url) as session:
-        user = session.get(repository.User, settings.default_user_id)
+        user = SettingsViewRepository(session).profile(settings.default_user_id)
         if user is None:
             raise ValueError("Profile is not configured")
         goals = repository.list_goals(session, user.id)
@@ -86,11 +86,14 @@ def settings_context(settings: Settings, sync_state: dict[str, str]) -> dict:
     context["last_backup"] = (f"{short_date(backup_day)} · OK" if backup_status == "done"
                                else "No verified backup yet")
     context["backup_folder"] = str(settings.backup_dir)
-    project = tomllib.loads((BASE_DIR / "pyproject.toml").read_text(encoding="utf-8"))["project"]
+    try:
+        app_version = version("running-coach")
+    except PackageNotFoundError:
+        app_version = "development"
     context["me"] = me_view(context, telegram_configured=bool(settings.telegram_bot_token and
                              settings.telegram_chat_id), garmin_configured=bool(settings.garmin_email and
                              settings.garmin_password), public_link_configured=bool(settings.public_url),
-                             version=project["version"], source_url=project["urls"]["Repository"])
+                             version=app_version, source_url="https://github.com/mhkhodashahi/running-coach")
     return context
 
 
@@ -164,8 +167,8 @@ def save_goal(settings: Settings, fields: dict[str, str], goal_id: int | None = 
     allowed_types = {kind for kind, _, _ in GoalService.supported_goal_types()}
     if goal_id is not None:
         with session_scope(settings.db_url) as session:
-            existing = repository.get_goal(session, goal_id)
-            if existing is None or existing.user_id != settings.default_user_id:
+            existing = SettingsViewRepository(session).owned_goal(settings.default_user_id, goal_id)
+            if existing is None:
                 raise ValueError("Goal not found")
             allowed_types.add(existing.goal_type)
     if not name or len(name) > 80 or goal_type not in allowed_types:
@@ -190,8 +193,8 @@ def save_goal(settings: Settings, fields: dict[str, str], goal_id: int | None = 
             repository.create_goal(session, settings.default_user_id,
                                    payload | {"status": "planned", "is_active": False})
         else:
-            goal = repository.get_goal(session, goal_id)
-            if goal is None or goal.user_id != settings.default_user_id:
+            goal = SettingsViewRepository(session).owned_goal(settings.default_user_id, goal_id)
+            if goal is None:
                 raise ValueError("Goal not found")
             repository.update_goal(session, goal_id, payload)
 
@@ -199,15 +202,13 @@ def save_goal(settings: Settings, fields: dict[str, str], goal_id: int | None = 
 def change_goal_state(settings: Settings, goal_id: int, action: str) -> None:
     """Activate or archive a goal without deleting it."""
     with session_scope(settings.db_url) as session:
-        goal = repository.get_goal(session, goal_id)
-        if goal is None or goal.user_id != settings.default_user_id:
+        goal = SettingsViewRepository(session).owned_goal(settings.default_user_id, goal_id)
+        if goal is None:
             raise ValueError("Goal not found")
         if action == "activate":
             repository.set_active_goal(session, settings.default_user_id, goal_id)
         elif action == "archive":
-            goal.status = "archived"
-            goal.is_active = False
-            session.flush()
+            SettingsViewRepository(session).archive_goal(settings.default_user_id, goal_id)
         else:
             raise ValueError("Unknown goal action")
 

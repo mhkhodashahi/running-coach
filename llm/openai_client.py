@@ -6,7 +6,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from config import get_settings
+from config import Settings, get_settings
 from llm.base import LLMClient, extract_json
 from llm.schemas import (
     openai_schema,
@@ -18,11 +18,12 @@ from llm.usage import record_openai_call
 class OpenAIClient(LLMClient):
     """Generate structured coaching with the OpenAI Responses API."""
 
-    def __init__(self, api_key: str, model: str) -> None:
+    def __init__(self, api_key: str, model: str, *, settings: Settings | None = None) -> None:
         from openai import OpenAI
 
         self.client = OpenAI(api_key=api_key)
         self.model = model
+        self.settings = settings or get_settings()
 
     def _request(self, kind: str, request: Any, settings: Any) -> Any:
         """Account for each provider request, including requests that raise."""
@@ -50,7 +51,7 @@ class OpenAIClient(LLMClient):
         user_prompt: str,
         response_schema: type[BaseModel] | None = None,
     ) -> dict[str, Any]:
-        settings = get_settings()
+        settings = self.settings
         if not settings.allow_remote_llm or not settings.remote_athlete_data_approved:
             raise PermissionError(
                 "Remote LLM access is disabled. Set ALLOW_REMOTE_LLM=true and "
@@ -86,7 +87,7 @@ class OpenAIClient(LLMClient):
     def coach_step(self, system_prompt: str, messages: list[dict[str, Any]],
                    tool_specs: list[dict[str, Any]]) -> dict[str, Any]:
         """Use native Responses function calls without storing provider-side state."""
-        settings = get_settings()
+        settings = self.settings
         if not settings.allow_remote_llm or not settings.remote_athlete_data_approved:
             raise PermissionError("Remote LLM access is disabled. Approve it in .env first.")
         input_items: list[dict[str, Any]] = []

@@ -28,3 +28,9 @@ jobs:
 
       - name: Run tests
         run: poetry run pytest
+
+      - name: Build distribution
+        run: poetry build
+
+      - name: Smoke test installed wheel outside checkout
+        run: poetry run python -m scripts.check_distribution dist/*.whl

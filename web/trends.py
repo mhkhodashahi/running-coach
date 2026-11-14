@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from coach.agent import CoachAgent
 from coach.guardrails import diagnosis_sentences
-from coach.planning import load_model
+from coach.load_model import load_model
 from coach.proposals import monday
 from coach.runtime import user_job_lock
 from config import Settings
@@ -105,7 +105,7 @@ def cached_trend_summary(settings: Settings, day: date, days: int, facts: list[F
                 try:
                     client = llm or get_llm_client(settings.llm_provider, settings.openai_api_key,
                                                    settings.openai_model, settings.ollama_base_url,
-                                                   settings.ollama_model)
+                                                   settings.ollama_model, settings=settings)
                     agent = CoachAgent(settings, client, settings.default_user_id)
                     prompt = json.dumps({"range_days": days, "facts": facts})
                     for attempt in range(2):

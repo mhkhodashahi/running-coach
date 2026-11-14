@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
@@ -33,6 +34,7 @@ from services.goal_service import GoalService
 from services.running_coach_memory import (
     build_memory_entry_from_activity,
     load_running_memory,
+    memory_path,
     running_memory_block,
     update_running_memory,
 )
@@ -105,6 +107,7 @@ class ActivityCoachingService:
             self.settings.openai_model,
             self.settings.ollama_base_url,
             self.settings.ollama_model,
+            settings=self.settings,
         )
         self.goal_service = GoalService()
 
@@ -135,7 +138,7 @@ class ActivityCoachingService:
         context["effort_low_zone_share"] = (sum(zone.percent.value or 0 for zone in activity_session.zones
                                                 if zone.name.startswith(("Below Z1", "Z1", "Z2")))
                                             if activity_session else None)
-        from coach.planning import load_model
+        from coach.load_model import load_model
 
         week_start = activity.date - timedelta(days=activity.date.weekday())
         reference = load_model(self.settings.db_path, user.id, week_start, self.settings)
@@ -238,14 +241,14 @@ class ActivityCoachingService:
         context, activity_day, activity_name = self._prepare(session, user, activity_id)
         memories = coach_memory_context(self.settings.db_path, user.id, categories={"goal", "body"})
         opinion, notes = self._request_opinion(context, "\n".join(
-            value for value in (memories, load_running_memory()) if value))
+            value for value in (memories, load_running_memory(memory_path(self.settings.base_dir))) if value))
         self._save(session, user.id, activity_id, opinion, context, notes, regenerate)
-        _update_activity_memory(activity_day, activity_name, opinion)
+        _update_activity_memory(activity_day, activity_name, opinion, base_dir=self.settings.base_dir)
         return opinion.model_dump()
 
     def generate_for_activity(self, *, user_id: int, activity_id: int, regenerate: bool = False) -> dict[str, Any]:
         """Generate only on an explicit call, outside a long-running database transaction."""
-        with session_scope() as session:
+        with session_scope(self.settings.db_url) as session:
             user = repository.get_or_create_default_user(session, user_id)
             existing = repository.get_activity_coaching_insight(session, activity_id=activity_id, user_id=user_id)
             if existing is not None and not regenerate:
@@ -253,10 +256,10 @@ class ActivityCoachingService:
             context, activity_day, activity_name = self._prepare(session, user, activity_id)
         memories = coach_memory_context(self.settings.db_path, user_id, categories={"goal", "body"})
         opinion, notes = self._request_opinion(context, "\n".join(
-            value for value in (memories, load_running_memory()) if value))
-        with session_scope() as session:
+            value for value in (memories, load_running_memory(memory_path(self.settings.base_dir))) if value))
+        with session_scope(self.settings.db_url) as session:
             self._save(session, user_id, activity_id, opinion, context, notes, regenerate)
-        _update_activity_memory(activity_day, activity_name, opinion)
+        _update_activity_memory(activity_day, activity_name, opinion, base_dir=self.settings.base_dir)
         return opinion.model_dump()
 
 
@@ -280,7 +283,8 @@ def build_activity_coaching_prompt(context: dict[str, Any], running_memory: str 
     )
 
 
-def _update_activity_memory(activity_day: str, activity_name: str | None, opinion: CoachOpinionV2) -> None:
+def _update_activity_memory(activity_day: str, activity_name: str | None, opinion: CoachOpinionV2,
+                            *, base_dir: Path | None = None) -> None:
     try:
         entry = build_memory_entry_from_activity(activity_day, {
             "selected_activity_name": activity_name,
@@ -290,7 +294,7 @@ def _update_activity_memory(activity_day: str, activity_name: str | None, opinio
             "training_recommendations": [item.text for item in opinion.recommendations],
             "evidence": [f"{item.metric}: {item.value}" for item in opinion.evidence],
         })
-        update_running_memory(entry=entry)
+        update_running_memory(entry=entry, path=memory_path(base_dir))
     except Exception:
         pass
 

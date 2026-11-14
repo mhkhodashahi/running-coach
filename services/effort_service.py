@@ -116,7 +116,7 @@ def dispatch_effort_prompts(settings: object, user_id: int, telegram: object) ->
     if not telegram.configured:
         return 0
     sent = 0
-    with session_scope() as session:
+    with session_scope(settings.db_url) as session:
         for activity, reminder in prompt_candidates(session, user_id, datetime.now(UTC),
                                                     settings.local_timezone):
             first = EffortRepository(session).activity_time(activity)

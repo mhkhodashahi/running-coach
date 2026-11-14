@@ -148,7 +148,7 @@ class CoachTools:
         if snapshot.readiness.score.value is not None:
             facts.append(_fact("READINESS", "Recovery", str(round(snapshot.readiness.score.value)),
                                "metrics_snapshot.readiness.score.value"))
-        from coach.planning import load_model
+        from coach.load_model import load_model
 
         settings = replace(get_settings(), db_path=self.database, default_user_id=self.user_id,
                            local_timezone=self.timezone, sleep_goal_hours=self.sleep_goal_hours)
@@ -220,7 +220,7 @@ class CoachTools:
         week_loads = [session.load.value for session in current.sessions if session.day >= week
                       and session.sport not in ("walking", "excluded", "mobility")]
         weekly_load = sum(week_loads) if week_loads and all(value is not None for value in week_loads) else None
-        from coach.planning import load_model
+        from coach.load_model import load_model
 
         settings = replace(get_settings(), db_path=self.database, default_user_id=self.user_id,
                            local_timezone=self.timezone, sleep_goal_hours=self.sleep_goal_hours)
@@ -286,7 +286,7 @@ class CoachTools:
                                               if zone.name.startswith(("Z1", "Z2")))
                                            for item in snapshot.sessions if item.activity_id == activity_id), None),
         }
-        from coach.planning import load_model
+        from coach.load_model import load_model
 
         week_start = day - timedelta(days=day.weekday())
         settings = replace(get_settings(), db_path=self.database, default_user_id=self.user_id,

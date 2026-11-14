@@ -16,13 +16,13 @@ Read this file before every task. If a task conflicts with it, stop and say so.
 - Keep the existing data import (python-garminconnect, CSV, FIT) working. If you must change it, say why first.
 - Prefer small, readable modules over clever abstractions. Type hints everywhere. No new dependency without a one-line reason.
 
-## Current stack (from the step 0 audit, 2026-10-21)
+## Current stack
 
 - Language: Python (version per `pyproject.toml`). Licence: AGPL-3.0.
-- Web UI: Streamlit — `app/main.py`, `app/dashboard.py`, `app/pages/`, `ui/`. Activity detail and the coach opinion panel live in `app/pages/8_Activity_Detail.py`.
-- Database: SQLite at `db/running_coach.db` via SQLAlchemy (`db/models.py`, `db/repository.py`, `db/session.py`, `db/setup.py`). No versioned migrations yet: `create_all` plus ad hoc SQL in `db/setup.py`.
+- Web UI: FastAPI, Jinja2 and HTMX in `web/`; start with `python -m web`. Streamlit has been removed.
+- Database: SQLite via scoped SQLAlchemy sessions and `db/repositories/`. Alembic upgrades run only through `python -m scripts.upgrade_db` (backup-first); startup checks the revision without migrating. See `docs/upgrade.md`.
 - Garmin import: `services/garmin_client.py` (python-garminconnect), `services/garmin_normalization.py`, `services/import_service.py` (CSV), `utils/garmin_sync_cli.py`. FIT import: not found in code — see Decisions.
-- Metrics today: `analytics/performance.py`, `services/coaching_engine.py`, `services/hr_zones.py`.
+- Metrics: `metrics/` computes Recovery and session load. `coach/load_model.py` owns the shared usual-week reference; `coach/week_rules.py` holds pure weekly safety checks. `analytics/performance.py` retains compatible prediction calculations.
 - LLM: `llm/factory.py` (OpenAI and Ollama), `services/llm_workflow.py`, schemas in `llm/schemas.py`. Per-run opinion: `services/activity_coaching_service.py` → table `activity_coaching_insights`.
 - Delivery and jobs: `services/telegram_service.py`, `services/telegram_chatbot.py`, `utils/daily_digest_cli.py`, `utils/telegram_chat_cli.py`, `scripts/`, `launchd/` (local, ignored, machine-specific paths).
 - Tests and CI: pytest, ruff, compileall, gitleaks secret scan in `.github/workflows/`. Run the same three locally before finishing.
@@ -32,6 +32,7 @@ Read this file before every task. If a task conflicts with it, stop and say so.
 - **UI (decided 24 Oct 2026):** the web UI is FastAPI + Jinja2 templates + HTMX in `web/`, server-rendered, no JS build step. Routes hold no business logic; they call the existing services. Charts are inline SVG generated in Python. Fonts (Barlow, Barlow Condensed, OFL) and htmx are self-hosted in `web/static/`; no CDN or Google Fonts requests. Streamlit was retired in milestone 5d; its implementation was removed during open-source cleanup after the replacement UI was available. The owner's port / later / drop decision for every old Streamlit feature is recorded in `docs/milestone-5d-parity.md`. Design reference: `docs/private/design-reference/` (git-ignored). UI v2 (decided 27 Oct 2026): design reference in docs/private/design-reference/v2/; phone bottom tab bar under 768 px, left rail from 768 px, coach panel docked from 1200 px. `web/static/css/v2.css` is the only stylesheet, including the design tokens and day/night theme.
 - **Migrations:** use Alembic. It is the standard for SQLAlchemy, and the first revision is a baseline of the current runtime schema.
 - **Persistence boundary:** application SQL belongs in `db/repositories/` and is accessed through scoped SQLAlchemy sessions. Routes, coach modules, services, and workers do not issue ad hoc domain SQL. Repositories are explicit per domain aggregate/table family, with `user_id` required for user-owned data; backup, restore, and migration tooling may use direct SQLite.
+- **Application ownership:** pass the install's `Settings` to providers and database-backed workflows. Application services own transactions; repositories never choose another database. Shared load estimates and weekly safety rules must not depend on proposal generation. Compatibility entry points use the current guarded workflows, not an independent LLM decision pipeline.
 - **Data you must not touch:** the unmodeled `body_scans` and `body_scan_insights` tables, legacy `users.marathon_*` columns, and the file `db/marathon_coach.db`. Keep them as they are until the owner decides otherwise.
 - **Old coach opinions:** never regenerated or rewritten automatically. They are read through the legacy mapping below.
 - **FIT import:** status pending. The owner believes it exists; the audit found none.

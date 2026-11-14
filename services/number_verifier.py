@@ -30,21 +30,22 @@ class NumberVerification:
     verified: int
 
 
+_SIGNED_NUMBER = r"[+\-\u2212]?\d+(?:\.\d+)?"
 _CLAIM = re.compile(
     r"(?<![\w])(?:\d{4}-\d{2}-\d{2}|\d{1,2}\s+"
     r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)(?:\w*)?"
     r"|\d+h\s*\d{1,2}m|\d{1,2}:\d{2}(?:\s*/\s*km)?"
-    r"|\d+(?:\.\d+)?\s*/\s*10|\d+(?:\.\d+)?\s*%"
-    r"|\d+(?:\.\d+)?\s*(?:s/km|bpm|spm|ms|km|hours?|hrs?|min(?:utes?)?|secs?|seconds?|load|m)\b"
-    r"|\d+(?:\.\d+)?)(?![\w])", re.I
+    rf"|{_SIGNED_NUMBER}\s*/\s*10|{_SIGNED_NUMBER}\s*%"
+    rf"|{_SIGNED_NUMBER}\s*(?:s/km|bpm|spm|ms|km|hours?|hrs?|min(?:utes?)?|secs?|seconds?|load|m)\b"
+    rf"|{_SIGNED_NUMBER})(?![\w])", re.I
 )
-_NUMBER = re.compile(r"\d+(?:\.\d+)?")
+_NUMBER = re.compile(r"[+-]?\d+(?:\.\d+)?")
 _MONTHS = {name.lower(): index for index, name in enumerate(
     ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"), 1)}
 
 
 def _claim(raw: str, prefix: str) -> NumberClaim | None:
-    value = re.sub(r"\s+", " ", raw.strip()).lower()
+    value = re.sub(r"\s+", " ", raw.strip()).lower().replace("\N{MINUS SIGN}", "-")
     if re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
         day = datetime.fromisoformat(value).date()
         return NumberClaim(raw, "date", (day.year, day.month, day.day))
@@ -94,6 +95,12 @@ def extract_numbers(text: str) -> tuple[NumberClaim, ...]:
                 continue
         claim = _claim(match.group(), text[:match.start()])
         if claim is not None:
+            # A comparison states a signed delta even when the sign is written in words.
+            after = text[match.end():]
+            if claim.kind not in {"date", "clock", "colon", "pace"} and re.match(
+                    r"\s+(?:below|lower than|less than|shorter than|earlier than|faster than) "
+                    r"(?:your |the )?(?:usual|baseline|previous)\b", after, re.I):
+                claim = NumberClaim(claim.text, claim.kind, -abs(float(claim.value)))
             result.append(claim)
     return tuple(result)
 

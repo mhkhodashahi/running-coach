@@ -7,7 +7,8 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from statistics import mean, pstdev
 
-from coach.planning import monday, usual_week, weekly_load_reference
+from coach.load_model import usual_week, weekly_load_reference
+from coach.plan import monday
 from config import Settings
 from db.repositories.dashboard_data import DashboardDataRepository
 from db.session import session_scope
@@ -158,7 +159,7 @@ def planned_vs_done(source: DashboardSource, start: date, end: date, options: Wi
         planned = sum(float(item["duration_min"] or 0) for item in plans)
         if load:
             # Existing activity load is exact; unlinked future plan load needs the planner's own model.
-            from coach.planning import estimate_load, load_model
+            from coach.load_model import estimate_load, load_model
             model = load_model(source.settings.db_path, source.settings.default_user_id,
                                week + timedelta(days=7), source.settings)
             estimates = [estimate_load({"sport": item["sport"], "intent": item["intent"],

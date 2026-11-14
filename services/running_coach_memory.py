@@ -8,6 +8,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from config import get_settings
+
 MEMORY_FILENAME = "couch_running_memory.md"
 MAX_PERSISTENT_CUES = 10
 MAX_RECENT_ENTRIES = 8
@@ -30,7 +32,7 @@ class CoachMemoryEntry:
 def memory_path(base_dir: Path | None = None) -> Path:
     """Return the markdown file used for coach memory."""
 
-    root = base_dir or Path(__file__).resolve().parents[1]
+    root = base_dir or get_settings().base_dir
     return root / "data" / MEMORY_FILENAME
 
 

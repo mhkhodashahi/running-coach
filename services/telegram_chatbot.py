@@ -99,7 +99,7 @@ class TelegramTrainingChatBot:
             if len(parts) != 3 or parts[0] != "rpe" or not parts[1].isdigit() or not parts[2].isdigit():
                 return TelegramHandleResult(handled=False)
             try:
-                with session_scope() as session:
+                with session_scope(self.settings.db_url) as session:
                     rate_activity(session, int(parts[1]), self.settings.default_user_id,
                                   int(parts[2]), "telegram")
             except ValueError as exc:

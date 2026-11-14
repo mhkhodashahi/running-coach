@@ -6,10 +6,8 @@ import json
 from datetime import date, timedelta
 from typing import Any
 
+from coach.load_model import estimate_load, load_model
 from coach.planning import (
-    apply_draft,
-    estimate_load,
-    load_model,
     propose_day,
     propose_week,
     revise_week,
@@ -30,6 +28,7 @@ from coach.proposals import (
     skip_manual_session,
     undo_last,
 )
+from coach.week_rules import apply_draft
 from config import Settings
 from db.repositories.plan_view import PlanViewRepository
 from db.session import session_scope

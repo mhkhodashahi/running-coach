@@ -12,7 +12,7 @@ from db.repositories.chat import ChatRepository
 from db.session import session_scope
 from llm.factory import get_llm_client
 from services.coach_memory_service import memory_context
-from services.running_coach_memory import load_running_memory
+from services.running_coach_memory import load_running_memory, memory_path
 
 
 @dataclass(frozen=True)
@@ -33,6 +33,7 @@ class TrainingChatService:
         self.llm_client = llm_client or get_llm_client(
             self.settings.llm_provider, self.settings.openai_api_key, self.settings.openai_model,
             self.settings.ollama_base_url, self.settings.ollama_model,
+            settings=self.settings,
         )
 
     def answer(self, question: str, user_id: int | None = None,
@@ -42,7 +43,7 @@ class TrainingChatService:
         agent = CoachAgent(self.settings, self.llm_client, user_id or self.settings.default_user_id)
         try:
             persistent = memory_context(self.settings.db_path, user_id or self.settings.default_user_id)
-            legacy = load_running_memory()
+            legacy = load_running_memory(memory_path(self.settings.base_dir))
             context = "\n".join(value for value in (persistent, legacy) if value)
             result = agent.answer(question, activity_id=activity_id, running_memory=context)
         except (RuntimeError, ValueError) as exc:

@@ -17,6 +17,7 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
 cp .env.example .env
+python -m scripts.upgrade_db --db db/running_coach.db
 ```
 
 Do not commit `.env`, Garmin tokens, SQLite databases, logs, or personal export
@@ -28,7 +29,7 @@ Run these before opening a pull request:
 
 ```bash
 python -m ruff check .
-python -m compileall -q app analytics db llm services ui utils tests
+python -m compileall -q analytics coach db llm metrics scripts services utils web worker tests config.py
 python -m pytest
 ```
 
@@ -41,5 +42,9 @@ python -m pytest
 - Prefer deterministic analytics for core training calculations. Use LLMs only
   where the app already has an LLM workflow.
 - Do not add telemetry or external network calls without clear user control.
-- For database changes, update `db/models.py`, `db/repository.py`,
-  `db/setup.py`, tests, and `docs/upgrade.md` together.
+- Put persistence in user-scoped `db/repositories/` modules and keep routes thin.
+- Schema changes need an additive Alembic revision, preservation tests and an
+  update to [upgrade instructions](docs/upgrade.md). Never migrate on startup.
+- Run an installed-artifact check before a release: `poetry build`, then
+  `python -m scripts.check_distribution dist/<wheel>.whl`.
+- See [architecture](docs/architecture.md) and the [release checklist](docs/release.md).

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from math import floor, inf
 from pathlib import Path
@@ -14,7 +14,25 @@ from zoneinfo import ZoneInfo
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from coach.agent import CoachAgent
-from coach.decision import MIN_QUALITY_SESSION_MIN, WEEKLY_LIMIT_PCT
+from coach.decision import MIN_QUALITY_SESSION_MIN
+from coach.load_model import (
+    LoadModel as LoadModel,
+)
+from coach.load_model import (
+    estimate_load as estimate_load,
+)
+from coach.load_model import (
+    is_recovery_item as is_recovery_item,
+)
+from coach.load_model import (
+    load_model as load_model,
+)
+from coach.load_model import (
+    usual_week as usual_week,
+)
+from coach.load_model import (
+    weekly_load_reference as weekly_load_reference,
+)
 from coach.proposals import (
     create_proposal,
     get_proposal,
@@ -25,6 +43,15 @@ from coach.proposals import (
     request_revision,
 )
 from coach.runtime import require_current_database, user_job_lock
+from coach.week_rules import (
+    apply_draft as apply_draft,
+)
+from coach.week_rules import (
+    is_hard as is_hard,
+)
+from coach.week_rules import (
+    validate_week as validate_week,
+)
 from coach.workouts import build_workout, goal_phase, pace_targets, race_paces, recent_pace_samples, zone_targets
 from config import Settings, get_settings
 from db.repositories.planning import PlanningRepository
@@ -32,20 +59,16 @@ from db.session import session_scope
 from llm.base import NullLLMClient
 from llm.factory import get_llm_client
 from metrics import get_daily_snapshot
-from metrics.load import calibration_and_scales, session_metrics
-from metrics.reader import read_inputs
 from metrics.sports import sport_category
 from services.coach_facts import unsupported_text_numbers
 from services.coach_memory_service import active_memories, mark_used, memory_context
 from services.daily_decision_service import build_daily_decision
+from services.daily_plan_service import (
+    propose_daily_conflict as propose_daily_conflict,
+)
 from services.hr_zones import heart_rate_zone_bounds
 from services.number_verifier import verify_numbers
 
-MAX_HARD_DAYS = 2
-MAX_QUALITY_RUNS = 1
-MAX_WEEKLY_INCREASE = WEEKLY_LIMIT_PCT / 100
-USUAL_WEEK_COUNT = 8
-MIN_USUAL_WEEKS = 4
 LONG_RUN_MINUTES = 60
 LONG_RUN_LOOKBACK_DAYS = 28
 LONG_RUN_MAX_INCREASE = 1.20
@@ -126,26 +149,6 @@ class WeekNarrative(BaseModel):
 
 
 @dataclass(frozen=True)
-class LoadModel:
-    previous_weekly_average: float | None
-    rates: dict[tuple[str, str], float]
-    sport_rates: dict[str, float]
-    imputed_sessions: int = 0
-    expected_walking_weekly: float = 0.0
-    reference_weeks: tuple[tuple[str, float], ...] = ()
-    recorded_week_dates: tuple[str, ...] = ()
-
-    @property
-    def cap(self) -> float | None:
-        return (self.previous_weekly_average * MAX_WEEKLY_INCREASE
-                if self.previous_weekly_average is not None else None)
-
-    @property
-    def highest_recent_weekly(self) -> float | None:
-        return max((load for _, load in self.reference_weeks), default=None)
-
-
-@dataclass(frozen=True)
 class HabitPattern:
     sessions_per_week: dict[str, int]
     duration_min: dict[str, int]
@@ -176,32 +179,6 @@ def habit_pattern(rows: list[dict[str, Any]], start: date) -> HabitPattern:
     return HabitPattern({sport: int(floor(median(values) + 0.5)) for sport, values in counts.items()},
                         {sport: max(MIN_FLEX_MINUTES, int(round(median(values)))) if values else 30
                          for sport, values in durations.items()})
-
-
-def weekly_load_reference(rows: list[tuple[date, str, float | None]], cutoff: date,
-                          limit: int | None = USUAL_WEEK_COUNT
-                          ) -> tuple[tuple[str, float], ...]:
-    """Last eight complete recorded training weeks, excluding walking and missing-load weeks."""
-    totals: dict[date, float] = {}
-    unknown: set[date] = set()
-    for day, sport, load in rows:
-        week = day - timedelta(days=day.weekday())
-        if week >= cutoff or sport in ("walking", "excluded", "mobility"):
-            continue
-        totals[week] = totals.get(week, 0.0) + (load or 0.0)
-        if load is None:
-            unknown.add(week)
-    selected = [(week.isoformat(), totals[week]) for week in sorted(totals, reverse=True)
-                if week not in unknown]
-    if limit is not None:
-        selected = selected[:limit]
-    return tuple(selected)
-
-
-def usual_week(recorded: tuple[tuple[str, float], ...]) -> float | None:
-    """Median of the latest eight complete training weeks; empty weeks are absent."""
-    recent = recorded[:USUAL_WEEK_COUNT]
-    return median(load for _, load in recent) if len(recent) >= MIN_USUAL_WEEKS else None
 
 
 def reference_habit_pattern(rows: list[dict[str, Any]], reference_weeks: tuple[tuple[str, float], ...]
@@ -279,102 +256,6 @@ def week_load_breakdown(sessions: list[dict[str, Any]], model: LoadModel, start:
     values = [item["estimated_load"] for item in days]
     return {"days": days, "weekly_total": sum(values) if all(value is not None for value in values) else None,
             "expected_walking_weekly": model.expected_walking_weekly, "cap": model.cap}
-
-
-def is_recovery_item(session: dict[str, Any]) -> bool:
-    return session["sport"] == "mobility"
-
-
-def is_hard(session: dict[str, Any]) -> bool:
-    return session["intent"] in ("tempo", "race") or (session["sport"] in ("football", "volleyball") and
-           session["intent"] not in ("skills only", "recovery"))
-
-
-def estimate_load(session: dict[str, Any], model: LoadModel) -> float | None:
-    if is_recovery_item(session):
-        return 0.0
-    rate = model.rates.get((session["sport"], session["intent"]))
-    if rate is None:
-        rate = model.sport_rates.get(session["sport"])
-    return float(session["duration_min"]) * rate if rate is not None else None
-
-
-def validate_week(sessions: list[dict[str, Any]], model: LoadModel, *, today: date,
-                  decisions: dict[date, str], week_start: date | None = None) -> list[str]:
-    """Return all rule failures; the model cannot waive these checks."""
-    errors: list[str] = []
-    hard_days = {date.fromisoformat(item["date"]) for item in sessions if is_hard(item) and
-                 item.get("status", "planned") == "planned"}
-    if len(hard_days) > MAX_HARD_DAYS:
-        errors.append("More than two hard days")
-    if sum(item["sport"] == "running" and item["intent"] in ("tempo", "race") and
-           item.get("status", "planned") == "planned" for item in sessions) > MAX_QUALITY_RUNS:
-        errors.append("More than one quality run")
-    if any(day + timedelta(days=1) in hard_days for day in hard_days):
-        errors.append("Hard days are consecutive")
-    if any(day + timedelta(days=2) in hard_days for day in hard_days):
-        errors.append("Hard days are too close for 48 h spacing without start times")
-    if week_start is not None and not any(
-            all(item["date"] != (week_start + timedelta(days=offset)).isoformat() or
-                item.get("status", "planned") != "planned" or is_recovery_item(item) for item in sessions)
-            for offset in range(7)):
-        errors.append("No rest day in the week")
-    total = 0.0
-    protected_floor = 0.0
-    for item in sessions:
-        if item.get("status", "planned") != "planned":
-            continue
-        value = estimate_load(item, model)
-        if value is None:
-            errors.append(f"No own-session load median for {item['sport']}")
-        else:
-            total += value
-            if item.get("origin") in ("fixed", "protected"):
-                protected_floor += value
-        day = date.fromisoformat(item["date"])
-        if item.get("origin") not in ("fixed", "protected") and day in (today, today + timedelta(days=1)):
-            intensity = decisions.get(day)
-            if intensity == "rest" and item["intent"] not in ("skills only", "recovery"):
-                errors.append(f"Session on {day} conflicts with rest decision")
-            if intensity == "easy" and is_hard(item):
-                errors.append(f"Hard session on {day} conflicts with easy decision")
-    if model.cap is not None and total > max(model.cap, protected_floor) + 1e-8:
-        errors.append("Projected weekly load exceeds 110% of the recent-week median")
-    return errors
-
-
-def apply_draft(existing: list[dict[str, Any]], changes: list[dict[str, Any]], *,
-                allow_fixed_daily: bool = False) -> list[dict[str, Any]]:
-    result = [dict(item) for item in existing]
-    for change in changes:
-        item = dict(change["session"])
-        action = change["change_type"]
-        if action not in ("add", "modify", "remove"):
-            raise ValueError("Unknown change type")
-        if action == "add":
-            if any(row["date"] == item["date"] and row["sport"] == item["sport"] and
-                   row.get("status", "planned") == "planned" for row in result):
-                raise ValueError("Duplicate planned session")
-            result.append({**item, "origin": "coach", "status": "planned"})
-            continue
-        target = next((row for row in result if row.get("id") == item.get("id") and row.get("id") is not None), None)
-        if target is None:
-            raise ValueError("Target planned session not found")
-        if action == "modify" and item["date"] != target["date"]:
-            raise ValueError("Moving a session requires remove and add changes")
-        if target.get("origin") == "protected":
-            raise ValueError("Protected habits are immutable in coach proposals")
-        if target.get("origin") == "fixed" and (not allow_fixed_daily or action != "modify" or
-                item["sport"] != target["sport"] or item["duration_min"] != target["duration_min"] or
-                not (item["intent"] == "skills only" or item.get("status") == "skipped")):
-            raise ValueError("Fixed commitments are immutable in weekly plans")
-        if action == "remove":
-            result.remove(target)
-        else:
-            target.update({key: item[key] for key in ("sport", "intent", "duration_min", "hr_cap_bpm", "notes", "status",
-                                                       "workout_type", "workout")
-                           if key in item})
-    return result
 
 
 def validate_draft(draft: WeekDraft, existing: list[dict[str, Any]], facts: list[dict[str, str]],
@@ -690,78 +571,6 @@ def long_run_limit(longest_recent_run_min: float | None) -> int:
     return max(MIN_LONG_RUN_MINUTES, int(floor(longest_recent_run_min * LONG_RUN_MAX_INCREASE)))
 
 
-def load_model(database: Path, user_id: int, start: date, settings: Settings) -> LoadModel:
-    """Own TRIMP/min; cap uses eight completed nonempty training weeks."""
-    today = datetime.now(ZoneInfo(settings.local_timezone)).date()
-    end = min(start - timedelta(days=1), today)
-    cutoff = min(start, monday(today))
-    with session_scope(f"sqlite:///{database.resolve()}") as session:
-        intents = PlanningRepository(session).planned_intents(user_id, end)
-    inputs = read_inputs(database, user_id, end, settings.local_timezone, point_lookback_days=None)
-    calibration, multipliers = calibration_and_scales(inputs.activities, inputs.profile,
-                                                     inputs.health, end, settings.local_timezone)
-    grouped: dict[tuple[str, str], list[float]] = {}
-    sport_grouped: dict[str, list[float]] = {}
-    rated_sport_grouped: dict[str, list[float]] = {}
-    rated_intent_grouped: dict[tuple[str, str], list[float]] = {}
-    measured: dict[int, float | None] = {}
-    for activity in inputs.activities:
-        if activity.duration is None or activity.duration <= 0:
-            continue
-        item = session_metrics(activity, inputs.profile, inputs.health, end, settings.local_timezone,
-                               calibration, multipliers)
-        if item is None:
-            continue
-        measured[activity.id] = item.load.value
-        if item.load.value is None:
-            continue
-        sport = sport_category(activity.type, end)
-        base = session_metrics(replace(activity, rpe=None), inputs.profile, inputs.health,
-                               end, settings.local_timezone)
-        rate = (base.load.value if base and base.load.value is not None else item.load.value) / activity.duration
-        intent = intents.get(activity.id) or ("training" if sport in ("football", "volleyball") else "easy")
-        grouped.setdefault((sport, intent), []).append(rate)
-        sport_grouped.setdefault(sport, []).append(rate)
-        if activity.rpe is not None:
-            rated_rate = item.load.value / activity.duration
-            rated_sport_grouped.setdefault(sport, []).append(rated_rate)
-            rated_intent_grouped.setdefault((sport, intent), []).append(rated_rate)
-    rates = {key: median(values) for key, values in grouped.items()}
-    for key, values in rated_intent_grouped.items():
-        if calibration.factor is not None and key[0] in ("gym", "football", "volleyball") and len(values) >= 3:
-            rates[key] = median(values)
-    sport_rates = {key: median(values) for key, values in sport_grouped.items()}
-    for sport, values in rated_sport_grouped.items():
-        if calibration.factor is not None and sport in ("gym", "football", "volleyball") and len(values) >= 3:
-            sport_rates[sport] = median(values)
-            for key in tuple(rates):
-                if key[0] == sport and len(rated_intent_grouped.get(key, ())) < 3:
-                    del rates[key]
-    imputed = 0
-    walking_total = 0.0
-    reference_rows = []
-    for activity in inputs.activities:
-        sport = sport_category(activity.type, end)
-        if sport in ("excluded", "mobility"):
-            continue
-        load = measured.get(activity.id)
-        if load is None:
-            intent = intents.get(activity.id) or ("training" if sport in ("football", "volleyball") else "easy")
-            rate = rates.get((sport, intent), sport_rates.get(sport))
-            if rate is not None and activity.duration is not None and activity.duration > 0:
-                load = activity.duration * rate
-                imputed += 1
-        label = "walking" if activity.type.strip().lower() == "walking" else sport
-        reference_rows.append((activity.day, label, load))
-        if label == "walking" and activity.day >= end - timedelta(days=27) and load is not None:
-            walking_total += load
-    recorded = weekly_load_reference(reference_rows, cutoff, limit=None)
-    weeks = recorded[:USUAL_WEEK_COUNT]
-    reference = usual_week(recorded)
-    return LoadModel(reference, rates, sport_rates, imputed, walking_total / 4, weeks,
-                     tuple(week for week, _ in recorded))
-
-
 def _context(database: Path, user_id: int, start: date, settings: Settings,
              today: date) -> tuple[dict[str, Any], list[dict[str, str]], LoadModel,
                                    dict[date, str], bool, HabitPattern, int | None, float | None,
@@ -1000,7 +809,7 @@ def propose_week(start: date, *, settings: Settings | None = None, user_id: int 
     memory_rules = [row["rule"] for row in memories if row["rule"]]
     client = None if code_only else llm or get_llm_client(
         settings.llm_provider, settings.openai_api_key, settings.openai_model,
-        settings.ollama_base_url, settings.ollama_model)
+        settings.ollama_base_url, settings.ollama_model, settings=settings)
     if isinstance(client, NullLLMClient):
         if revision_of is not None:
             raise ValueError("A configured coach model is needed to revise a proposal in your words. "
@@ -1222,7 +1031,7 @@ def propose_requested_change(request: str, start: date, *, settings: Settings,
     week, facts, model, decisions, running_goal, _, _, _, _, longest_run = _context(
         settings.db_path, user_id, start, settings, today)
     client = llm or get_llm_client(settings.llm_provider, settings.openai_api_key, settings.openai_model,
-                                   settings.ollama_base_url, settings.ollama_model)
+                                   settings.ollama_base_url, settings.ollama_model, settings=settings)
     prompt = json.dumps({"week": week, "facts": facts, "load_cap": model.cap,
                          "athlete_request_as_data": request.strip(),
                          "today": today.isoformat(), "running_goal": running_goal}, default=str)
@@ -1294,46 +1103,4 @@ def propose_opinion_recommendations(activity_id: int, activity_day: date, recomm
                                          "fact_ids": cited[:3]}], base_version=week["version"])
             proposals.append(proposal)
             break
-    return proposals
-
-
-def propose_daily_conflict(day: date, intensity: str, decision_facts: list[dict[str, str]], *,
-                           settings: Settings | None = None, user_id: int | None = None) -> list[dict[str, Any]]:
-    """Suggest a lighter plan when today's code decision and plan disagree."""
-    settings = settings or get_settings()
-    user_id = user_id or settings.default_user_id
-    if intensity == "hard":
-        return []
-    materialize_week(settings.db_path, user_id, monday(day))
-    week = get_week(settings.db_path, user_id, monday(day))
-    facts = [fact for fact in decision_facts if fact["id"] in
-             ("READINESS", "WEEKLY_LOAD", "WEEKLY_LIMIT", "ILLNESS_FLAG")]
-    if not facts:
-        return []
-    with session_scope(f"sqlite:///{settings.db_path.resolve()}") as session:
-        exists = PlanningRepository(session).has_daily_conflict_proposal(
-            user_id, week["version"], f"Review today's session ({day.isoformat()})"
-        )
-    if exists:
-        return []
-    proposals = []
-    for planned in week["sessions"]:
-        if planned["date"] != day.isoformat() or planned["status"] != "planned" or planned["id"] is None:
-            continue
-        if intensity != "rest" and (intensity != "easy" or not is_hard(planned)):
-            continue
-        item = {key: planned.get(key) for key in ("id", "date", "sport", "intent", "duration_min",
-                                                  "hr_cap_bpm", "notes", "status")}
-        if intensity == "rest":
-            item["status"] = "skipped"
-            reason = "Today's recovery decision suggests skipping this session."
-        else:
-            item["intent"] = "skills only" if item["sport"] in ("football", "volleyball") else (
-                "light" if item["sport"] == "gym" else "easy")
-            reason = "Today's decision calls for a lighter session."
-        proposals.append(create_proposal(settings.db_path, user_id, "change",
-                                         f"Review today's session ({day.isoformat()})", facts,
-                                         [{"change_type": "modify", "session": item,
-                                           "reason": reason, "fact_ids": [facts[0]["id"]]}],
-                                         base_version=week["version"]))
     return proposals

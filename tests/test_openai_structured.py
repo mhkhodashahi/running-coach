@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 from openai.lib._pydantic import to_strict_json_schema
 
+import llm.openai_client as openai_module
 from config import get_settings
 from llm.openai_client import OpenAIClient
 from llm.schemas import (
@@ -32,6 +33,7 @@ def test_openai_parse_uses_v2_schema_and_rejects_empty_result():
         return SimpleNamespace(output_parsed=None)
 
     client = OpenAIClient.__new__(OpenAIClient)
+    client.settings = openai_module.get_settings()
     client.model = "synthetic"
     client.client = SimpleNamespace(responses=SimpleNamespace(parse=parse))
     with pytest.raises(ValueError, match="empty"):
@@ -82,6 +84,7 @@ def test_openai_parse_returns_validated_payload():
     expected = CoachOpinionV2(headline="Measured run", assessment="Useful.", confidence="medium",
                               intent={"planned": None, "detected": "easy"})
     client = OpenAIClient.__new__(OpenAIClient)
+    client.settings = openai_module.get_settings()
     client.model = "synthetic"
     client.client = SimpleNamespace(responses=SimpleNamespace(parse=lambda **kwargs: SimpleNamespace(output_parsed=expected)))
     assert client.generate_json("system", "user", response_schema=CoachOpinionV2) == expected.model_dump()
@@ -99,6 +102,7 @@ def test_legacy_openai_schema_keeps_json_object_fallback():
         return response
 
     client = OpenAIClient.__new__(OpenAIClient)
+    client.settings = openai_module.get_settings()
     client.model = "synthetic"
     client.client = SimpleNamespace(responses=SimpleNamespace(parse=fail_parse,
                                                                create=create))
@@ -115,6 +119,7 @@ def test_v21_openai_uses_closed_recommendation_session_schema():
         return SimpleNamespace(output_parsed=None)
 
     client = OpenAIClient.__new__(OpenAIClient)
+    client.settings = openai_module.get_settings()
     client.model = "synthetic"
     client.client = SimpleNamespace(responses=SimpleNamespace(parse=parse))
     with pytest.raises(ValueError, match="empty"):
@@ -136,6 +141,7 @@ def test_v22_openai_uses_draft_schema_without_code_owned_fields():
         return SimpleNamespace(output_parsed=None)
 
     client = OpenAIClient.__new__(OpenAIClient)
+    client.settings = openai_module.get_settings()
     client.model = "synthetic"
     client.client = SimpleNamespace(responses=SimpleNamespace(parse=parse))
     with pytest.raises(ValueError, match="empty"):
@@ -156,6 +162,7 @@ def test_v23_openai_uses_closed_recommendation_with_fact_ids():
         return SimpleNamespace(output_parsed=None)
 
     client = OpenAIClient.__new__(OpenAIClient)
+    client.settings = openai_module.get_settings()
     client.model = "synthetic"
     client.client = SimpleNamespace(responses=SimpleNamespace(parse=parse))
     with pytest.raises(ValueError, match="empty"):
@@ -175,6 +182,7 @@ def test_v26_parse_failure_does_not_send_an_unmetered_second_request():
         raise ValueError("invalid structured output")
 
     client = OpenAIClient.__new__(OpenAIClient)
+    client.settings = openai_module.get_settings()
     client.model = "synthetic"
     client.client = SimpleNamespace(responses=SimpleNamespace(
         parse=parse, create=lambda **kwargs: pytest.fail("unexpected second request")))
@@ -190,6 +198,7 @@ def test_openai_refuses_remote_call_without_both_config_flags(monkeypatch, allow
     monkeypatch.setattr("llm.openai_client.get_settings",
                         lambda: SimpleNamespace(allow_remote_llm=allow, remote_athlete_data_approved=approved))
     client = OpenAIClient.__new__(OpenAIClient)
+    client.settings = openai_module.get_settings()
     client.client = SimpleNamespace(responses=SimpleNamespace(parse=lambda **kwargs: pytest.fail("sent data")))
     with pytest.raises(PermissionError, match="ALLOW_REMOTE_LLM"):
         client.generate_json("system", "athlete context", response_schema=OpinionDraftV23)
@@ -205,6 +214,7 @@ def test_coach_step_uses_native_functions_without_provider_storage():
                                output_text="")
 
     client = OpenAIClient.__new__(OpenAIClient)
+    client.settings = openai_module.get_settings()
     client.model = "synthetic"
     client.client = SimpleNamespace(responses=SimpleNamespace(create=create))
     result = client.coach_step("system", [
@@ -223,6 +233,7 @@ def test_coach_step_refuses_unapproved_remote_data(monkeypatch):
     monkeypatch.setattr("llm.openai_client.get_settings",
                         lambda: SimpleNamespace(allow_remote_llm=False, remote_athlete_data_approved=False))
     client = OpenAIClient.__new__(OpenAIClient)
+    client.settings = openai_module.get_settings()
     client.client = SimpleNamespace(responses=SimpleNamespace(create=lambda **kwargs: pytest.fail("sent data")))
     with pytest.raises(PermissionError, match="disabled"):
         client.coach_step("system", [{"role": "user", "content": "private"}], [])

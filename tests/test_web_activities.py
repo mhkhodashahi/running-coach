@@ -528,7 +528,7 @@ def test_legacy_json_text_sections_render_bullets_without_rewrite(browser, activ
 
 
 def test_add_to_plan_creates_proposal_only(browser, activity_db, monkeypatch):
-    monkeypatch.setattr("coach.planning.validate_week", lambda *args, **kwargs: [])
+    monkeypatch.setattr("coach.week_rules.validate_week", lambda *args, **kwargs: [])
     response = browser.post("/activities/101/recommendation/0", follow_redirects=False)
     assert response.status_code == 303 and response.headers["location"] == "/plan"
     with sqlite3.connect(activity_db) as connection:

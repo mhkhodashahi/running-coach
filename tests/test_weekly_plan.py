@@ -913,7 +913,7 @@ def test_approved_mobility_does_not_remove_over_cap_protected_habit(database, mo
     save_protected_habit(database, 1, sport="gym", intent="light upper body", duration_min=30, per_week=2)
     model = LoadModel(80, {("volleyball", "training"): 1},
                       {"volleyball": 1, "gym": 1}, expected_walking_weekly=12)
-    monkeypatch.setattr("coach.planning.load_model", lambda *args: model)
+    monkeypatch.setattr("coach.load_model.load_model", lambda *args: model)
     day = START + timedelta(days=3)
     mobility = {**session(day, sport="mobility", intent="recovery", minutes=15), "notes": MOBILITY_NOTE}
     facts = [{"id": "LOAD_CAP", "metric": "Cap", "display": "88.0 TRIMP", "source": "metrics"}]

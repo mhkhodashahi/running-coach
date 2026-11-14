@@ -43,7 +43,8 @@ def test_training_chat_service_uses_agent_reply_and_evidence(monkeypatch) -> Non
                                                   "source": "activity"},), (3,), ("Ask about recovery",), (), 1)
 
     monkeypatch.setattr("services.training_chat_service.CoachAgent", FakeAgent)
-    monkeypatch.setattr("services.training_chat_service.load_running_memory", lambda: "")
+    monkeypatch.setattr("services.training_chat_service.load_running_memory", lambda path: "")
+    monkeypatch.setattr("services.training_chat_service.memory_context", lambda *args: "")
     reply = TrainingChatService(llm_client=FakeLLM({})).answer("How was my run?", activity_id=3)
     assert reply.used_llm
     assert "Pace: 6:00 /km" in reply.text
@@ -59,7 +60,8 @@ def test_training_chat_service_reports_limit_clearly(monkeypatch) -> None:
             raise RuntimeError("Daily coach LLM call limit reached.")
 
     monkeypatch.setattr("services.training_chat_service.CoachAgent", LimitedAgent)
-    monkeypatch.setattr("services.training_chat_service.load_running_memory", lambda: "")
+    monkeypatch.setattr("services.training_chat_service.load_running_memory", lambda path: "")
+    monkeypatch.setattr("services.training_chat_service.memory_context", lambda *args: "")
     reply = TrainingChatService(llm_client=FakeLLM({})).answer("Status")
     assert not reply.used_llm
     assert "limit reached" in reply.text

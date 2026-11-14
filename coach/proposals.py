@@ -383,7 +383,8 @@ def apply(database: Path, user_id: int, proposal_id: int, accepted_change_ids: l
         if any(selected & members and not members <= selected for members in groups.values()):
             raise ValueError("Select or reject every change in a dependency group together")
         if selected:
-            from coach.planning import apply_draft, load_model, validate_week
+            from coach.load_model import load_model
+            from coach.week_rules import apply_draft, validate_week
             from config import get_settings
             from services.daily_decision_service import build_daily_decision
 

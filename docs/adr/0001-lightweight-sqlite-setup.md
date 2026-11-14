@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Superseded by Alembic and the backup-first runner (milestone 1).
 
 ## Context
 
@@ -13,12 +13,12 @@ EXISTS` fallbacks for older local databases.
 
 ## Decision
 
-Keep lightweight database setup centralized in `db/setup.py` until the project
-adopts a real migration tool. Pages and services should call repository modules
-for persistence and should not create tables themselves.
+The original decision was to centralize lightweight setup in `db/setup.py`.
+It is no longer active. All schema changes now use Alembic revisions through
+`python -m scripts.upgrade_db`; startup checks but never changes the schema.
+See [upgrade instructions](../upgrade.md).
 
 ## Consequences
 
-Schema evolution remains simple for a local app, but every new table or column
-must update models, repository functions, setup fallback SQL, and focused tests
-together.
+Do not add `create_all`, `ALTER TABLE`, or schema-repair fallbacks to app startup.
+Repositories own user-scoped persistence; migration tests preserve existing data.

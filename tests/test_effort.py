@@ -267,13 +267,15 @@ def test_telegram_rating_callback_checks_allowlist(monkeypatch):
             calls.append((callback_id, reply))
 
     @contextmanager
-    def fake_session():
+    def fake_session(database_url):
+        assert database_url == "sqlite:///fixture.db"
         yield object()
 
     monkeypatch.setattr("services.telegram_chatbot.session_scope", fake_session)
     monkeypatch.setattr("services.telegram_chatbot.rate_activity",
                         lambda session, activity_id, user_id, rpe, source: calls.append((activity_id, user_id, rpe, source)))
-    bot = TelegramTrainingChatBot(settings=SimpleNamespace(telegram_chat_id="111", default_user_id=1),
+    bot = TelegramTrainingChatBot(settings=SimpleNamespace(telegram_chat_id="111", default_user_id=1,
+                                                         db_url="sqlite:///fixture.db"),
                                   telegram_service=FakeTelegram(), chat_service=object())
     rejected = bot.handle_update({"callback_query": {"id": "x", "message": {"chat": {"id": 222}},
                                                      "data": "rpe:7:8"}})

@@ -2,22 +2,9 @@
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
-from analytics.performance import build_training_snapshot
 from config import get_settings
-from db import repository
-from llm.factory import get_llm_client
-from services.coaching_prompts import ELITE_ENDURANCE_COACH_CONTEXT
-from services.goal_service import GoalService
-from services.llm_workflow import generate_structured_payload
-from services.running_coach_memory import (
-    build_memory_entry_from_decision,
-    load_running_memory,
-    running_memory_block,
-    update_running_memory,
-)
 
 
 def build_rule_recommendations(snapshot: dict[str, Any]) -> list[str]:
@@ -215,97 +202,13 @@ def _normalize_llm_payload(llm_payload: dict[str, Any]) -> dict[str, Any]:
 
 
 class CoachingEngine:
-    """Generate, merge, and persist coaching recommendations."""
+    """Compatibility facade backed by the current guarded application workflow."""
 
     def __init__(self) -> None:
-        settings = get_settings()
-        self.settings = settings
-        self.llm_client = get_llm_client(
-            provider=settings.llm_provider,
-            openai_api_key=settings.openai_api_key,
-            openai_model=settings.openai_model,
-            ollama_base_url=settings.ollama_base_url,
-            ollama_model=settings.ollama_model,
-        )
-        self.goal_service = GoalService()
+        from services.coaching_workflow import CoachingWorkflowService
 
-    def generate(self, session, user, athlete_note: str = "") -> dict[str, Any]:
-        goal = self.goal_service.ensure_active_goal(session, user)
-        activities_df = repository.activities_dataframe(session, user.id)
-        health_df = repository.health_metrics_dataframe(session, user.id)
-        snapshot = build_training_snapshot(user, activities_df, health_df, goal=goal)
-        rules = build_rule_recommendations(snapshot)
-        projection = snapshot.get("active_goal_projection") or snapshot["prediction"]
-        running_memory = load_running_memory()
+        self.workflow = CoachingWorkflowService()
 
-        system_prompt = (
-            f"{ELITE_ENDURANCE_COACH_CONTEXT}\n\n"
-            "Return strict JSON with keys: "
-            "daily_advice, daily_why, weekly_advice, weekly_why, fatigue_warning, "
-            "readiness_assessment, confidence, training_effectiveness, explanation. "
-            "The training_effectiveness value must be an object with keys: status, summary, working, limiters. "
-            "Explain why the recommendation is better than simply pushing harder or doing more. "
-            "Judge whether the current training looks effective for the active goal based only on the provided analytics. "
-            "Use the custom heart-rate zones from the coaching context. Be honest about pacing discipline, aerobic durability, "
-            "fatigue resistance, recovery quality, and whether the athlete is turning easy days into moderate days. "
-            "Use the running_memory block as durable context, but prefer the current analytics if anything conflicts. "
-            "Map the requested coaching structure into the available JSON fields: daily_advice and weekly_advice are recommendations, "
-            "daily_why and weekly_why are physiological interpretation, training_effectiveness.working contains strengths, "
-            "training_effectiveness.limiters contains mistakes/inefficiencies, and explanation ends with a brutally honest conclusion."
-        )
-        user_prompt = (
-            f"{running_memory_block(running_memory)}\n"
-            + json.dumps(
-                {
-                    "goal": {
-                        "name": goal.name,
-                        "goal_type": goal.goal_type,
-                        "target_distance_km": goal.target_distance_km,
-                        "target_time_minutes": goal.target_time_minutes,
-                        "target_date": goal.target_date,
-                        "target_pace_min_per_km": snapshot["goal_pace"],
-                    },
-                    "analytics": snapshot,
-                    #"rule_recommendations": rules,
-                    "athlete_note": athlete_note,
-                },
-                default=str,
-                indent=2,
-            )
-        )
-
-        result = generate_structured_payload(
-            llm_client=self.llm_client,
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            unavailable_message="LLM provider unavailable",
-        )
-        llm_payload = result.payload
-        if result.warning:
-            llm_payload = {"explanation": result.warning}
-
-        coaching = _fallback_response(snapshot, rules)
-        coaching.update(_normalize_llm_payload(llm_payload))
-        coaching["rule_recommendations"] = rules
-        coaching["goal_name"] = goal.name
-        coaching["goal_type"] = goal.goal_type
-        coaching["goal_projection"] = snapshot.get("active_goal_projection")
-
-        repository.store_llm_memory(
-            session=session,
-            user_id=user.id,
-            context_summary=json.dumps(snapshot, default=str),
-            recommendations=json.dumps(coaching, default=str),
-            fatigue_flag=bool(coaching.get("fatigue_warning")),
-            confidence_score=float(coaching.get("confidence", projection["confidence"])),
-        )
-        try:
-            memory_entry = build_memory_entry_from_decision(
-                "coaching",
-                str(snapshot.get("date") or goal.target_date or ""),
-                coaching,
-            )
-            update_running_memory(entry=memory_entry)
-        except Exception:
-            pass
-        return coaching
+    def generate(self, session: Any, user: Any, athlete_note: str = "") -> dict[str, Any]:
+        result = self.workflow.generate(session, user, athlete_note=athlete_note)
+        return {**result, "daily_advice": result["summary"], "explanation": result["message_body"]}

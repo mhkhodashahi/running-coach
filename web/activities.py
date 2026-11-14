@@ -14,8 +14,8 @@ from coach.planning import propose_opinion_recommendations
 from coach.runtime import user_job_lock
 from coach.tools import CoachTools
 from config import Settings
-from db.models import User
 from db.repositories.activity import ActivityRepository
+from db.repositories.settings_view import SettingsViewRepository
 from db.session import session_scope
 from llm.factory import get_llm_client
 from metrics import get_daily_snapshot
@@ -351,10 +351,10 @@ def generate_opinion(settings: Settings, activity_id: int, *, regenerate: bool, 
             settings.allow_remote_llm and settings.remote_athlete_data_approved):
         raise PermissionError("Remote coaching is disabled until athlete-data sharing is approved in .env")
     client = llm or get_llm_client(settings.llm_provider, settings.openai_api_key, settings.openai_model,
-                                   settings.ollama_base_url, settings.ollama_model)
+                                   settings.ollama_base_url, settings.ollama_model, settings=settings)
     with user_job_lock(settings.db_path, settings.default_user_id):
         with session_scope(settings.db_url) as session:
-            user = session.get(User, settings.default_user_id)
+            user = SettingsViewRepository(session).profile(settings.default_user_id)
             if user is None:
                 raise ValueError("Athlete not found")
             ActivityCoachingService(settings, _CountedLLM(client, settings)).generate(

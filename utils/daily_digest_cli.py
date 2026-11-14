@@ -33,7 +33,7 @@ def main() -> None:
     settings = get_settings()
     init_db()
 
-    with session_scope() as session:
+    with session_scope(settings.db_url) as session:
         user = repository.get_or_create_default_user(session, args.user_id or settings.default_user_id)
         repository.get_or_create_default_goal(session, user)
         if not args.skip_sync:
@@ -43,14 +43,14 @@ def main() -> None:
                 days=args.days,
                 health_days=args.health_days,
             )
-        decision = CoachingWorkflowService().generate(
-            session=session,
-            user=user,
-            decision_type=args.decision_type,
-            athlete_note=args.athlete_note,
-            send_message=bool(args.send_telegram),
-            recipient=args.recipient or None,
-        )
+    decision = CoachingWorkflowService(settings).generate(
+        session=None,
+        user=user,
+        decision_type=args.decision_type,
+        athlete_note=args.athlete_note,
+        send_message=bool(args.send_telegram),
+        recipient=args.recipient or None,
+    )
 
     if not args.skip_sync:
         dispatch_effort_prompts(settings, user.id, TelegramService(settings))

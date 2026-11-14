@@ -33,7 +33,7 @@ def suggest_from_idle_chat(settings: Settings, now: datetime, *, client=None) ->
     if not ready:
         return 0
     client = client or get_llm_client(settings.llm_provider, settings.openai_api_key, settings.openai_model,
-                                      settings.ollama_base_url, settings.ollama_model)
+                                      settings.ollama_base_url, settings.ollama_model, settings=settings)
     try:
         CoachAgent(settings, client, user_id)._count_request()
     except RuntimeError:

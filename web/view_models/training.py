@@ -7,7 +7,8 @@ from datetime import date, timedelta
 from math import ceil
 from typing import Any
 
-from coach.planning import MAX_WEEKLY_INCREASE, estimate_load, is_hard
+from coach.load_model import MAX_WEEKLY_INCREASE, estimate_load
+from coach.week_rules import is_hard
 from web.formatting import short_date
 from web.view_models.today import dial_status, display_duration, session_name, week_day
 

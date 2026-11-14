@@ -221,6 +221,12 @@ The target contract is now in `AGENTS.md`. No milestone may rewrite stored data 
 
 ### 7. Open-source packaging
 
+- Review code hardening verified: complete wheel contents and installed-artifact smoke CI;
+  signed number verification; explicit provider/database settings; shared load and
+  weekly validation modules; current guarded digest compatibility entry points;
+  restored operations and architecture documentation. No schema changes.
+- Publication remains blocked until the owner approves and verifies cleanup of
+  historical private running-memory data. See `docs/release.md`.
 - Files to touch: `README.md`, `CONTRIBUTING.md`, `SECURITY.md`, `.env.example`, `pyproject.toml`, `.gitignore`, `docs/upgrade.md`, `.github/workflows/`, release docs, and example data/tests.
 - Acceptance: fresh checkout installs and runs with demo data, no credentials required; CLI, optional services, FIT support status, migrations, and supported Python versions are accurate; `ruff`, `compileall`, `pytest`, and a redacted history secret scan pass; release artifact excludes private DBs, tokens, logs, `.env`, and local memory.
 - Risks: README currently describes some older page labels; package extras and launchd examples may fail on clean systems; ignored local files can still leak through manual release archives.

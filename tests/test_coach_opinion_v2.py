@@ -145,8 +145,8 @@ class MockLLM:
 def opinion_db(tmp_path, monkeypatch):
     from services import activity_coaching_service
 
-    monkeypatch.setattr(activity_coaching_service, "load_running_memory", lambda: "Invented memory")
-    monkeypatch.setattr(activity_coaching_service, "_update_activity_memory", lambda *args: None)
+    monkeypatch.setattr(activity_coaching_service, "load_running_memory", lambda path: "Invented memory")
+    monkeypatch.setattr(activity_coaching_service, "_update_activity_memory", lambda *args, **kwargs: None)
     path = tmp_path / "invented.db"
     engine = create_engine(f"sqlite:///{path}")
     Base.metadata.create_all(engine)
@@ -403,7 +403,8 @@ def test_v26_preparation_reuses_dated_similar_session_tool(opinion_db):
 
 
 def service_for(opinion_db, llm):
-    return ActivityCoachingService(settings=replace(get_settings(), db_path=opinion_db[1]), llm_client=llm)
+    return ActivityCoachingService(settings=replace(get_settings(), db_path=opinion_db[1],
+                                                   base_dir=opinion_db[1].parent), llm_client=llm)
 
 
 def test_valid_v26_saved_and_plan_passed_to_prompt(opinion_db):
@@ -509,7 +510,7 @@ def test_v2_memory_entry_uses_assessment_and_points(monkeypatch):
     from services import activity_coaching_service as module
 
     saved = []
-    monkeypatch.setattr(module, "update_running_memory", lambda *, entry: saved.append(entry))
+    monkeypatch.setattr(module, "update_running_memory", lambda *, entry, path: saved.append(entry))
     opinion = CoachOpinionV2.model_validate(v2_payload(
         worked=[{"lead": "Even effort", "detail": ""}],
         evidence=[{"metric": "pace", "value": "6:00 /km", "source": "activity"}],

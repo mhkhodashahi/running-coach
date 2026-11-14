@@ -41,6 +41,8 @@ Add values to `.env` only for features you enable:
 - **Remote web login:** optionally set `WEB_PASSWORD`; the app signs the session cookie. The default bind remains local-only.
 - **Optional preferences:** `LOCAL_TIMEZONE`, `SLEEP_GOAL_HOURS`, `HR_ZONES`, and `COACH_DAILY_CALL_LIMIT` have defaults. See comments in `.env.example` before overriding them.
 
+Run commands from the checkout directory. Installed packages use the current directory for `.env`, the database and local memory; set `PULSE_HOME` to use a stable application directory. Keep this directory private. Use HTTPS in front of the app when accessing it remotely; it is a single-athlete application, not a multi-user hosting service.
+
 ## Data and privacy
 
 - Training records, plans, chat turns, and coaching outputs are stored in the SQLite database selected by `DB_PATH` (default: `db/running_coach.db`).
@@ -53,6 +55,8 @@ Add values to `.env` only for features you enable:
 ## Backups and scheduled jobs
 
 Run `python -m worker` to enable scheduled syncs, reviews, Telegram delivery, and automatic database backups. Jobs require their relevant settings; Telegram messages require Telegram configuration. The default backup directory is `~/pulse-backups/`, outside the repository.
+
+See [worker operations](docs/worker.md), [database upgrades](docs/upgrade.md), and [metric definitions](docs/metrics.md).
 
 Stop the worker and web app before restoring a database. Follow the confirmation prompt:
 
@@ -69,6 +73,8 @@ pytest
 ```
 
 The web app uses FastAPI, Jinja templates, and HTMX. Tests use synthetic fixtures; do not add personal athlete data to tracked code, tests, screenshots, or documentation.
+
+Architecture and publication checks are documented in [Architecture](docs/architecture.md) and [Release Checklist](docs/release.md). Passing a secret scan alone does not prove that Git history contains no private health data.
 
 ## Project layout
 

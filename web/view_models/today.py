@@ -7,7 +7,7 @@ import re
 from datetime import date, timedelta
 from typing import Any
 
-from coach.planning import is_hard
+from coach.week_rules import is_hard
 from web.formatting import sleep_hours
 
 TODAY_FOLLOW_UPS = (

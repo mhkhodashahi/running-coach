@@ -11,7 +11,8 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-BASE_DIR = Path(__file__).resolve().parent
+PACKAGE_DIR = Path(__file__).resolve().parent
+BASE_DIR = Path(os.getenv("PULSE_HOME") or Path.cwd()).expanduser().resolve()
 load_dotenv(BASE_DIR / ".env")
 
 
@@ -93,8 +94,8 @@ def get_settings() -> Settings:
         data_dir=data_dir,
         db_dir=db_dir,
         db_path=_resolve_db_path(os.getenv("DB_PATH", ""), db_dir / "running_coach.db"),
-        mock_activities_path=data_dir / "mock_activities.csv",
-        mock_health_path=data_dir / "mock_health_metrics.csv",
+        mock_activities_path=PACKAGE_DIR / "data" / "mock_activities.csv",
+        mock_health_path=PACKAGE_DIR / "data" / "mock_health_metrics.csv",
         llm_provider=os.getenv("LLM_PROVIDER", "ollama").strip().lower(),
         openai_api_key=os.getenv("OPENAI_API_KEY", "").strip(),
         openai_model=os.getenv("OPENAI_MODEL", "gpt-6-luna").strip(),

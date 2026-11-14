@@ -307,13 +307,15 @@ def test_worker_rating_prompt_uses_shared_recent_selector(worker_db):
 
 
 def test_weekly_review_proposes_without_applying(worker_db, monkeypatch):
+    from services import review_service
+
     settings = _settings(worker_db)
     seen = []
-    monkeypatch.setattr(jobs, "list_proposals", lambda *_args: [])
-    monkeypatch.setattr(jobs, "propose_week", lambda *_args, **kwargs: (
+    monkeypatch.setattr(review_service, "list_proposals", lambda *_args: [])
+    monkeypatch.setattr(review_service, "propose_week", lambda *_args, **kwargs: (
         seen.append(kwargs), {"summary": "Invented plan"})[1])
-    monkeypatch.setattr(jobs, "get_week", lambda *_args: {"sessions": []})
-    monkeypatch.setattr(jobs, "load_model", lambda *_args: __import__("types").SimpleNamespace(cap=None))
+    monkeypatch.setattr(review_service, "get_week", lambda *_args: {"sessions": []})
+    monkeypatch.setattr(review_service, "load_model", lambda *_args: __import__("types").SimpleNamespace(cap=None))
     text = jobs.weekly_message(settings, _clock(18).date(), use_llm=False)
     assert seen[0]["code_only"] is True
     assert "Invented plan" in text
@@ -371,7 +373,7 @@ def test_auto_opinion_is_metered_and_attempted_once(worker_db, monkeypatch):
         def generate_for_activity(self, **_kwargs):
             self.client.generate_json("system", "data")
 
-    monkeypatch.setattr("llm.factory.get_llm_client", lambda *_args: Client())
+    monkeypatch.setattr("llm.factory.get_llm_client", lambda *_args, **_kwargs: Client())
     monkeypatch.setattr("coach.agent.CoachAgent", Agent)
     monkeypatch.setattr("services.activity_coaching_service.ActivityCoachingService", Service)
     settings = replace(_settings(worker_db), auto_opinions=True)
@@ -406,8 +408,8 @@ def test_scheduled_daily_decision_suppresses_immediate_proposal_notice(worker_db
                                provisional=False, sports=(), intensity="easy", rule="otherwise_easy",
                                based_on="2026-10-26")
 
-    monkeypatch.setattr(jobs, "get_or_create_daily_decision", decision)
-    monkeypatch.setattr(jobs, "_planned", lambda *_args: [])
+    monkeypatch.setattr("services.review_service.get_or_create_daily_decision", decision)
+    monkeypatch.setattr("services.review_service._planned", lambda *_args: [])
     text = jobs.morning_message(_settings(worker_db), _clock(10).date(), use_llm=False)
     assert "Easy day" in text
     assert SUPPRESS_PROPOSAL_NOTICE.get() is False
