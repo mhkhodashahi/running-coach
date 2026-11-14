@@ -1,4 +1,4 @@
 interface:
-  display_name: "Review Running"
-  short_description: "Review Running Coach changes for risk"
-  default_prompt: "Use $review-running to review the current Running Coach changes."
+  display_name: "Pulse Coach Code Review"
+  short_description: "Review Pulse Coach architecture, safety and releases"
+  default_prompt: "Use $review-running to review the Pulse Coach changes, with evidence-backed findings and no code edits."
