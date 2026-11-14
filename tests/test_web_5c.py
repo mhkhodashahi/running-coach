@@ -41,6 +41,36 @@ def fill_data(settings, day, *, partial=False):
                            (settings.default_user_id, (day - timedelta(days=2)).isoformat()))
 
 
+def test_insights_reuses_daily_and_weekly_work_but_refreshes_next_render(data, monkeypatch):
+    import coach.load_model as model_module
+    import metrics.reader as reader
+
+    settings, day = data
+    fill_data(settings, day)
+    original_read = reader.read_inputs
+    snapshot_reads, model_reads = [], []
+
+    def read_snapshot(*args, **kwargs):
+        snapshot_reads.append(args[2])
+        return original_read(*args, **kwargs)
+
+    def read_model(*args, **kwargs):
+        model_reads.append(args[2])
+        return original_read(*args, **kwargs)
+
+    monkeypatch.setattr(reader, "read_inputs", read_snapshot)
+    monkeypatch.setattr(model_module, "read_inputs", read_model)
+    first = trends_context(settings, day, 7, include_summary=False)
+    assert len(snapshot_reads) == 7
+    assert len(model_reads) <= 3
+    assert first["series"]["hrv"][-1][1] == 55
+    with sqlite3.connect(settings.db_path) as connection:
+        connection.execute("UPDATE health_metrics SET hrv=66 WHERE date=?", (day.isoformat(),))
+    second = trends_context(settings, day, 7, include_summary=False)
+    assert len(snapshot_reads) == 14
+    assert second["series"]["hrv"][-1][1] == 66
+
+
 @pytest.mark.parametrize("mode", ("empty", "partial", "full"))
 def test_three_pages_render_with_invented_data(data, mode):
     settings, day = data

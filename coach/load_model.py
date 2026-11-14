@@ -14,6 +14,7 @@ from coach.plan import monday
 from config import Settings
 from db.repositories.planning import PlanningRepository
 from db.session import session_scope
+from metrics.calculation_scope import memoized_calculation
 from metrics.load import calibration_and_scales, session_metrics
 from metrics.reader import read_inputs
 from metrics.sports import sport_category
@@ -81,6 +82,7 @@ def estimate_load(session: dict[str, Any], model: LoadModel) -> float | None:
     return float(session["duration_min"]) * rate if rate is not None else None
 
 
+@memoized_calculation
 def load_model(database: Path, user_id: int, start: date, settings: Settings) -> LoadModel:
     """Own TRIMP/min; cap uses eight completed nonempty training weeks."""
     today = datetime.now(ZoneInfo(settings.local_timezone)).date()

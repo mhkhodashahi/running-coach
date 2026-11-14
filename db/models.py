@@ -11,6 +11,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -107,6 +108,7 @@ class Activity(Base):
 
     __tablename__ = "activities"
     __table_args__ = (
+        Index("ix_activities_user_date", "user_id", "date"),
         UniqueConstraint("user_id", "external_id", name="uq_activities_user_external"),
         CheckConstraint("planned_intent IN ('recovery','easy','steady','tempo','race')", name="ck_activities_planned_intent"),
     )
@@ -165,7 +167,8 @@ class ActivityTrackPoint(Base):
     """GPS and metric stream point for one activity."""
 
     __tablename__ = "activity_track_points"
-    __table_args__ = (UniqueConstraint("activity_id", "point_index", name="uq_activity_track_points_index"),)
+    __table_args__ = (UniqueConstraint("activity_id", "point_index", name="uq_activity_track_points_index"),
+                      Index("ix_activity_track_points_activity_timestamp", "activity_id", "timestamp"))
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     activity_id: Mapped[int] = mapped_column(ForeignKey("activities.id"), index=True, nullable=False)
@@ -513,6 +516,7 @@ class CoachingDecision(Base):
     """Structured daily or weekly coaching decision."""
 
     __tablename__ = "coaching_decisions"
+    __table_args__ = (Index("ix_coaching_decisions_user_type_date", "user_id", "decision_type", "decision_date"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True, nullable=False)

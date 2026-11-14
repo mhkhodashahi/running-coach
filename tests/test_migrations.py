@@ -19,7 +19,7 @@ from db.repository import get_or_create_default_goal, get_or_create_default_user
 from scripts.backup_db import backup_database
 
 SCHEMA = Path(__file__).parents[1] / "db/migrations/baseline.sql"
-HEAD = "0018_coach_memories"
+HEAD = "0019_insights_indexes"
 PLAN_TABLES = ("fixed_commitments", "plan_sessions", "plan_versions", "plan_snapshots",
                "coach_proposals", "proposal_changes")
 

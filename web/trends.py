@@ -19,6 +19,7 @@ from db.repositories.trends_view import TrendsViewRepository
 from db.session import session_scope
 from llm.factory import get_llm_client
 from metrics import get_daily_snapshot
+from metrics.calculation_scope import calculation_scope
 from services.coach_facts import Fact, unsupported_text_numbers
 from services.daily_decision_service import build_daily_decision
 from services.trend_facts import trend_facts
@@ -133,6 +134,7 @@ def cached_trend_summary(settings: Settings, day: date, days: int, facts: list[F
         return result
 
 
+@calculation_scope()
 def trends_context(settings: Settings, day: date, days: int, llm: Any = None,
                    *, include_summary: bool = True) -> dict[str, Any]:
     """Build gap-preserving series and sport-week totals for the chosen range."""

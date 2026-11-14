@@ -6,6 +6,7 @@ from zoneinfo import ZoneInfo
 
 from db.repositories.metrics import MetricsRepository
 from db.session import session_scope
+from metrics.calculation_scope import memoized_calculation
 from metrics.models import Activity, DailySnapshot, HealthDay, Inputs, Profile, TrackPoint
 from metrics.snapshot import build_daily_snapshot
 
@@ -63,6 +64,7 @@ def read_inputs(database: Path, user_id: int, as_of: date, timezone: str,
     return Inputs(profile, health, tuple(activities))
 
 
+@memoized_calculation
 def get_daily_snapshot(as_of: date, *, database: Path | None = None, user_id: int | None = None,
                        timezone: str | None = None, sleep_goal_hours: float | None = None,
                        hr_zones: tuple[tuple[str, int, int | None], ...] | None = None) -> DailySnapshot:

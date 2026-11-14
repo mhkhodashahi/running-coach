@@ -14,6 +14,8 @@ For a different install, pass its absolute path explicitly. Check a disposable
 copy first when upgrading an existing installation.
 
 Revisions live in `db/migrations/versions/`. Startup refuses to run behind head.
+Revision `0019_insights_indexes` adds only three query indexes, not columns or
+backfills. Stop running jobs before applying it through the same runner above.
 Add a migration and preservation tests for each schema change; never use
 `create_all` or fallback DDL in web, CLI or worker startup. Protected body-scan
 tables, old marathon columns and unrelated database files must be preserved.
