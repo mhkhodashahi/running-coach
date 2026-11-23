@@ -442,8 +442,12 @@ def test_invalid_retry_keeps_existing_opinion(opinion_db):
     llm = MockLLM({"unexpected": "bad"}, {"unexpected": "still bad"})
     with factory.begin() as session:
         user = repository.get_or_create_default_user(session, 1)
-        with pytest.raises(RuntimeError, match="new review could not be verified"):
+        with pytest.raises(RuntimeError, match="new review could not be verified") as failure:
             service_for(opinion_db, llm).generate(session, user=user, activity_id=activity_id, regenerate=True)
+    assert "Invalid review format in:" in str(failure.value)
+    assert "headline" in str(failure.value)
+    assert "still bad" not in str(failure.value)
+    assert "input_value" not in str(failure.value)
     assert len(llm.prompts) == 2
     assert "Verification or schema errors" in llm.prompts[1][1]
     with factory() as session:
@@ -478,9 +482,25 @@ def test_unsupported_number_retry_does_not_save(opinion_db):
     llm = MockLLM(bad, bad)
     with factory.begin() as session:
         user = repository.get_or_create_default_user(session, 1)
-        with pytest.raises(RuntimeError, match="new review could not be verified"):
+        with pytest.raises(RuntimeError, match="Unverified numbers: 42 bpm") as failure:
             service_for(opinion_db, llm).generate(session, user=user, activity_id=activity_id)
+    assert "after a repair attempt" in str(failure.value)
+    assert "No new review was saved" in str(failure.value)
     assert "Unverified numbers" in llm.prompts[1][1]
+    with factory() as session:
+        assert repository.get_activity_coaching_insight(session, activity_id, 1) is None
+
+
+def test_review_rule_failure_reports_the_failed_check(opinion_db):
+    factory, _, activity_id = opinion_db
+    bad = draft_payload_v3()
+    bad["verdicts"] = []
+    llm = MockLLM(bad, bad)
+    with factory.begin() as session:
+        user = repository.get_or_create_default_user(session, 1)
+        with pytest.raises(RuntimeError, match="verdict aspects must be exactly"):
+            service_for(opinion_db, llm).generate(session, user=user, activity_id=activity_id)
+    assert len(llm.prompts) == 2
     with factory() as session:
         assert repository.get_activity_coaching_insight(session, activity_id, 1) is None
 

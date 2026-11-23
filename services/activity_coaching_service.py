@@ -43,6 +43,20 @@ from utils.formatting import format_pace_short
 PROMPT_VERSION = "opinion-v3.0"
 
 
+def _verification_failure(error: ValidationError | ValueError) -> RuntimeError:
+    """Expose failed checks, not Pydantic's potentially private input payload."""
+    if isinstance(error, ValidationError):
+        fields = [".".join(str(part) for part in item["loc"]) or "review"
+                  for item in error.errors(include_input=False, include_context=False, include_url=False)]
+        detail = "Invalid review format in: " + ", ".join(dict.fromkeys(fields))[:300]
+    else:
+        detail = str(error)[:600]
+    return RuntimeError(
+        "The new review could not be verified after a repair attempt. "
+        + detail + ". No new review was saved; any existing review is unchanged."
+    )
+
+
 @dataclass(frozen=True)
 class ActivityCoachReadiness:
     """Whether a one-time activity coach opinion can be generated."""
@@ -203,7 +217,7 @@ class ActivityCoachingService:
                 payload = self.llm_client.generate_json(system_prompt, user_prompt, response_schema=OpinionDraftV3)
             except ValidationError as exc:
                 if attempt:
-                    raise RuntimeError("The new review could not be verified") from exc
+                    raise _verification_failure(exc) from exc
                 user_prompt += f"\nStructured output errors: {exc}. Correct the JSON and return OpinionDraftV3 only."
                 continue
             except Exception as exc:
@@ -217,7 +231,7 @@ class ActivityCoachingService:
                 return opinion, None
             except (ValidationError, ValueError) as exc:
                 if attempt:
-                    raise RuntimeError("The new review could not be verified") from exc
+                    raise _verification_failure(exc) from exc
                 user_prompt += f"\nVerification or schema errors: {exc}. Correct the claims or remove unsupported numbers; return OpinionDraftV3 JSON only."
         raise RuntimeError("The new review could not be verified")
 
