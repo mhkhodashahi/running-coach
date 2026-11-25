@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
@@ -90,6 +91,44 @@ class FakeExtractor:
 
     def generate_json(self, *_args, **_kwargs):
         return {"actions": self.actions}
+
+
+def test_training_responses_need_separate_rated_days(memory_db):
+    database, user = memory_db
+
+    class Capture:
+        def generate_json(self, prompt, payload, schema):
+            self.rows = json.loads(payload)["training_responses"]
+            return {"actions": []}
+
+    client = Capture()
+    for index, offset in enumerate([8, 1], start=1):
+        day = (date.today() - timedelta(days=offset)).isoformat()
+        with sqlite3.connect(database) as db:
+            db.execute("INSERT INTO activities(id,user_id,date,type,distance,duration) "
+                       "VALUES(?,1,?,'running',5,35)", (index, day))
+            db.execute("INSERT INTO plan_sessions(user_id,date,sport,intent,duration_min,origin,status,"
+                       "linked_activity_id,created_at,updated_at) VALUES(1,?,'running','easy',30,'coach',"
+                       "'done',?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)", (day, index))
+            db.execute("INSERT INTO activity_efforts(activity_id,rpe,rated_at,source) "
+                       "VALUES(?,7,CURRENT_TIMESTAMP,'web')", (index,))
+        extract_suggestions(database, user, [], client)
+        assert len(client.rows) == (0 if index == 1 else 2)
+    assert client.rows[0]["planned_min"] == 30 and client.rows[0]["actual_min"] == 35
+    assert client.rows[0]["rpe"] == 7 and client.rows[0]["next_day_hrv"] is None
+
+
+@pytest.mark.parametrize("decision,active", [("keep", False), ("discard", True)])
+def test_retirement_requires_athlete_choice(memory_db, decision, active):
+    database, user = memory_db
+    target = save_memory(database, user, "Prefer evening runs")
+    client = FakeExtractor([{"action": "DEACTIVATE", "target_memory_id": target,
+                             "reason": "You said evenings no longer work."}])
+    assert extract_suggestions(database, user, [], client) == 1
+    assert active_memories(database, user)[0]["id"] == target
+    suggestion = list_memories(database, user, status="suggested")[0]
+    resolve_suggestion(database, user, suggestion["id"], decision)
+    assert bool(active_memories(database, user)) == active
 
 
 def test_extraction_creates_suggestion_then_keep_records_history(memory_db):

@@ -43,11 +43,19 @@ Add values to `.env` only for features you enable:
 
 Run commands from the checkout directory. Installed packages use the current directory for `.env`, the database and local memory; set `PULSE_HOME` to use a stable application directory. Keep this directory private. Use HTTPS in front of the app when accessing it remotely; it is a single-athlete application, not a multi-user hosting service.
 
+## Coach memory
+
+Use **Me → Coach memory** or type `Remember: I prefer morning runs` in chat to save a preference. Active memories help personalize plans, chat, morning briefs, and activity reviews. A preference gives the coach context; a structured rule, such as an unavailable weekday, constrains the planner.
+
+To get suggestions, enable **Suggest memories from chats and repeated training responses** in Settings and run `python -m worker`. After a chat has been idle for five minutes, the coach can look for patterns across rated workouts linked to planned sessions on different days. It compares the plan with what you did, how hard it felt, and next-day recovery data when available.
+
+Suggestions appear on Coach and Me. They take effect only after you accept them. If the coach thinks an existing memory no longer fits, it explains why and asks **Stop using** or **Keep using**. Stopping deactivates the memory without deleting its history.
+
 ## Data and privacy
 
 - Training records, plans, chat turns, and coaching outputs are stored in the SQLite database selected by `DB_PATH` (default: `db/running_coach.db`).
 - The narrative coach memory is kept separately in `data/couch_running_memory.md`. It contains compact coaching cues and recent coaching entries; it is local personal data and is git-ignored.
-- Chat history is stored in the database separately from the narrative memory. Training history in SQLite is the primary input to plan suggestions.
+- Athlete-managed memories, pending suggestions, and memory edit history are stored in SQLite, separately from the narrative file and chat history.
 - With Ollama, prompt data is sent to the configured Ollama server. With OpenAI, relevant activity, health, goal, plan, chat, and memory context may be sent to OpenAI. Credentials and API keys are not included in prompts. Remote sharing is refused unless both approval settings are enabled.
 - When you open a route map, the activity's GPS coordinates are sent to Google Maps for rendering. The map is not loaded unless an activity has route coordinates and a Maps API key is configured.
 - Keep `.env`, Garmin tokens, databases, backups, logs, and personal exports private. Review the database and memory file before sharing diagnostic output.

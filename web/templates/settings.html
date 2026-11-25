@@ -62,7 +62,7 @@
         <label><input type="checkbox" name="morning_llm" {% if messages.morning_llm %}checked{% endif %}> Use AI in morning call</label>
         <label><input type="checkbox" name="day_llm" {% if messages.day_llm %}checked{% endif %}> Use AI in day review</label>
         <label><input type="checkbox" name="weekly_llm" {% if messages.weekly_llm %}checked{% endif %}> Use AI in weekly review</label>
-        <label><input type="checkbox" name="suggest_memories_llm" {% if messages.suggest_memories_llm %}checked{% endif %}> Suggest memories from chats (uses AI)</label>
+        <label><input type="checkbox" name="suggest_memories_llm" {% if messages.suggest_memories_llm %}checked{% endif %}> Suggest memories from chats and repeated training responses (uses AI)</label>
         <div class="settings-actions"><button class="button button-secondary" type="submit">Save messages</button></div>
       </form>
       <p>Worker {{ 'running' if worker_running else 'not running' }}. {{ 'Scheduled messages paused' if messages.paused else 'Scheduled messages active' }}.</p>
@@ -72,18 +72,18 @@
     <section id="coach-memory" class="settings-section"><h2>Coach memory</h2>
       <p class="cap">Athlete-provided facts and preferences. Text is treated as data, not instructions.</p>
       {% if pending_memories %}<h3>Pending suggestions</h3>{% for memory in pending_memories %}
-        <article class="settings-memory"><p><strong>The coach wants to remember:</strong> {{ memory.text }}</p>
+        <article class="settings-memory"><p><strong>{% if memory.suggestion_action == 'DEACTIVATE' %}Stop using this memory?{% else %}The coach wants to remember:{% endif %}</strong> {{ memory.text }}</p>
           {% if memory.suggestion_reason %}<p>{{ memory.suggestion_reason }}</p>{% endif %}
-          {% if memory.target_memory_id %}<p>Current: {{ memory.previous_text or 'No longer active' }}<br>Suggested: {{ memory.text }}</p>{% endif %}
-          <form method="post" action="/settings/memories/{{ memory.id }}/keep"><button class="btn" type="submit">Keep</button></form>
-          <details><summary>Edit</summary><form method="post" action="/settings/memories/{{ memory.id }}/edit" class="settings-form">
+          {% if memory.target_memory_id and memory.suggestion_action != 'DEACTIVATE' %}<p>Current: {{ memory.previous_text or 'No longer active' }}<br>Suggested: {{ memory.text }}</p>{% endif %}
+          <form method="post" action="/settings/memories/{{ memory.id }}/keep"><button class="btn" type="submit">{{ 'Stop using' if memory.suggestion_action == 'DEACTIVATE' else 'Keep' }}</button></form>
+          {% if memory.suggestion_action != 'DEACTIVATE' %}<details><summary>Edit</summary><form method="post" action="/settings/memories/{{ memory.id }}/edit" class="settings-form">
             <label>Category<select name="category">{% for category in ['goal','schedule','preference','body','equipment','coaching_style','other'] %}<option value="{{ category }}" {% if memory.category == category %}selected{% endif %}>{{ category|replace('_',' ')|title }}</option>{% endfor %}</select></label>
             <label class="settings-wide">Memory<input name="text" maxlength="200" required value="{{ memory.text }}"></label>
             {{ memory_rule_editor(memory) }}
             <label>End date<input type="date" name="valid_until" value="{{ memory.valid_until or '' }}"></label>
             <div class="settings-actions"><button class="button button-secondary" type="submit">Save edit</button></div>
-          </form></details>
-          <form method="post" action="/settings/memories/{{ memory.id }}/discard"><button class="btn" type="submit">Discard</button></form>
+          </form></details>{% endif %}
+          <form method="post" action="/settings/memories/{{ memory.id }}/discard"><button class="btn" type="submit">{{ 'Keep using' if memory.suggestion_action == 'DEACTIVATE' else 'Discard' }}</button></form>
         </article>{% endfor %}{% endif %}
       {% for category in ['goal','schedule','preference','body','equipment','coaching_style','other'] %}
         {% set matching = coach_memories|selectattr('category','equalto',category)|rejectattr('status','equalto','suggested')|list %}

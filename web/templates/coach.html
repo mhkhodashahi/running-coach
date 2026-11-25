@@ -11,12 +11,12 @@
 {% include 'components/coach_conversation.html' %}
 {% if memory_suggestions %}<section class="settings-section" aria-labelledby="memory-suggestion-title">
   <h2 id="memory-suggestion-title">Memory suggestions</h2>
-  {% for memory in memory_suggestions %}<article class="settings-memory"><p>The coach wants to remember: {{ memory.text }}</p>
-    {% if memory.target_memory_id %}<p>Current: {{ memory.previous_text or 'No longer active' }}<br>Suggested: {{ memory.text }}</p>{% endif %}
+  {% for memory in memory_suggestions %}<article class="settings-memory"><p>{% if memory.suggestion_action == 'DEACTIVATE' %}Stop using this memory?{% else %}The coach wants to remember:{% endif %} {{ memory.text }}</p>
+    {% if memory.target_memory_id and memory.suggestion_action != 'DEACTIVATE' %}<p>Current: {{ memory.previous_text or 'No longer active' }}<br>Suggested: {{ memory.text }}</p>{% endif %}
     {% if memory.suggestion_reason %}<p>{{ memory.suggestion_reason }}</p>{% endif %}
-    <form method="post" action="/settings/memories/{{ memory.id }}/keep"><button class="btn" type="submit">Keep</button></form>
-    <form method="post" action="/settings/memories/{{ memory.id }}/discard"><button class="btn" type="submit">Discard</button></form>
-    <a href="/settings#coach-memory-{{ memory.id }}">Edit</a>
+    <form method="post" action="/settings/memories/{{ memory.id }}/keep"><button class="btn" type="submit">{{ 'Stop using' if memory.suggestion_action == 'DEACTIVATE' else 'Keep' }}</button></form>
+    <form method="post" action="/settings/memories/{{ memory.id }}/discard"><button class="btn" type="submit">{{ 'Keep using' if memory.suggestion_action == 'DEACTIVATE' else 'Discard' }}</button></form>
+    {% if memory.suggestion_action != 'DEACTIVATE' %}<a href="/settings#coach-memory-{{ memory.id }}">Edit</a>{% endif %}
   </article>{% endfor %}
 </section>{% endif %}
 <details id="coach-history" class="v2-chat-history"><summary>History and scheduled messages</summary>
