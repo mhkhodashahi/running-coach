@@ -151,7 +151,10 @@ def test_defaults_get_does_not_write_and_actions_persist(dashboard_client, dashb
         "chart_id": "best_efforts", "opt_distance_km": "10"}).status_code == 200
 
 
-def test_csv_uses_same_rows_as_table(dashboard_client, dashboard_db):
+def test_csv_uses_same_rows_as_table(dashboard_client, dashboard_db, monkeypatch):
+    import web.routes.pages as pages
+
+    monkeypatch.setattr(pages, "_day", lambda request: DAY)
     response = dashboard_client.get("/insights/dashboard/widgets/-2/csv?range=28")
     assert response.status_code == 200
     settings = replace(get_settings(), db_path=dashboard_db, llm_provider="none", hr_zones=())
