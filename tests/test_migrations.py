@@ -30,6 +30,20 @@ def tables(connection):
     )]
 
 
+def test_install_creates_profile_only_when_missing(tmp_path, monkeypatch):
+    monkeypatch.setenv("PULSE_HOME", str(tmp_path))
+    monkeypatch.setenv("DEFAULT_USER_ID", "7")
+    database = tmp_path / "install.db"
+    cmd = [sys.executable, "-m", "scripts.upgrade_db", "--ensure-user", "--db", str(database)]
+    subprocess.run(cmd, check=True)
+    with sqlite3.connect(database) as connection:
+        connection.execute("UPDATE users SET name='Fixture', age=NULL WHERE id=7")
+    subprocess.run(cmd, check=True)
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("SELECT id,name,age FROM users").fetchall() == [(7, "Fixture", None)]
+        assert connection.execute("SELECT COUNT(*) FROM activities").fetchone() == (0,)
+
+
 def snapshot(database):
     with closing(sqlite3.connect(database)) as connection:
         old_tables = [table for table in tables(connection) if table not in {
