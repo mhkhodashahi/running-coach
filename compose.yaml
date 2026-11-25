@@ -1,0 +1,26 @@
+x-app: &app
+  image: pulse-coach:local
+  build: .
+  init: true
+  user: "${PULSE_UID:-10001}:${PULSE_GID:-10001}"
+  volumes:
+    - ${PULSE_DOCKER_HOME:-${HOME}/.pulse-coach}:/var/lib/pulse
+  environment:
+    DB_PATH: /var/lib/pulse/db/running_coach.db
+    BACKUP_DIR: /var/lib/pulse/backups
+
+services:
+  web:
+    <<: *app
+    ports:
+      - "127.0.0.1:${PULSE_PORT:-8000}:8000"
+    restart: unless-stopped
+  worker:
+    <<: *app
+    profiles: [scheduler]
+    command: ["python", "-m", "worker"]
+    restart: unless-stopped
+  migrate:
+    <<: *app
+    profiles: [maintenance]
+    command: ["python", "-m", "scripts.upgrade_db", "--ensure-user", "--db", "/var/lib/pulse/db/running_coach.db", "--backup-dir", "/var/lib/pulse/backups"]

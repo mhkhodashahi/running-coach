@@ -27,6 +27,29 @@ python -m web
 
 Open <http://127.0.0.1:8000>. App startup checks the database version but does not run migrations. Before upgrading, stop the web app and worker, then run the backup-first upgrade command above.
 
+## Run with Docker
+
+With Docker Compose, the web app and optional worker share a private folder outside the checkout. Start with a new directory; this does not migrate or use your existing installation. From the checkout on macOS or Linux:
+
+```bash
+export PULSE_UID="$(id -u)" PULSE_GID="$(id -g)"
+install -d -m 700 "$HOME/.pulse-coach"
+# First install only. Keep an existing configuration.
+test -e "$HOME/.pulse-coach/.env" || install -m 600 .env.example "$HOME/.pulse-coach/.env"
+```
+
+Set a strong `WEB_PASSWORD` in **`~/.pulse-coach/.env`**. The server needs it because it listens on the container network; Compose publishes it only to your computer. Configure optional integrations in that same file. For Ollama on Docker Desktop, use `OLLAMA_BASE_URL=http://host.docker.internal:11434` if your host server accepts that connection; container localhost is not the host.
+
+```bash
+docker compose build web
+docker compose run --rm migrate
+docker compose up -d web
+# Optional: scheduled syncs, messages and backups
+docker compose --profile scheduler up -d worker
+```
+
+Open <http://127.0.0.1:8000>. For upgrades, export the same UID/GID in your shell, run `docker compose --profile scheduler down`, then repeat the build, migration, and start commands. The database, backups, memory and tokens survive container replacement in `~/.pulse-coach/`; back up that folder separately.
+
 ## Configuration
 
 The quickstart copies `.env.example` to `.env`, but **no secrets or custom values are required** to start the local web app. Defaults select the local database path, localhost web address, Europe/Berlin timezone, and Ollama. Ollama coaching works only when Ollama is installed, running, and the configured model is available; without a provider, the app can still be used for its data and deterministic features.
