@@ -13,13 +13,14 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from coach.guardrails import GuardrailContext, enforce_guardrails, guardrail_errors, plan_change_question
 from coach.runtime import require_current_database, user_job_lock
+from coach.skills import compose_skill_prompt
 from coach.tools import TOOL_NAMES, CoachTools
 from config import Settings
 from db.repositories.agent import AgentRepository
 from db.session import session_scope
 from services.coach_facts import Fact, unsupported_text_numbers
 
-PROMPT_VERSION = "chat-v1.4"
+PROMPT_VERSION = "chat-v1.5"
 MAX_TOOL_CALLS = 6
 MAX_QUESTION_CHARS = 1200
 MAX_ANSWER_CHARS = 2500
@@ -45,6 +46,11 @@ SYSTEM_PROMPT = (
     "Reply JSON: answer, evidence_ids, activity_ids, follow_ups (2-3 short, answerable questions). "
     "When data is missing, say what is missing. If asked to train hard, inspect today's snapshot first."
 )
+
+
+def chat_system_prompt(sport: str | None = None) -> str:
+    """Load domain guidance only when chat has matching session context."""
+    return compose_skill_prompt(SYSTEM_PROMPT, "chat", {"sport": sport} if sport else {})
 
 
 class ChatReply(BaseModel):
@@ -186,11 +192,11 @@ class CoachAgent:
         if not allowed:
             raise RuntimeError("Daily coach LLM call limit reached. Try again tomorrow or raise COACH_DAILY_CALL_LIMIT.")
 
-    def _step(self, messages: list[dict[str, Any]]) -> dict[str, Any]:
+    def _step(self, messages: list[dict[str, Any]], system_prompt: str = SYSTEM_PROMPT) -> dict[str, Any]:
         self._count_request()
         if hasattr(self.llm, "coach_step"):
-            return self.llm.coach_step(SYSTEM_PROMPT, messages, _tool_specs())
-        payload = self.llm.generate_json(SYSTEM_PROMPT, json.dumps(messages), response_schema=None)
+            return self.llm.coach_step(system_prompt, messages, _tool_specs())
+        payload = self.llm.generate_json(system_prompt, json.dumps(messages), response_schema=None)
         if "tool_call" in payload:
             return {"tool_calls": [payload["tool_call"]]}
         return {"reply": payload}
@@ -270,6 +276,7 @@ class CoachAgent:
             return self._answer_locked(question, activity_id, running_memory)
 
     def _answer_locked(self, question: str, activity_id: int | None, running_memory: str) -> CoachAnswer:
+        system_prompt = chat_system_prompt()
         messages: list[dict[str, Any]] = [{"role": "user", "content": question}]
         current_day = datetime.now(ZoneInfo(self.settings.local_timezone)).date()
         note_facts = self.tools.recent_note_facts(current_day)
@@ -289,6 +296,8 @@ class CoachAgent:
         today_question = _is_today_question(question) and activity_id is None
         if activity_id is not None:
             initial = self.tools.get_activity(activity_id)
+            if initial.get("sport") == "gym":
+                system_prompt = chat_system_prompt("gym")
             seen_activities.add(activity_id)
             for fact in _facts(initial):
                 facts[fact["id"]] = fact
@@ -329,7 +338,7 @@ class CoachAgent:
                                  plan_change_question(question))
         for attempt in range(MAX_TOOL_CALLS + 3):
             try:
-                step = self._step(messages)
+                step = self._step(messages, system_prompt)
             except RuntimeError:
                 raise
             except Exception as exc:
@@ -348,6 +357,8 @@ class CoachAgent:
                     if not isinstance(args, dict) or name not in TOOL_NAMES:
                         raise ValueError("Invalid coach tool request")
                     result = self.tools.call(name, args)
+                    if name == "get_activity" and result.get("sport") == "gym":
+                        system_prompt = chat_system_prompt("gym")
                     if name == "get_activity" and activity_id is None:
                         historical = self.tools.get_daily_snapshot(date.fromisoformat(result["date"]))
                         historical_facts = [fact for fact in historical["facts"] if fact["id"] not in

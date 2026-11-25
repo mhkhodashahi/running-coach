@@ -24,6 +24,7 @@ from web.activities import (
     rate_session,
     set_planned_intent,
 )
+from web.calendar_export import session_ical
 from web.coach_page import ask_coach, coach_context
 from web.dashboard.page import add_overview_card, one_widget
 from web.dashboard.page import change as change_dashboard
@@ -481,6 +482,22 @@ def training_session(request: Request, session_id: int):
         request, "training_session.html",
         {**session_detail(row), "back_url": "/" if back == "today" else "/plan",
          "back_label": "Today" if back == "today" else "Training"})
+
+
+@router.get("/training/session/{session_id}/calendar")
+def training_session_calendar(request: Request, session_id: int):
+    try:
+        row = read_session(request.app.state.settings.db_path,
+                           request.app.state.settings.default_user_id, session_id)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    if row.get("status") != "planned":
+        raise HTTPException(409, "Only planned sessions can be added to a calendar")
+    return Response(
+        content=session_ical(row),
+        media_type="text/calendar; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="pulse-session-{session_id}.ics"'},
+    )
 
 
 @router.post("/training/session/{session_id}/shorter")

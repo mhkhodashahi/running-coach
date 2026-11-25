@@ -109,9 +109,11 @@ def test_detailed_workout_survives_apply_and_undo(database):
 def test_unverified_plan_numbers_retry_then_use_code_text(database):
     class UnverifiedLLM:
         calls = 0
+        systems = []
 
         def generate_json(self, system, prompt, response_schema):
             self.calls += 1
+            self.systems.append(system)
             count = len(json.loads(prompt.split("\nValidation errors:")[0])["code_built_changes"])
             return {"summary": "Run 999 min this week.", "reasons": [
                 {"reason": "Run 999 min.", "fact_ids": ["LOAD_BASE"]} for _ in range(count)]}
@@ -120,6 +122,9 @@ def test_unverified_plan_numbers_retry_then_use_code_text(database):
     settings = replace(get_settings(), db_path=database, llm_provider="none")
     proposal = propose_week(START, settings=settings, llm=llm, today=START - timedelta(days=3))
     assert llm.calls == 2
+    assert all("Skill: Endurance planning" in prompt and "Skill: Athlete assessment" in prompt
+               for prompt in llm.systems)
+    assert all("Skill: Race preparation" not in prompt for prompt in llm.systems)
     assert "999" not in proposal["summary"]
     assert all("workout" in row["session"] for row in proposal["changes"]
                if row["session"]["sport"] != "mobility")
@@ -450,10 +455,12 @@ def test_remote_planning_error_names_required_approval(database, request_kind):
 def test_plain_plan_request_retries_invalid_json_then_creates_proposal_only(database):
     class FakeLLM:
         calls = 0
+        system_prompts = []
 
         def generate_json(self, system, prompt, response_schema):
             import json
             self.calls += 1
+            self.system_prompts.append(system)
             assert response_schema is WeekDraft
             assert "athlete_request_as_data" in json.loads(prompt.split("\nValidation errors:")[0])
             if self.calls == 1:
@@ -468,6 +475,7 @@ def test_plain_plan_request_retries_invalid_json_then_creates_proposal_only(data
     proposed = propose_requested_change("Move my Wednesday run", START, settings=settings,
                                         user_id=1, llm=fake, today=START - timedelta(days=3))
     assert fake.calls == 2
+    assert all("Skill: Plan adaptation" in prompt for prompt in fake.system_prompts)
     assert proposed["status"] == "pending"
     assert get_week(database, 1, START)["sessions"] == []
 

@@ -424,7 +424,7 @@ def test_valid_v26_saved_and_plan_passed_to_prompt(opinion_db):
     assert llm.prompts[0][2] is OpinionDraftV3
     with factory() as session:
         row = repository.get_activity_coaching_insight(session, activity_id, 1)
-        assert row.schema_version == "2" and row.prompt_version == "opinion-v3.0"
+        assert row.schema_version == "2" and row.prompt_version == "opinion-v3.1"
         assert row.validation_notes is None
         assert json.loads(row.payload_json)["intent"]["planned"] == "easy"
         assert json.loads(row.payload_json)["intent"]["detected"] == "recovery"

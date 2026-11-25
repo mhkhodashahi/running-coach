@@ -98,6 +98,7 @@ def test_training_responses_need_separate_rated_days(memory_db):
 
     class Capture:
         def generate_json(self, prompt, payload, schema):
+            self.system_prompt = prompt
             self.rows = json.loads(payload)["training_responses"]
             return {"actions": []}
 
@@ -116,6 +117,7 @@ def test_training_responses_need_separate_rated_days(memory_db):
         assert len(client.rows) == (0 if index == 1 else 2)
     assert client.rows[0]["planned_min"] == 30 and client.rows[0]["actual_min"] == 35
     assert client.rows[0]["rpe"] == 7 and client.rows[0]["next_day_hrv"] is None
+    assert "Skill: Plan adaptation" in client.system_prompt
 
 
 @pytest.mark.parametrize("decision,active", [("keep", False), ("discard", True)])

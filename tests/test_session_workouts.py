@@ -98,6 +98,23 @@ def test_session_page_renders_workout_and_shorter_action(database):
     assert "How it should feel" in response.text
     assert "Done right if" in response.text
     assert "Do the shorter version" in response.text
+    assert f"/training/session/{session_id}/calendar" in response.text
+
+
+def test_session_calendar_download_is_owner_scoped_and_has_ical_content(database):
+    item = {"date": "2026-11-09", "sport": "running", "intent": "easy", "duration_min": 40,
+            "hr_cap_bpm": 130, "notes": None, "workout_type": "easy_base", "workout_json": json.dumps(workout())}
+    session_id = manual_session(database, 1, item)
+    settings = replace(get_settings(), db_path=database, llm_provider="none")
+    with TestClient(create_app(settings, password="")) as client:
+        response = client.get(f"/training/session/{session_id}/calendar")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/calendar")
+    assert f'filename="pulse-session-{session_id}.ics"' in response.headers["content-disposition"]
+    unfolded = response.text.replace("\r\n ", "")
+    assert "SUMMARY:Easy run 40 min" in unfolded
+    assert "Purpose: Build aerobic consistency." in unfolded
 
 
 def test_morning_brief_includes_compact_planned_steps():

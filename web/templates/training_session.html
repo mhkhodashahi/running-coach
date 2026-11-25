@@ -20,6 +20,7 @@
   </section>
 {% else %}<p class="card">No detailed workout for this session.</p>{% endif %}
 <div class="v2-session-actions">
+  {% if session.status == 'planned' %}<a class="btn" href="/training/session/{{ session.id }}/calendar">Add to calendar</a>{% endif %}
   {% if shorter_available %}<form method="post" action="/training/session/{{ session.id }}/shorter"><button class="btn" type="submit">Do the shorter version</button></form>{% endif %}
   <details><summary class="btn">Move to another day</summary><form method="post" action="/training/session/{{ session.id }}/move"><label>New date <input name="new_date" type="date" required></label><button class="btn" type="submit">Create proposal</button></form></details>
   <a class="btn" href="/coach?context=session&amp;session_id={{ session.id }}">Ask the coach</a>

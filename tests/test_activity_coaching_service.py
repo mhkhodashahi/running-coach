@@ -39,6 +39,17 @@ def test_activity_coach_opinion_is_only_for_runs() -> None:
     assert not supports_activity_coach_opinion("strength_training")
 
 
+def test_activity_opinion_prompt_loads_activity_review_skill():
+    system_prompt, _ = build_activity_coaching_prompt({
+        "facts_pack": [{"id": "ACTIVITY_DATE", "metric": "Date", "display": "Wed 25 Nov",
+                        "source": "fixture"}],
+        "selected_activity": {"id": 1},
+        "detected_intent": "easy",
+    })
+
+    assert "Skill: Activity review" in system_prompt
+
+
 def test_garmin_run_without_details_is_not_ready_for_one_time_opinion() -> None:
     activity = SimpleNamespace(type="running", external_id="garmin-123", notes=None)
 

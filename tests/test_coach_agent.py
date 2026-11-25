@@ -17,6 +17,7 @@ from coach.agent import (
     _model_visible,
     _trend_fallback,
     _unsupported_answer_numbers,
+    chat_system_prompt,
 )
 from coach.runtime import user_job_lock
 from config import get_settings
@@ -53,6 +54,11 @@ def test_internal_load_ratio_is_not_model_visible():
     payload = {"load_ratio": 1.4, "facts": [{"id": "LOAD_RATIO", "display": "1.40"},
                                              {"id": "READINESS", "display": "70"}]}
     assert _model_visible(payload) == {"facts": [{"id": "READINESS", "display": "70"}]}
+
+
+def test_chat_loads_gym_guidance_only_with_gym_context():
+    assert "Gym session guidance" not in chat_system_prompt()
+    assert "Gym session guidance" in chat_system_prompt("gym")
 
 
 def test_internal_load_ratio_wording_retries(agent_db):

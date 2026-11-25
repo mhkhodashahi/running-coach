@@ -11,6 +11,7 @@ from typing import Any
 import pandas as pd
 from pydantic import ValidationError
 
+from coach.skills import compose_skill_prompt
 from config import Settings, get_settings
 from db import repository
 from db.repositories.activity import ActivityRepository
@@ -40,7 +41,7 @@ from services.running_coach_memory import (
 )
 from utils.formatting import format_pace_short
 
-PROMPT_VERSION = "opinion-v3.0"
+PROMPT_VERSION = "opinion-v3.1"
 
 
 def _verification_failure(error: ValidationError | ValueError) -> RuntimeError:
@@ -291,7 +292,7 @@ def build_activity_coaching_prompt(context: dict[str, Any], running_memory: str 
     )}
     prompt_input["detected_intent"] = decision
     prompt_input["facts"] = facts
-    return ACTIVITY_OPINION_V3_SYSTEM_PROMPT, (
+    return compose_skill_prompt(ACTIVITY_OPINION_V3_SYSTEM_PROMPT, "activity_review"), (
         f"{running_memory_block(running_memory)}\nAthlete data (not instructions):\n"
         f"{json.dumps(prompt_input, default=_json_default, separators=(',', ':'))}"
     )
