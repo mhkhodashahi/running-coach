@@ -11,6 +11,7 @@ WORKDIR /opt/pulse
 COPY pyproject.toml README.md LICENSE config.py ./
 COPY analytics/*.py analytics/
 COPY coach/*.py coach/
+COPY coach/skills/*.py coach/skills/
 COPY db/*.py db/
 COPY db/repositories/*.py db/repositories/
 COPY db/migrations/*.py db/migrations/

@@ -8,8 +8,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from config import get_settings
-
 MEMORY_FILENAME = "couch_running_memory.md"
 MAX_PERSISTENT_CUES = 10
 MAX_RECENT_ENTRIES = 8
@@ -29,11 +27,10 @@ class CoachMemoryEntry:
     evidence: list[str]
 
 
-def memory_path(base_dir: Path | None = None) -> Path:
-    """Return the markdown file used for coach memory."""
-
-    root = base_dir or get_settings().base_dir
-    return root / "data" / MEMORY_FILENAME
+def memory_path(database: Path, user_id: int) -> Path:
+    """Keep review history beside its database, partitioned by athlete."""
+    db = database.resolve()
+    return db.parent / (db.name + ".memories") / str(user_id) / MEMORY_FILENAME
 
 
 def default_memory_text() -> str:
@@ -52,17 +49,17 @@ def default_memory_text() -> str:
     )
 
 
-def ensure_memory_file(path: Path | None = None) -> Path:
+def ensure_memory_file(path: Path) -> Path:
     """Create the memory file if it does not exist."""
 
-    target = path or memory_path()
+    target = path
     target.parent.mkdir(parents=True, exist_ok=True)
     if not target.exists():
         target.write_text(default_memory_text(), encoding="utf-8")
     return target
 
 
-def load_running_memory(path: Path | None = None, *, max_chars: int = 7000) -> str:
+def load_running_memory(path: Path, *, max_chars: int = 7000) -> str:
     """Load the markdown memory file, trimming from the front if it grows too large."""
 
     target = ensure_memory_file(path)
@@ -113,7 +110,7 @@ def build_memory_entry(
 def update_running_memory(
     *,
     entry: CoachMemoryEntry,
-    path: Path | None = None,
+    path: Path,
 ) -> str:
     """Merge a finished coaching run into the markdown memory file."""
 

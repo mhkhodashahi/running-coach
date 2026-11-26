@@ -1,9 +1,6 @@
-"""Add athlete-owned coach memories and migrate the legacy memory file."""
+"""Add athlete-owned coach memories without importing unscoped files."""
 
 from __future__ import annotations
-
-from datetime import UTC, date, datetime
-from pathlib import Path
 
 import sqlalchemy as sa
 from alembic import op
@@ -13,7 +10,6 @@ down_revision = "0017_detailed_workouts"
 branch_labels = None
 depends_on = None
 
-CATEGORY = "other"
 
 
 def upgrade() -> None:
@@ -70,35 +66,7 @@ def upgrade() -> None:
     if "suggest_memories_llm" not in {column["name"] for column in inspector.get_columns("notification_settings")}:
         op.add_column("notification_settings", sa.Column(
             "suggest_memories_llm", sa.Boolean(), nullable=False, server_default="0"))
-    _copy_legacy_file()
-
-
-def _copy_legacy_file() -> None:
-    bind = op.get_bind()
-    user_id = bind.execute(sa.text("SELECT id FROM users ORDER BY id LIMIT 1")).scalar()
-    if user_id is None:
-        return
-    database = Path(bind.engine.url.database or "").resolve()
-    legacy = database.parent.parent / "data" / "couch_running_memory.md"
-    if not legacy.exists():
-        return
-    text = legacy.read_text(encoding="utf-8")
-    entries: list[str] = []
-    for line in text.splitlines():
-        if not line.startswith("- "):
-            continue
-        value = line[2:].strip()
-        if not value or value.lower() in {"none yet", "none yet."}:
-            continue
-        entries.append(value[:200])
-    now = datetime.now(UTC).replace(tzinfo=None)
-    for value in entries:
-        bind.execute(sa.text(
-            "INSERT INTO coach_memories(user_id,category,text,rule_json,status,source,valid_from,"
-            "valid_until,created_at,updated_at,last_used_at) "
-            "VALUES(:uid,:category,:text,NULL,'active','migrated',:today,NULL,:now,:now,NULL)"),
-            {"uid": user_id, "category": CATEGORY, "text": value,
-             "today": date.today(), "now": now})
+    # The installation-wide markdown file has no reliable database or athlete owner.
 
 
 def downgrade() -> None:

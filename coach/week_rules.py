@@ -15,6 +15,31 @@ def is_hard(session: dict[str, Any]) -> bool:
            session["intent"] not in ("skills only", "recovery"))
 
 
+def memory_rule_errors(item: dict[str, Any], memories: list[dict[str, Any]]) -> list[str]:
+    """Check only sessions being scheduled, against rules effective on their date."""
+    if item.get("status", "planned") != "planned":
+        return []
+    day = item["date"]
+    sport, intent = item["sport"], item["intent"]
+    kind = item.get("workout_type") or {
+        ("running", "easy"): "easy_base", ("gym", "light"): "upper_core",
+        ("gym", "strength"): "strength_runners",
+    }.get((sport, intent), intent)
+    for memory in memories:
+        rule = memory.get("rule") or {}
+        if memory["valid_from"] > day or (memory["valid_until"] and memory["valid_until"] < day):
+            continue
+        body = rule.get("body", {})
+        if date.fromisoformat(day).weekday() in rule.get("unavailable", {}).get("weekdays", []):
+            return ["Session falls on an unavailable weekday"]
+        if kind in (*rule.get("avoid", []), *body.get("avoid", [])):
+            return ["Workout type is excluded by an athlete rule"]
+        if body.get("easy_running_only") and sport == "running" and (
+                intent not in ("easy", "recovery") or kind in ("tempo", "threshold", "speed", "vo2_intervals")):
+            return ["An athlete rule permits easy running only"]
+    return []
+
+
 def validate_week(sessions: list[dict[str, Any]], model: LoadModel, *, today: date,
                   decisions: dict[date, str], week_start: date | None = None) -> list[str]:
     """Return all rule failures; the model cannot waive these checks."""

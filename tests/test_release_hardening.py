@@ -76,14 +76,20 @@ def test_opinion_uses_configured_sessions_and_memory(release_settings, monkeypat
     assert urls == [release_settings.db_url, release_settings.db_url]
     with sqlite3.connect(release_settings.db_path) as connection:
         assert connection.execute("SELECT COUNT(*) FROM activity_coaching_insights").fetchone()[0] == 1
-    assert (release_settings.base_dir / "data/couch_running_memory.md").exists()
+    assert module.memory_path(release_settings.db_path, 1).exists()
 
 
 def test_memory_update_uses_supplied_install_directory(tmp_path):
     opinion = CoachOpinionV2(headline="Controlled", assessment="You stayed controlled.", confidence="medium",
                              intent={"planned": None, "detected": "easy"})
-    _update_activity_memory("2026-01-02", "Fixture", opinion, base_dir=tmp_path)
-    assert "Fixture" in (tmp_path / "data/couch_running_memory.md").read_text()
+    from services.running_coach_memory import load_running_memory, memory_path
+
+    db = tmp_path / "first.db"
+    path = memory_path(db, 1)
+    _update_activity_memory("2026-01-02", "Fixture", opinion, path=path)
+    assert "Fixture" in load_running_memory(path)
+    assert "Fixture" not in load_running_memory(memory_path(db, 2))
+    assert "Fixture" not in load_running_memory(memory_path(tmp_path / "second.db", 1))
 
 
 @pytest.mark.parametrize("kind,name", [("daily", "morning_payload"), ("weekly", "weekly_payload")])

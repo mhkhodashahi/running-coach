@@ -4,7 +4,7 @@ x-app: &app
   init: true
   user: "${PULSE_UID:-10001}:${PULSE_GID:-10001}"
   volumes:
-    - ${PULSE_DOCKER_HOME:-${HOME}/.pulse-coach}:/var/lib/pulse
+    - ${PULSE_DOCKER_HOME:-$HOME/.pulse-coach}:/var/lib/pulse
   environment:
     DB_PATH: /var/lib/pulse/db/running_coach.db
     BACKUP_DIR: /var/lib/pulse/backups
@@ -12,6 +12,8 @@ x-app: &app
 services:
   web:
     <<: *app
+    env_file:
+      - ${PULSE_DOCKER_HOME:-$HOME/.pulse-coach}/.env
     ports:
       - "127.0.0.1:${PULSE_PORT:-8000}:8000"
     restart: unless-stopped

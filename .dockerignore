@@ -4,6 +4,8 @@
 analytics/*
 !coach/
 coach/*
+!coach/skills/
+coach/skills/*
 !db/
 db/*
 !db/repositories/

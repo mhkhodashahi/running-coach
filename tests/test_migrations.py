@@ -223,7 +223,7 @@ def test_0018_memory_migration_up_down_preserves_legacy_storage(tmp_path):
     legacy = tmp_path / "data" / "couch_running_memory.md"
     legacy.parent.mkdir()
     legacy.write_text("## Persistent cues\n- Prefer morning sessions.\n- Keep Thursday free.\n")
-    # Bring the disposable database back one revision, then verify the migration copies rows only.
+    # An upgrade must not assign an unowned file to the first athlete.
     engine = create_engine(f"sqlite:///{database}")
     try:
         config = migration_config()
@@ -234,10 +234,7 @@ def test_0018_memory_migration_up_down_preserves_legacy_storage(tmp_path):
         engine.dispose()
     upgrade_database(database)
     with closing(sqlite3.connect(database)) as connection:
-        assert connection.execute("SELECT category,text,status,source FROM coach_memories ORDER BY id").fetchall() == [
-            ("other", "Prefer morning sessions.", "active", "migrated"),
-            ("other", "Keep Thursday free.", "active", "migrated"),
-        ]
+        assert connection.execute("SELECT count(*) FROM coach_memories").fetchone() == (0,)
         assert connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)
         assert connection.execute("SELECT suggest_memories_llm FROM notification_settings").fetchall() == []
     assert legacy.read_text() == "## Persistent cues\n- Prefer morning sessions.\n- Keep Thursday free.\n"

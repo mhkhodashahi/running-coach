@@ -526,7 +526,7 @@ def test_regeneration_archives_legacy_payload_in_same_transaction(opinion_db):
         assert session.scalars(select(ActivityCoachingOpinionHistory)).one().payload_json == original
 
 
-def test_v2_memory_entry_uses_assessment_and_points(monkeypatch):
+def test_v2_memory_entry_uses_assessment_and_points(monkeypatch, tmp_path):
     from services import activity_coaching_service as module
 
     saved = []
@@ -535,7 +535,7 @@ def test_v2_memory_entry_uses_assessment_and_points(monkeypatch):
         worked=[{"lead": "Even effort", "detail": ""}],
         evidence=[{"metric": "pace", "value": "6:00 /km", "source": "activity"}],
     ))
-    _update_activity_memory("2026-05-22", "Invented run", opinion)
+    _update_activity_memory("2026-05-22", "Invented run", opinion, path=tmp_path / "memory.md")
     assert saved
     assert "I saw a controlled session" in saved[0].summary
 

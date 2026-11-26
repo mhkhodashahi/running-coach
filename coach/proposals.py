@@ -384,16 +384,21 @@ def apply(database: Path, user_id: int, proposal_id: int, accepted_change_ids: l
             raise ValueError("Select or reject every change in a dependency group together")
         if selected:
             from coach.load_model import load_model
-            from coach.week_rules import apply_draft, validate_week
+            from coach.week_rules import apply_draft, memory_rule_errors, validate_week
             from config import get_settings
             from services.daily_decision_service import build_daily_decision
 
             settings = replace(get_settings(), db_path=database)
             now = datetime.now(ZoneInfo(settings.local_timezone)).date()
+            from services.coach_memory_service import list_memories
+
+            memories = list_memories(database, user_id, status="active")
             by_week: dict[date, list[dict[str, Any]]] = {}
             for row in changes:
                 if row["id"] in selected:
                     item = json.loads(row["session_json"])
+                    if row["change_type"] != "remove" and (errors := memory_rule_errors(item, memories)):
+                        raise ValueError("Unsafe plan change: " + "; ".join(errors))
                     by_week.setdefault(monday(date.fromisoformat(item["date"])), []).append(
                         {"change_type": row["change_type"], "session": item})
             decisions = {}

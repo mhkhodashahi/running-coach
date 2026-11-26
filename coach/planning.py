@@ -50,6 +50,7 @@ from coach.week_rules import (
 from coach.week_rules import (
     is_hard as is_hard,
 )
+from coach.week_rules import memory_rule_errors
 from coach.week_rules import (
     validate_week as validate_week,
 )
@@ -261,13 +262,16 @@ def week_load_breakdown(sessions: list[dict[str, Any]], model: LoadModel, start:
 
 def validate_draft(draft: WeekDraft, existing: list[dict[str, Any]], facts: list[dict[str, str]],
                    model: LoadModel, start: date, today: date, decisions: dict[date, str],
-                   running_goal: bool, *, long_run_cap: int | None = None) -> list[str]:
+                   running_goal: bool, *, long_run_cap: int | None = None,
+                   memories: list[dict[str, Any]] | None = None) -> list[str]:
     errors = []
     known = {fact["id"] for fact in facts}
     for change in draft.changes:
         item = change.session.model_dump(mode="json")
         try:
             day = date.fromisoformat(item["date"])
+            if change.change_type != "remove":
+                errors.extend(memory_rule_errors(item, memories or []))
             if not start <= day < start + timedelta(days=7):
                 errors.append("Change date is outside requested week")
             if item["sport"] not in ("running", "gym", "football", "volleyball", "mobility"):
@@ -905,7 +909,7 @@ def propose_week(start: date, *, settings: Settings | None = None, user_id: int 
                     return result
                 draft = WeekDraft.model_validate(raw)
                 errors = validate_draft(draft, week["sessions"], facts, model, start, today, decisions,
-                                        running_goal, long_run_cap=long_run_limit(longest_run))
+                                        running_goal, long_run_cap=long_run_limit(longest_run), memories=memories)
                 if errors:
                     raise ValueError("; ".join(errors))
                 changes = [change.model_dump(mode="json") for change in draft.changes]
@@ -1037,7 +1041,9 @@ def propose_requested_change(request: str, start: date, *, settings: Settings,
         settings.db_path, user_id, start, settings, today)
     client = llm or get_llm_client(settings.llm_provider, settings.openai_api_key, settings.openai_model,
                                    settings.ollama_base_url, settings.ollama_model, settings=settings)
+    memories = active_memories(settings.db_path, user_id, today=today)
     prompt = json.dumps({"week": week, "facts": facts, "load_cap": model.cap,
+                         "athlete_rules": [row["rule"] for row in memories if row["rule"]],
                          "athlete_request_as_data": request.strip(),
                          "today": today.isoformat(), "running_goal": running_goal}, default=str)
     system_prompt = compose_skill_prompt(
@@ -1053,7 +1059,7 @@ def propose_requested_change(request: str, start: date, *, settings: Settings,
                 draft = WeekDraft.model_validate(client.generate_json(
                     system_prompt, prompt, response_schema=WeekDraft))
                 errors = validate_draft(draft, week["sessions"], facts, model, start, today, decisions,
-                                        running_goal, long_run_cap=long_run_limit(longest_run))
+                                        running_goal, long_run_cap=long_run_limit(longest_run), memories=memories)
                 if unsupported_text_numbers(draft.summary, facts):
                     errors.append("Summary contains a number absent from facts")
             except (ValidationError, ValueError, TypeError) as exc:

@@ -40,10 +40,11 @@ class TrainingChatService:
                activity_id: int | None = None) -> TrainingChatReply:
         if not question.strip():
             return TrainingChatReply("Ask me a training question.", False)
-        agent = CoachAgent(self.settings, self.llm_client, user_id or self.settings.default_user_id)
+        user_id = self.settings.default_user_id if user_id is None else user_id
+        agent = CoachAgent(self.settings, self.llm_client, user_id)
         try:
-            persistent = memory_context(self.settings.db_path, user_id or self.settings.default_user_id)
-            legacy = load_running_memory(memory_path(self.settings.base_dir))
+            persistent = memory_context(self.settings.db_path, user_id)
+            legacy = load_running_memory(memory_path(self.settings.db_path, user_id))
             context = "\n".join(value for value in (persistent, legacy) if value)
             result = agent.answer(question, activity_id=activity_id, running_memory=context)
         except (RuntimeError, ValueError) as exc:

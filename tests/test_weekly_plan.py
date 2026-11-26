@@ -55,6 +55,7 @@ from coach.proposals import (
     manual_session,
     match_completed_sessions,
     materialize_week,
+    monday,
     request_revision,
     save_commitment,
     save_protected_habit,
@@ -78,6 +79,23 @@ def session(day: date, sport: str = "running", intent: str = "easy", minutes: in
             identifier: int | None = None) -> dict:
     return {"id": identifier, "date": day.isoformat(), "sport": sport, "intent": intent,
             "duration_min": minutes, "hr_cap_bpm": 130 if sport == "running" else None, "notes": None}
+
+
+@pytest.mark.parametrize("rule, reason", [
+    ({"unavailable": {"weekdays": [0]}}, "unavailable weekday"),
+    ({"avoid": ["tempo"]}, "excluded"),
+    ({"body": {"area": "leg", "easy_running_only": True}}, "easy running only"),
+])
+def test_apply_rechecks_rules_added_after_draft(database, rule, reason):
+    from services.coach_memory_service import save_memory
+
+    day = monday(date.today()) + timedelta(days=14)
+    proposal = create_proposal(database, 1, "change", "Training", FACTS, [change(day, intent="tempo")])
+    save_memory(database, 1, "Fixture restriction", rule=rule)
+    with pytest.raises(ValueError, match=reason):
+        apply(database, 1, proposal["id"], [proposal["changes"][0]["id"]])
+    assert get_proposal(database, 1, proposal["id"])["status"] == "pending"
+    assert not get_week(database, 1, day)["sessions"]
 
 
 def test_detailed_workout_survives_apply_and_undo(database):
